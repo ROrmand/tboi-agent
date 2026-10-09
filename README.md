@@ -5,30 +5,51 @@
 ### Core Details
 * **Title:** The Binding of Isaac: Live In-Game AI Content & Modding Assistant
 * **Target Event:** Nebius x NVIDIA Global AI Hackathon (Track: Coding & Agentic Engineering / Best Apps and Agents)
-* **Game Engine Target:** *The Binding of Isaac: Repentance* (Lua API v3.5 + REPENTAGON C++ Extender)
-* **Modding Framework:** IsaacScript (TypeScript to Lua Transpiler)
-* **Inference Infrastructure:** Nebius AI Studio Token Factory (NVIDIA H100/L40S Clusters)
-* **Target Models:** Qwen 2.5 Coder 32B Instruct (Logic & Code), Stable Diffusion XL / Flux.1-Lite (Sprite Pipeline)
+* **Game Engine Target:** *The Binding of Isaac: Repentance+* (Lua API v3.5 + REPENTOGON C++ Extender)
+* **Modding Runtime:** Native Lua 5.3 + REPENTOGON API
+* **Generation Infrastructure:** Nebius AI Studio API, used as the required generation provider for item concepts, structured profiles, and visual assets.
+* **Target Models:** Nebius-hosted models selected by capability: structured-output LLM for item profiles and image generation model for item/tear sprite source art.
 * **Target Latency:** < 2.5s for complete JSON balance sheet + Lua hook execution; < 4.0s for sprite sheet rendering
 
 ### Concept Summary
 An embedded in-game terminal and prompt overlay operating natively inside *The Binding of Isaac: Repentance*. The system allows players to dynamically prompt, generate, compile, and spawn items, trinkets, monsters, and bosses in real-time mid-run without closing or restarting the game executable.
+
+### Nebius Generation Method
+
+Nebius AI Studio is the generation layer for this project. The local bridge
+submits a constrained item prompt and returns a validated profile rather than
+executable generated Lua:
+
+1. A player prompt is sent to a Nebius-hosted structured-output model.
+2. The model returns an `ItemProfile` JSON document: name, description, stat
+   bounds, allowed tear effect, sprite prompt, and sound brief.
+3. A Nebius image-generation model produces source art for the item and a
+   small set of tear-animation frames. The bridge removes backgrounds, scales
+   frames, and packs them into the project's predeclared animation template.
+4. The bridge validates the complete payload, writes it into a reserved asset
+   slot, and asks Isaac to apply that slot. The game only selects from
+   predeclared item IDs, animation templates, and sound IDs.
+
+This keeps Nebius central to the creative generation while preserving the
+runtime limits established by the game: new XML IDs and animation definitions
+require a restart; data and assets assigned to an existing slot can be applied
+during a run.
 
 ---
 
 ## System Architecture & Tech Stack
 
 ### Tech Stack Breakdown
-1. **Engine Extender (REPENTAGON):** Injects into the game engine at the C++ layer. Provides native ImGui overlay rendering hooks, low-level memory/entity access, and engine-level hook injection.
-2. **Modding Framework (IsaacScript):** Compiles TypeScript down to clean Lua 5.3. Provides type safety, autocomplete over Isaac API interfaces, and AST parsing/validation support on the bridge server.
-3. **Local Bridge Server (Node.js / TypeScript):** Runs locally (`localhost:3000`). Intercepts in-game JSON prompt files, manages multi-turn prompt context, runs regex AST sanitization, post-processes sprite grids, and interfaces with Nebius.
-4. **AI Inference Endpoint (Nebius AI Studio Token Factory):** Cloud-hosted high-throughput GPU infrastructure providing OpenAI-compatible REST endpoints for ultra-fast code generation and structured JSON payloads.
+1. **Engine Extender (REPENTOGON):** Injects into the game engine at the C++ layer. Provides native ImGui overlay rendering hooks, low-level memory/entity access, and engine-level hook injection.
+2. **Modding Runtime (Native Lua + REPENTOGON):** Runs Lua 5.3 directly in Isaac and uses REPENTOGON callbacks for console commands, runtime sprite replacement, and in-game UI hooks.
+3. **Local Bridge Server (Node.js / TypeScript):** Runs locally (`localhost:3000`). Sends constrained requests to Nebius AI Studio, validates the returned `ItemProfile`, post-processes generated sprite frames and audio assets, and writes accepted data into reserved runtime slots.
+4. **Nebius AI Studio:** Cloud generation provider for structured item profiles and image assets, accessed from the bridge through its OpenAI-compatible API.
 
 ### Technical Flow & Sequence
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      GAME CLIENT (Isaac + REPENTAGON)                   │
+│                      GAME CLIENT (Isaac + REPENTOGON)                   │
 │  - Native ImGui Prompt Overlay                                          │
 │  - Pre-allocated Generic Shell Bank (XML Slots 1..N)                    │
 └────────────────────────────────────┬────────────────────────────────────┘
@@ -42,23 +63,23 @@ An embedded in-game terminal and prompt overlay operating natively inside *The B
                                      │ 2. REST API Request (Bearer Auth)
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                     NEBIUS AI STUDIO TOKEN FACTORY                      │
-│  - Qwen 2.5 Coder 32B Instruct (Structured JSON + Lua Hooks)           │
-│  - Image Generation Endpoint (Pixel-Art Sprites)                        │
+│                         NEBIUS AI STUDIO                                │
+│  - Structured ItemProfile JSON generation                               │
+│  - Image generation for item and tear-animation source art              │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │ 3. Returns Payload & Base64 Sprites
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     LOCAL BRIDGE SERVER (Node.js / TS)                  │
-│  - Regex AST Sandboxing & Parameter Bounds Check                        │
-│  - Writes Sprite Sheet PNG & Injects Lua to Mod Folder                  │
+│  - Schema validation, asset processing, and parameter bounds checks     │
+│  - Writes approved assets and ItemProfile data to a reserved slot        │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │ 4. IPC Signal / Hot-Reload
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                      GAME CLIENT (Isaac + REPENTAGON)                   │
+│                      GAME CLIENT (Isaac + REPENTOGON)                   │
 │  - Rebinds Texture via Sprite:ReplaceSpritesheet()                      │
-│  - Evaluates Sandboxed Lua Scope & Spawns Entity Live in Room           │
+│  - Applies whitelisted stats and effects for the selected slot          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,7 +87,7 @@ An embedded in-game terminal and prompt overlay operating natively inside *The B
 To bypass *The Binding of Isaac*'s engine restriction where XML configurations (`items.xml`, `entities2.xml`) require a full game restart to load new IDs:
 * **Pre-Allocation:** The mod registers generic dummy definitions ahead of time in `items.xml` (`Dynamic_Item_1..20`) and `entities2.xml` (`Dynamic_Monster_1..10`, `Dynamic_Boss_1..4`).
 * **Visual Hot-Swapping:** Rebinds entity visual representations dynamically at runtime using `Sprite:ReplaceSpritesheet()` and `Sprite:LoadGraphics()`.
-* **Behavior Injection:** Dynamic Lua logic strings received from Nebius are safely evaluated via a sandboxed `load()` scope and bound to dynamic callbacks (`MC_EVALUATE_CACHE`, `MC_NPC_UPDATE`, `MC_ENTITY_TAKE_DMG`).
+* **Behavior Application:** Nebius returns declarative effect choices. The bridge accepts only whitelisted stat modifiers and effect IDs, which the mod maps to fixed callbacks such as `MC_EVALUATE_CACHE` and `MC_POST_FIRE_TEAR`.
 
 ---
 
@@ -96,13 +117,8 @@ To bypass *The Binding of Isaac*'s engine restriction where XML configurations (
 ## Technical Risk Mitigation & Sandboxing
 
 ### Game Stability & Crash Prevention
-1. **Execution Sandboxing:** Generated Lua code runs within an isolated environment. Prohibited namespaces and functions include:
-   * File I/O: `os.*`, `io.*`
-   * Dynamic Code Execution: `dofile`, `require`, `loadfile`
-   * Debug Hooks: `debug.*`
-2. **Regex AST Sanitizer:** Prior to calling `load()`, the bridge server parses the generated string against security rules:
-   * **Infinite Loop Safeguard:** Direct prohibition of `while true do` constructs without explicit frame step counters.
-   * **Recursion Checks:** Call-stack depth limits applied to custom entity update functions.
+1. **Declarative Profile Boundary:** Generated output is JSON, not executable Lua. The game does not evaluate model-produced code or expose file I/O, process execution, or debug APIs to a generated profile.
+2. **Schema and Effect Validation:** The bridge enforces an `ItemProfile` schema and accepts only known effect IDs, stat fields, and numeric ranges before a profile can enter a runtime slot.
 3. **Attribute Bounds & Fail-Safes:** Stat modifications are strictly clamped to stable engine bounds:
    $$\text{Damage Multiplier} \le 50.0 \quad \mid \quad \text{Move Speed} \le 2.0 \quad \mid \quad \text{Tear Delay} \ge 1$$
    *On parsing error or missing attributes, the system silently applies default baseline values (`Fallback_Template.lua`) to prevent execution halts.*
@@ -127,7 +143,7 @@ To bypass *The Binding of Isaac*'s engine restriction where XML configurations (
 * Validate sprite replacement routines using `Sprite:ReplaceSpritesheet()`.
 
 ### Phase 3: In-Game UI Overlay
-* Build native ImGui overlay rendering panels using REPENTAGON hooks.
+* Build native ImGui overlay rendering panels using REPENTOGON hooks.
 * Implement text entry focus, button interaction handlers, selection toggle grids, and synergy selection panels.
 * Connect Lua file buffer writers to trigger bridge server processing.
 

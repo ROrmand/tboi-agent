@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sounds root="sfx/">
+  <sound name="LIVE PROFILE EMBER">
+    <sample weight="1" path="live_ember.wav" />
+  </sound>
+  <sound name="LIVE PROFILE VERDANT">
+    <sample weight="1" path="live_verdant.wav" />
+  </sound>
+  <sound name="LIVE PROFILE VOID">
+    <sample weight="1" path="live_void.wav" />
+  </sound>
+</sounds>

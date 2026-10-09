@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <name>Live Sprite Swap Demo</name>
+  <directory>live_sprite_swap_demo</directory>
+  <id>900001</id>
+  <description>Predeclared custom collectible with live art, stats, tear effects, and sounds.</description>
+  <version>1.2.2</version>
+  <visibility>Private</visibility>
+  <tag id="Lua" />
+  <tag id="Items" />
+  <tag id="Graphics" />
+</metadata>

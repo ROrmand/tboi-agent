@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<items gfxroot="gfx/items/" version="1">
+  <!-- This item is registered only at game startup; never use resources/items.xml. -->
+  <passive
+    name="Live Profile Core"
+    description="Changes form while held"
+    gfx="collectibles/ember_orb.png"
+    quality="3"
+    cache="damage firedelay range luck"
+  />
+</items>
