@@ -1,5 +1,13 @@
 # Nebius Isaac Item Generator
 
+## Native runtime spike
+
+The isolated Stage 1 probe and acceptance steps are in [native/README.md](native/README.md).
+It creates a live 32x32 procedural image through REPENTOGON's native renderer
+bindings. It does not replace the existing bridge, repair its inbound handoff,
+or modify installed engine DLLs. In-game verification is required before the
+native milestone is accepted.
+
 ## Current scope
 
 This project generates **passive collectibles** for *The Binding of Isaac:

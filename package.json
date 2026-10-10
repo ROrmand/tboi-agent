@@ -7,9 +7,15 @@
     "bridge": "node bridge/server.mjs",
     "generate": "node bridge/generate.mjs",
     "validate": "node bridge/generate.mjs --dry-run --no-image",
-    "test": "node --test bridge/*.test.mjs"
+    "test": "node --test bridge/*.test.mjs native/stage1/*.test.mjs",
+    "native:prepare": "node native/stage1/prepare.mjs",
+    "test:native": "node --test native/stage1/*.test.mjs",
+    "native:verify": "node native/stage1/verify.mjs"
   },
   "dependencies": {
     "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "wasmoon": "^1.16.0"
   }
 }

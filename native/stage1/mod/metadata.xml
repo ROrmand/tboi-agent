@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <name>Nebius Native Stage 1</name>
+  <directory>nebius_native_stage1</directory>
+  <description>Opt-in runtime 32x32 surface probe using REPENTOGON native renderer bindings. Requires Live Sprite Swap Demo.</description>
+  <version>0.1.0</version>
+  <visibility>Private</visibility>
+  <tag id="Lua" />
+  <tag id="Graphics" />
+</metadata>
