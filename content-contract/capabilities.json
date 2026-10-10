@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "entity_type": "passive_item",
+  "triggers": ["room_enter", "room_clear", "enemy_hit", "player_hurt", "pickup", "new_floor", "tear_fire"],
+  "conditions": ["chance", "once_per_room", "once_per_floor"],
+  "actions": ["spawn_pickup", "grant_soul_hearts"],
+  "pickup_types": ["coin", "key", "bomb", "heart"],
+  "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow"],
+  "stat_bounds": {
+    "damage": [-10, 15],
+    "tears": [-5, 10],
+    "shot_speed": [-1, 1.5],
+    "range": [-10, 20],
+    "speed": [-1, 0.5],
+    "luck": [-5, 10],
+    "soul_hearts": [0, 4]
+  }
+}

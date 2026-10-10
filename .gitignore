@@ -6,3 +6,8 @@ dist/
 *.log
 .DS_Store
 Thumbs.db
+runtime/generated/
+demo/live-sprite-swap/generated_profile.lua
+demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item.png
+demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item_*.png
+demo/live-sprite-swap/bridge_status.lua

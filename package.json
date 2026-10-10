@@ -1,0 +1,15 @@
+{
+  "name": "nebius-isaac-item-generator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "bridge": "node bridge/server.mjs",
+    "generate": "node bridge/generate.mjs",
+    "validate": "node bridge/generate.mjs --dry-run --no-image",
+    "test": "node --test bridge/*.test.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.34.5"
+  }
+}

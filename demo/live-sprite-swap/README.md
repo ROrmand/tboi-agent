@@ -1,43 +1,68 @@
-# Live Profile Item Demo
+# Passive Item Runtime Demo
 
-This REPENTOGON test contains one real custom collectible: **Live Profile
-Core**. Its ID and base definition are registered only at Isaac startup through
-`content/items.xml`. Runtime commands never create IDs or modify a global
-`resources/items.xml` file.
+This is the Isaac/REPENTOGON runtime for the first vertical slice. It has one
+predeclared collectible, **Live Profile Core**. Its ID is registered when Isaac
+starts; generated profiles only change its approved stats, rules, tear tint,
+and artwork while the run is active.
 
-## What it tests
+## Console-first test flow
 
-`agent switch #` changes the active profile in a running game:
+1. Copy this directory to Isaac's `mods/live_sprite_swap_demo` directory and
+   set `ISAAC_MOD_DIRECTORY` in the repository `.env` to that installed
+   directory. Start the game through REPENTOGON.
+2. Start a run and collect **Live Profile Core**, which spawns next to Isaac.
+3. From this repository in a terminal, start the local bridge and leave it
+   running:
 
-| Command | Profile | Live behavior while held |
-| --- | --- | --- |
-| `agent switch 1` | Ember | +0.75 damage; animated orange tears that burn enemies |
-| `agent switch 2` | Verdant | -1 fire delay (tears up); animated green tears that poison enemies |
-| `agent switch 3` | Void | +40 range and +2 luck; animated purple tears that inflict fear |
+   ```powershell
+   npm run bridge
+   ```
 
-The command also changes the uncollected pedestal sprite and the custom item
-icon rendered below the minimap while the item is held. Three predeclared WAV
-sounds provide switch confirmation and a rate-limited firing cue. The tears
-retain Isaac's native single-tear animation and receive their profile color at
-fire time. Leaving and re-entering the pedestal room reapplies the selected
-sprite.
+   Start ComfyUI separately at `http://127.0.0.1:8188`. Place the configured
+   `COMFYUI_CHECKPOINT` file in its `models/checkpoints` folder before using
+   generated art.
 
-## Test procedure
+4. In Isaac's console, run:
 
-1. Close Isaac, copy this directory to `mods/live_sprite_swap_demo`, and start
-   Isaac through the REPENTOGON Launcher.
-2. Start a new run. After roughly one second, the custom pedestal appears next
-   to Isaac as Ember.
-3. Use the in-game console (`\`) to run `agent ping`, then collect **Live
-   Profile Core**.
-4. Run `agent switch 1`, fire at an enemy, and confirm orange custom tears,
-   burn, and the Ember sound. Repeat for `agent switch 2` (green/poison) and
-   `agent switch 3` (purple/fear). Only tears fired after each switch use the
-   new profile.
-5. Confirm the icon below the minimap changes with each selected profile and
-   the HUD stats change: Verdant improves tears; Void increases range and luck.
-6. Use `agent state` to print the current profile and registered item ID.
+   ```text
+   agent generate
+   ```
 
-The item and sound IDs are registered at startup. The current profile can be
-changed live; a newly generated item, tear animation definition, or sound ID
-cannot safely be registered mid-run.
+5. Describe the item in the native **Nebius Passive Item Generator** window,
+   then press **Generate Item**. The mod writes the request to Isaac's log,
+   polls the bridge status file, then loads
+   `generated_profile.lua`, swaps the pedestal/HUD art, applies the item
+   profile, and interprets its approved rules.
+
+`agent generated` remains available to load an item generated through the
+terminal fallback.
+
+The window continues polling while the console pauses gameplay. It reports
+design, validation retry, image generation, sprite preparation, and publication.
+Each design gets at most one retry after invalid JSON or schema validation.
+Network calls time out, and the bridge stops a job after 350 seconds. Keep the
+bridge terminal open; restart it after bridge code changes, and fully restart
+Isaac after Lua changes. Closing and reopening the prompt alone does not reload Lua.
+
+Artwork uses a new texture filename for each generation to avoid Isaac's texture
+cache. Border-connected white background pixels are removed and the object is
+fitted into a transparent 32x32 icon. Complex backgrounds may still need better
+art direction. The prior item remains published if artwork generation fails.
+
+## Supported runtime behavior
+
+- Stat deltas: damage, tears, range, luck, shot speed, and movement speed.
+- Native tear tint/scale plus up to three allowed tear flags.
+- Triggers: room enter/clear, enemy hit, player hurt, pickup, new floor, and
+  tear fire.
+- Conditions: chance, once per room, once per floor.
+- Actions: spawn one allowed pickup or grant soul hearts.
+
+The runtime does not execute model-produced Lua. It only loads a bridge-written
+data table after the bridge has validated it.
+
+## Existing visual profiles
+
+`agent switch 1`, `agent switch 2`, and `agent switch 3` still select the
+Ember, Verdant, and Void test profiles. `agent generated` selects the newest
+validated bridge output instead.
