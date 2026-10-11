@@ -8,8 +8,10 @@ dist/
 Thumbs.db
 .reference-repentogon/
 runtime/generated/
+runtime/*.err
 demo/live-sprite-swap/generated_profile.lua
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item.png
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item_*.png
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_slot_*.png
 demo/live-sprite-swap/bridge_status.lua
+demo/live-sprite-swap/art-reservations.json*

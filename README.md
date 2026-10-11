@@ -42,16 +42,52 @@ tested Lua handlers.
    press top-row or keypad `8`. Enter a passive-item prompt in **Nebius Passive
    Item Generator**, then select **Generate Item**. The prompt writes a fixed
    JSON request to Isaac's log; the bridge delivers the validated result back
-   through native IPC and spawns **Live Profile Core** as a pedestal.
+   through native IPC and spawns one of 64 independent generated collectibles.
 
    Before the first native-art run, execute `npm run art:prepare`, then restart
    Isaac. This predeclares 64 texture filenames that Isaac can discover at
-   startup. Restart Isaac and the bridge together before reusing those slots.
+   startup. Install the v1.6.1 mod files and fully restart Isaac before the
+   first multi-item run. Begin a fresh run when upgrading from v1.5.0.
 
-`npm run generate -- --prompt "..."` remains available as a terminal fallback.
+`npm run ipc:generate -- --prompt "..."` is the terminal fallback; keep the
+bridge running and a run open so it can reserve artwork safely.
 
-Use `npm run validate` for an offline fixture profile and placeholder icon; it
-does not call Token Factory.
+Use `npm run validate` for an offline fixture validation; it does not call
+Token Factory or overwrite installed artwork.
+
+## Run persistence and capacity (v1.6.1)
+
+Each run supports 64 independent generated item IDs and up to 64 artwork slots.
+Profiles and rule state are saved with the mod's run data, including on save
+and exit. Continue restores both owned items and uncollected pedestals by their
+collectible IDs. Artwork stays in the installed mod directory. There is no
+permanent item library.
+
+The generator window also has a **Randomize** button. It fills the editable
+prompt with a bounded passive-item idea; review or change it, then choose
+**Generate Item** normally.
+
+When `IMAGE_BACKEND=comfyui`, the bridge now checks that ComfyUI is reachable
+before asking the text model to design an item. Start ComfyUI and wait until it
+reports that its server is running at `http://127.0.0.1:8188`; otherwise the
+generator returns an actionable error before a text-generation request.
+The current bridge reserves an artwork slot before starting the generator, so
+even a failed preflight conservatively consumes that session's reservation.
+
+Generation stops with a clear error at either limit; it never wraps around or
+replaces an existing item. A new run frees item IDs. Artwork already used by
+the current Isaac process stays reserved until Isaac restarts, at which point
+continued-run artwork remains pinned. Failed generations conservatively consume
+an artwork reservation. Restarting only the bridge does not free any slots.
+Do not delete `art-reservations.json`, saved mod data, or generated PNGs to
+bypass the limit. This initial implementation targets one active save slot;
+switching between separate Isaac save slots with continuable generated runs
+is not supported yet.
+
+Stats stack across owned items; tear flags combine, tear scale is clamped to
+0.5–2, and the most recently generated owned item's tint wins. Rule limits are
+independent per item and player. Missing or invalid run data blocks generation
+instead of assigning new profiles to existing collectibles.
 
 ## A generated passive item
 

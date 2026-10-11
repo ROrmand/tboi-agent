@@ -1,11 +1,67 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <items gfxroot="gfx/items/" version="1">
-  <!-- This item is registered only at game startup; never use resources/items.xml. -->
-  <passive
-    name="Live Profile Core"
-    description="Changes form while held"
-    gfx="collectibles/ember_orb.png"
-    quality="3"
-    cache="damage firedelay range luck"
-  />
+  <passive name="Generated Passive 00" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 01" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 02" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 03" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 04" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 05" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 06" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 07" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 08" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 09" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 10" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 11" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 12" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 13" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 14" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 15" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 16" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 17" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 18" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 19" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 20" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 21" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 22" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 23" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 24" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 25" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 26" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 27" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 28" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 29" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 30" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 31" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 32" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 33" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 34" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 35" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 36" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 37" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 38" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 39" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 40" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 41" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 42" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 43" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 44" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 45" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 46" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 47" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 48" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 49" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 50" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 51" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 52" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 53" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 54" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 55" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 56" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 57" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 58" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 59" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 60" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 61" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 62" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="Generated Passive 63" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
 </items>

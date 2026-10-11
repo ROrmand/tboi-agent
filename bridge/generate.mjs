@@ -2,8 +2,9 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { atomicWrite, makeIcon, validateSchema, toLua } from './runtime.mjs';
-import { generateComfyImage } from "./comfyui.mjs";
-import { artSlotFor, artSlotName } from '../native/ipc/art-slots.mjs';
+import { assertComfyUiReady, generateComfyImage } from "./comfyui.mjs";
+import { requestTextModel } from "./network.mjs";
+import { artSlotName } from '../native/ipc/art-slots.mjs';
 
 const GAME_MODULE_SLOT_COUNT = 400;
 
@@ -26,6 +27,9 @@ const requestedArtSlot = readOption("--art-slot");
 
 if (!prompt && !dryRun) {
   fail('Usage: npm run generate -- --prompt "A cursed nail that poisons enemies"');
+}
+if (!dryRun && requestedArtSlot === '') {
+  fail('Use npm run ipc:generate -- --prompt "..." with the bridge and a run open, so artwork is safely reserved.');
 }
 
 const ITEM_SCHEMA = {
@@ -137,9 +141,13 @@ const fixture = {
 };
 
 try {
+  await preflightImageBackend();
   const profile = dryRun ? fixture : await generateProfile(prompt);
   validateProfile(profile);
-  await writeOutputs(profile, noImage);
+  if (dryRun) {
+    await mkdir(outputDirectory, {recursive:true});
+    await atomicWrite(path.join(outputDirectory, 'validated-fixture.json'), JSON.stringify(profile,null,2));
+  } else await writeOutputs(profile, noImage);
   console.log(`Generated ${profile.metadata.display_name}. The bridge delivers requested profiles through native IPC.`);
 } catch(error) { console.error(`Generation failed: ${error.message}`); process.exitCode = 1; }
 
@@ -151,8 +159,7 @@ async function generateProfile(playerPrompt) {
   let correction = '';
   for (let attempt=0; attempt<2; attempt++) {
   progress(attempt ? 'repair' : 'text');
-  const response = await fetch(`${(env.NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1/").replace(/\/$/, '')}/chat/completions`, {
-    signal: AbortSignal.timeout(90000),
+  const response = await requestTextModel(`${(env.NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1/").replace(/\/$/, '')}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.NEBIUS_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -208,7 +215,7 @@ async function writeOutputs(profile, skipImage) {
   const runtimeProfile = { version: capabilities.version, generated_at: new Date().toISOString(), ...(requestId ? { bridge_request_id: requestId } : {}), ...profile };
   // Isaac indexes mod resources at startup. Generation therefore replaces one
   // of these predeclared slots instead of adding a new invisible filename.
-  const artSlot = requestedArtSlot === '' ? artSlotFor(requestId || `${Date.now()}-${prompt}`) : Number(requestedArtSlot);
+  const artSlot = Number(requestedArtSlot);
   if (!Number.isInteger(artSlot) || artSlot < 0 || artSlot >= 64) fail('Artwork slot must be an integer from 0 to 63.');
   const assetName = artSlotName(artSlot);
   runtimeProfile.sprite_sheet = 'gfx/items/collectibles/' + assetName;
@@ -267,18 +274,27 @@ async function generateItemArtwork(profile) {
   return Buffer.from(payload.data[0].b64_json, "base64");
 }
 
+async function preflightImageBackend() {
+  if (dryRun || noImage) return;
+  const backend = (env.IMAGE_BACKEND || "comfyui").toLowerCase();
+  if (backend !== "comfyui") return;
+  requireSetting("COMFYUI_CHECKPOINT");
+  await assertComfyUiReady(env.COMFYUI_URL || "http://127.0.0.1:8188");
+}
+
 function validateProfile(profile) {
   validateSchema(profile, ITEM_SCHEMA);
   if (!profile || typeof profile !== "object") fail("Profile must be an object.");
-  assertText(profile.metadata?.display_name, "metadata.display_name");
-  assertText(profile.metadata?.description, "metadata.description");
+  assertText(profile.metadata?.display_name, "metadata.display_name", 32);
+  assertText(profile.metadata?.description, "metadata.description", 64);
+  assertText(profile.metadata?.balance_note, "metadata.balance_note", 256, true);
   if (!Number.isInteger(profile.metadata?.quality) || profile.metadata.quality < 0 || profile.metadata.quality > 4) fail("metadata.quality must be 0–4.");
   for (const [name, bounds] of Object.entries(capabilities.stat_bounds)) assertNumber(profile.stats?.[name], `stats.${name}`, bounds[0], bounds[1]);
   const tear = profile.tear_profile;
   if (!Array.isArray(tear?.flags) || tear.flags.length > 3 || tear.flags.some((flag) => !capabilities.tear_flags.includes(flag))) fail("tear_profile.flags is not allowed.");
   for (const channel of ["r", "g", "b", "a"]) assertNumber(tear?.color?.[channel], `tear_profile.color.${channel}`, 0, 1);
   assertNumber(tear?.scale, "tear_profile.scale", 0.5, 2);
-  assertText(profile.visuals?.pedestal_prompt, "visuals.pedestal_prompt");
+  assertText(profile.visuals?.pedestal_prompt, "visuals.pedestal_prompt", 500);
   if (!Array.isArray(profile.rules) || profile.rules.length > 2) fail("rules must contain at most two rules.");
   for (const rule of profile.rules) {
     if (!capabilities.triggers.includes(rule.trigger)) fail(`Unsupported trigger: ${rule.trigger}`);
@@ -301,7 +317,12 @@ function systemPrompt() {
 
 function readOption(name) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; }
 function requireSetting(name) { if (!env[name]) fail(`${name} is required in .env.`); }
-function assertText(value, name) { if (typeof value !== "string" || !value.trim()) fail(`${name} must be a non-empty string.`); }
+function assertText(value, name, maximumBytes, allowEmpty = false) {
+  if (typeof value !== "string" || (!allowEmpty && !value.trim())) fail(`${name} must be ${allowEmpty ? "a string" : "a non-empty string"}.`);
+  if (maximumBytes && Buffer.byteLength(value, "utf8") > maximumBytes) {
+    fail(`${name} exceeds the ${maximumBytes}-byte game limit.`);
+  }
+}
 function assertNumber(value, name, min, max) { if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) fail(`${name} must be a number from ${min}–${max}.`); }
 function fail(message) { throw new Error(message); }
 async function readEnv(file) {

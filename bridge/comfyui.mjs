@@ -3,6 +3,20 @@ import { randomUUID } from "node:crypto";
 const POLL_INTERVAL_MS = 750;
 const JOB_TIMEOUT_MS = 120000;
 
+export async function assertComfyUiReady(baseUrl) {
+  const url = baseUrl.replace(/\/$/, "");
+  let response;
+  try {
+    response = await fetch(`${url}/system_stats`, { signal: AbortSignal.timeout(5000) });
+  } catch (error) {
+    const detail = error.cause?.code ? ` (${error.cause.code})` : "";
+    throw new Error(`ComfyUI is not running at ${url}${detail}. Start ComfyUI, wait for its “Starting server” message, then retry.`);
+  }
+  if (!response.ok) {
+    throw new Error(`ComfyUI health check failed at ${url}/system_stats (HTTP ${response.status}). Start or repair ComfyUI, then retry.`);
+  }
+}
+
 export async function generateComfyImage({ baseUrl, checkpoint, prompt, onStage = () => {} }) {
   const url = baseUrl.replace(/\/$/, "");
   const clientId = `nebius-isaac-${randomUUID()}`;

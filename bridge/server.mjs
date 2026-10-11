@@ -7,6 +7,7 @@ import path from "node:path";
 import process from "node:process";
 import {atomicWrite, toLua} from './runtime.mjs';
 import { NativePipeServer } from '../native/ipc/server.mjs';
+import { SlotLedger } from '../native/ipc/slot-ledger.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
@@ -22,7 +23,9 @@ const isaacLog = env.ISAAC_LOG_FILE || path.join(
 const jobs = new Map();
 let activeJob = null;
 let finishingJob = false;
-let nextArtSlot = 0;
+const slotLedger = new SlotLedger(path.join(modDirectory, 'art-reservations.json'));
+let gameContext = null;
+let gameContextAt = 0;
 let statusWrites = Promise.resolve();
 const nativePipe = new NativePipeServer({ seedHello: true });
 const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY
@@ -79,13 +82,15 @@ const server = createServer(async (request, response) => {
 
 function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
   if(activeJob) throw Error('Another item is generating. Wait for it to finish.');
-  if (nextArtSlot >= 64) throw Error('All artwork slots used. Restart both Isaac and the bridge before generating again.');
+  if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
+  if (!id.startsWith(gameContext.run + '_')) id = gameContext.run + '_' + id;
+  const artSlot = slotLedger.reserve(gameContext);
   const job = { id, status: "generating", createdAt: new Date().toISOString() };
   activeJob = job;
   jobs.set(id, job);
   publishStatus(id, 'generating', 'Bridge received the prompt. Designing the passive item...');
   if (writeGameStatus) writeGameBridgeStatus(job);
-  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--request-id", id, "--art-slot", String(nextArtSlot++)], {
+  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--request-id", id, "--art-slot", String(artSlot)], {
     cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   let output = "";
@@ -114,6 +119,7 @@ async function finishJob(job, error, writeGameStatus) {
   finishingJob = true;
   if (!error) {
     try {
+      if (!gameContext || !job.id.startsWith(gameContext.run + '_') || gameContext.blocked) throw Error('Run ended or changed before generation completed.');
       await publishNativeProfile(job);
     } catch (publishError) {
       error = `Native profile publish failed: ${publishError.message}`;
@@ -176,6 +182,11 @@ async function watchIsaacLog() {
       const end = appended.lastIndexOf(10);
       remainder = appended.subarray(end+1);
       for (const line of appended.subarray(0,end+1).toString('utf8').split(/\r?\n/)) {
+        const state = line.match(/\[NebiusBridge\] state (\{.*\})/);
+        if (state) {
+          try { gameContext = JSON.parse(state[1]); gameContextAt = Date.now(); } catch {}
+          continue;
+        }
         const match = line.match(/\[NebiusBridge\] generate (\{.*\})/);
         if (!match) continue;
         try {
@@ -184,7 +195,10 @@ async function watchIsaacLog() {
           const id = typeof input.id === "string" ? input.id : "";
           if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && prompt && prompt.length <= 2000 && !jobs.has(id)) {
             if(activeJob) publishStatus(id, 'error', 'Another item is generating. Wait until it finishes.');
-            else startJob(prompt, id);
+            else {
+              try { startJob(prompt, id); }
+              catch (error) { publishStatus(id, 'error', error.message.slice(0,500)); }
+            }
           }
         } catch { /* Ignore malformed log lines. */ }
       }

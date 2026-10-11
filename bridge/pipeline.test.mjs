@@ -19,11 +19,12 @@ test('JSON retry, transparent icon, and image failure preserving the published p
  const pixels=await sharp(icon).ensureAlpha().raw().toBuffer({resolveWithObject:true});
  assert.equal(pixels.info.width,32); assert.equal(pixels.data[3],0);
  const profile={metadata:{display_name:'Red Core',description:'Damage up',quality:2,theme:'cursed',balance_note:''},stats:{damage:1,tears:0,shot_speed:0,range:0,speed:0,luck:0,soul_hearts:0},tear_profile:{flags:[],color:{r:1,g:0,b:0,a:1},scale:1},visuals:{pedestal_prompt:'red core'},rules:[]};
+ const utf8Overflow={...profile,metadata:{...profile.metadata,description:'x'.repeat(62)+'你'}};
  let attempts=0, imageFails=false;
  const server=createServer(async(req,res)=>{
    for await(const chunk of req) {};
    res.setHeader('Content-Type','application/json');
-   if(req.url.endsWith('chat/completions')) res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:++attempts===1?' {"speed":0\n5}':JSON.stringify(profile)}}]}));
+   if(req.url.endsWith('chat/completions')) res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(++attempts===1?utf8Overflow:profile)}}]}));
    else if(imageFails){res.statusCode=500;res.end('image failure');}
    else res.end(JSON.stringify({data:[{b64_json:source.toString('base64')}]}));
  });
