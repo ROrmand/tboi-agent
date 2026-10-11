@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <name>Nebius IPC Stage 2B</name>
+  <directory>nebius_ipc_stage2b</directory>
+  <description>Opt-in validated profile receipt test for the Nebius native bridge.</description>
+  <version>0.1.0</version>
+  <visibility>Private</visibility>
+  <tag id="Lua" />
+</metadata>

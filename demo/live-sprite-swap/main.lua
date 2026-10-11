@@ -39,23 +39,18 @@ local hudItemSprite = Sprite()
 local hudProfileIndex = nil
 local sfx = SFXManager()
 local lastTearSoundFrame = -999
-local statusText = "AGENT: custom item armed - run agent ping"
+local statusText = "AGENT: native IPC ready - submit a profile with npm run ipc:generate"
 local statusUntil = 0
 local selectProfile
 local runProfileRules
 local showStatus
 local bridgeJson = nil
-local bridgePrompt = ""
-local bridgeJobId = nil
-local bridgeRequestSequence = 0
-local pollBridgeJob
-local bridgeSubmittedFrame = nil
-local bridgeFinishedTimerText = nil
-local bridgeLastPollFrame = -999
-local bridgeStatus = "Bridge idle"
-local promptWindowReady = false
-local bridgeLastObservedSnapshot = nil
-local bridgePollSlot = 0
+local lastPollTime = -999
+local pendingProfileEnvelope = nil
+local nativePedestalImage = nil
+local nativePedestalSheet = nil
+local nativePedestalSourceQuad = nil
+local nativePedestalLoadFailed = false
 
 do
   local jsonOk, jsonModule = pcall(require, "json")
@@ -63,6 +58,8 @@ do
     bridgeJson = jsonModule
   end
 end
+
+local promptUi = include("nebius_prompt").new(bridgeJson)
 
 local function getActiveProfile()
   return profiles[activeProfileIndex]
@@ -80,38 +77,65 @@ local function flagFromName(name)
   return flags[name] or 0
 end
 
--- Isaac intentionally removes Lua's io library. `include()` is available,
--- but caches missing paths. The bridge therefore pre-publishes a sequence of
--- immutable modules; each poll consumes a never-before-included slot.
-local function readBridgeModule(kind, requestId, slot)
-  local ok, value = pcall(include, kind .. "_" .. requestId .. "_slot_" .. tostring(slot))
-  if ok and type(value) == "table" then return value end
-  return nil, ok and "bridge module was not a table" or tostring(value)
+-- The native bridge delivers JSON data only. This fixed validator deliberately
+-- mirrors the Stage 2B contract; no model-provided Lua or paths are executed.
+local triggers = { room_enter = true, room_clear = true, enemy_hit = true, player_hurt = true, pickup = true, new_floor = true, tear_fire = true }
+local conditions = { chance = true, once_per_room = true, once_per_floor = true }
+local actions = { spawn_pickup = true, grant_soul_hearts = true }
+local pickups = { coin = true, key = true, bomb = true, heart = true }
+local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true }
+local statBounds = {
+  damage = {-10, 15}, tears = {-5, 10}, shot_speed = {-1, 1.5}, range = {-10, 20},
+  speed = {-1, 0.5}, luck = {-5, 10}, soul_hearts = {0, 4},
+}
+
+local function allowedKeys(value, keys)
+  if type(value) ~= "table" then return false end
+  for key in pairs(value) do if not keys[key] then return false end end
+  return true
 end
 
--- The bridge writes this declarative table after its schema validation. The
--- model never supplies Lua callbacks; the fixed handlers below interpret it.
-local function loadGeneratedProfile(expectedRequestId, slot)
-  local generated
-  if expectedRequestId then
-    generated = readBridgeModule("generated_profile", expectedRequestId, slot)
-  else
-    local ok
-    ok, generated = pcall(include, "generated_profile")
-    if not ok then generated = nil end
+local function text(value, minimum, maximum)
+  return type(value) == "string" and #value >= minimum and #value <= maximum
+end
+
+local function number(value, minimum, maximum, integer)
+  return type(value) == "number" and value == value and value >= minimum and value <= maximum and (not integer or value == math.floor(value))
+end
+
+local function array(value, minimum, maximum)
+  if type(value) ~= "table" or #value < minimum or #value > maximum then return false end
+  local count = 0
+  for key in pairs(value) do
+    if not number(key, 1, #value, true) then return false end
+    count = count + 1
   end
-  if type(generated) ~= "table" then
-    showStatus("AGENT: no generated profile found; run npm generate first")
-    return false
+  return count == #value
+end
+
+local function validateProfile(profile, id)
+  if not allowedKeys(profile, { version = true, generated_at = true, bridge_request_id = true, metadata = true, stats = true, tear_profile = true, visuals = true, rules = true, sprite_sheet = true }) then return false, "profile keys" end
+  if profile.version ~= 1 or profile.bridge_request_id ~= id or not text(profile.generated_at, 1, 64) or not text(profile.sprite_sheet, 1, 256) or not profile.sprite_sheet:match("^gfx/items/collectibles/generated_slot_[0-9][0-9]%.png$") then return false, "profile identity" end
+  local metadata = profile.metadata
+  if not allowedKeys(metadata, { display_name = true, description = true, quality = true, theme = true, balance_note = true }) or not text(metadata.display_name, 1, 32) or not text(metadata.description, 1, 64) or not number(metadata.quality, 0, 4, true) or not ({ cursed = true, angelic = true, tech = true, gross = true, cosmic = true, none = true })[metadata.theme] or not text(metadata.balance_note, 0, 256) then return false, "metadata" end
+  if not allowedKeys(profile.stats, { damage = true, tears = true, shot_speed = true, range = true, speed = true, luck = true, soul_hearts = true }) then return false, "stat keys" end
+  for name, bounds in pairs(statBounds) do if not number(profile.stats[name], bounds[1], bounds[2], name == "soul_hearts") then return false, "stat " .. name end end
+  local tear = profile.tear_profile
+  if not allowedKeys(tear, { flags = true, color = true, scale = true }) or not array(tear.flags, 0, 3) or not number(tear.scale, 0.5, 2, false) then return false, "tear profile" end
+  for _, flag in ipairs(tear.flags) do if not tearFlagsByName[flag] then return false, "tear flag" end end
+  if not allowedKeys(tear.color, { r = true, g = true, b = true, a = true }) then return false, "tear color keys" end
+  for _, channel in ipairs({ "r", "g", "b", "a" }) do if not number(tear.color[channel], 0, 1, false) then return false, "tear color" end end
+  if not allowedKeys(profile.visuals, { pedestal_prompt = true }) or not text(profile.visuals.pedestal_prompt, 1, 500) or not array(profile.rules, 0, 2) then return false, "visuals or rules" end
+  for _, rule in ipairs(profile.rules) do
+    if not allowedKeys(rule, { trigger = true, conditions = true, actions = true }) or not triggers[rule.trigger] or not array(rule.conditions, 0, 2) or not array(rule.actions, 1, 2) then return false, "rule" end
+    for _, condition in ipairs(rule.conditions) do if not allowedKeys(condition, { type = true, chance = true }) or not conditions[condition.type] or (condition.type == "chance" and not number(condition.chance, 0, 1, false)) then return false, "condition" end end
+    for _, action in ipairs(rule.actions) do if not allowedKeys(action, { type = true, amount = true, pickup_type = true }) or not actions[action.type] or not number(action.amount, 1, 4, true) or (action.type == "spawn_pickup" and not pickups[action.pickup_type]) then return false, "action" end end
   end
+  return true
+end
+
+local function applyGeneratedProfile(generated)
   local metadata, stats, tear = generated.metadata, generated.stats, generated.tear_profile
-  if type(metadata) ~= "table" or type(stats) ~= "table" or type(tear) ~= "table" then
-    showStatus("AGENT: generated profile is invalid")
-    return false
-  end
-  if expectedRequestId and generated.bridge_request_id ~= expectedRequestId then
-    return false
-  end
   local tearFlags = 0
   for _, name in ipairs(tear.flags or {}) do
     tearFlags = tearFlags | flagFromName(name)
@@ -121,16 +145,18 @@ local function loadGeneratedProfile(expectedRequestId, slot)
     description = metadata.description or "",
     spriteSheet = generated.sprite_sheet or "gfx/items/collectibles/generated_item.png",
     tearColor = Color((tear.color or {}).r or 1, (tear.color or {}).g or 1, (tear.color or {}).b or 1, (tear.color or {}).a or 1, 0, 0, 0),
-    tearFlag = tearFlags, soundName = "LIVE PROFILE EMBER",
+    tearFlag = tearFlags, tearScale = tear.scale, soundName = "LIVE PROFILE EMBER",
     damage = stats.damage or 0, fireDelay = -(stats.tears or 0),
     range = stats.range or 0, luck = stats.luck or 0,
     shotSpeed = stats.shot_speed or 0, speed = stats.speed or 0,
     soulHearts = stats.soul_hearts or 0, rules = generated.rules or {}, ruleState = {},
   }
   profiles[4].soundId = Isaac.GetSoundIdByName(profiles[4].soundName)
+  nativePedestalImage, nativePedestalSourceQuad = nil, nil
+  nativePedestalSheet, nativePedestalLoadFailed = profiles[4].spriteSheet, false
   hudProfileIndex = nil
   selectProfile(4)
-  showStatus("AGENT: loaded " .. profiles[4].name)
+  showStatus("AGENT: accepted " .. profiles[4].name)
   return true
 end
 
@@ -188,13 +214,13 @@ end
 local function spawnCustomPedestal()
   if CUSTOM_ITEM_ID <= 0 then
     showStatus("AGENT: custom item ID missing; restart Isaac after installing v1.0")
-    return
+    return false
   end
 
   local player = Isaac.GetPlayer(0)
   if player == nil then
     showStatus("AGENT: no player; spawn skipped")
-    return
+    return false
   end
 
   local room = Game():GetRoom()
@@ -210,12 +236,13 @@ local function spawnCustomPedestal()
 
   if pickup == nil then
     showStatus("AGENT: custom pedestal creation failed")
-    return
+    return false
   end
 
   demoPickupStates[pickup.InitSeed] = { profileIndex = activeProfileIndex }
   queueSheetApply(pickup, activeProfileIndex, 10)
-  showStatus("AGENT: " .. getActiveProfile().name .. " pedestal ready; run agent ping")
+  showStatus("AGENT: " .. getActiveProfile().name .. " pedestal ready")
+  return true
 end
 
 local function switchAllDemoPedestals(profileIndex)
@@ -243,133 +270,47 @@ selectProfile = function(profileIndex)
   return true
 end
 
-local function updatePromptWindowStatus()
-  if promptWindowReady then
-    ImGui.UpdateText("nebius_item_status", bridgeStatus)
-    if bridgeSubmittedFrame then
-      local elapsed = math.floor((Isaac.GetTime() - bridgeSubmittedFrame) / 1000)
-      ImGui.UpdateText("nebius_item_elapsed", "Elapsed: " .. tostring(math.max(0, elapsed)) .. "s")
-    elseif bridgeFinishedTimerText then
-      ImGui.UpdateText("nebius_item_elapsed", bridgeFinishedTimerText)
-    else
-      ImGui.UpdateText("nebius_item_elapsed", "Elapsed: --")
-    end
-  end
-end
-
-local function submitPromptToBridge()
-  if bridgeJobId then return end
-  if #bridgePrompt > 2000 then
-    bridgeStatus = "Please shorten your prompt to 2000 characters."
-    updatePromptWindowStatus()
-    return
-  end
-  if not bridgePrompt or bridgePrompt:match("^%s*$") then
-    bridgeStatus = "Describe a passive item before generating."
-    updatePromptWindowStatus()
-    return
-  end
-  if not bridgeJson or not bridgeJson.encode or not bridgeJson.decode then
-    bridgeStatus = "JSON support is unavailable."
-    updatePromptWindowStatus()
-    return
-  end
-  bridgeRequestSequence = bridgeRequestSequence + 1
-  bridgeJobId = tostring(Random()) .. "_" .. tostring(bridgeRequestSequence)
-  bridgeSubmittedFrame = Isaac.GetTime()
-  bridgeFinishedTimerText = nil
-  bridgeLastObservedSnapshot = nil
-  bridgePollSlot = 0
-  bridgeStatus = "Stage 1/4: Prompt written to Isaac's log. Waiting for the local bridge..."
-  updatePromptWindowStatus()
-  -- Isaac's mod sandbox cannot load native networking modules. DebugString is
-  -- a supported game-to-local-process handoff; the bridge watches this line.
-  Isaac.DebugString("[NebiusBridge] generate " .. bridgeJson.encode({ id = bridgeJobId, prompt = bridgePrompt }))
-end
-
-local function openPromptWindow()
-  if not promptWindowReady then
-    -- A linked menu entry remains available if the debug console is covering
-    -- the window when the command is issued.
-    ImGui.CreateMenu("nebius_generator_menu", "Nebius")
-    ImGui.AddElement("nebius_generator_menu", "nebius_generator_menu_item", ImGuiElement.MenuItem, "Generate Passive Item")
-    ImGui.CreateWindow("nebius_item_prompt", "Nebius Passive Item Generator")
-    ImGui.LinkWindowToElement("nebius_item_prompt", "nebius_generator_menu_item")
-    ImGui.SetWindowPosition("nebius_item_prompt", 48, 460)
-    ImGui.SetWindowSize("nebius_item_prompt", 620, 390)
-    ImGui.AddText("nebius_item_prompt", "Describe one passive item. The bridge validates it before Isaac loads it.", true)
-    ImGui.AddInputTextMultiline("nebius_item_prompt", "nebius_item_text", "Item prompt", function(value)
-      bridgePrompt = value
-    end, "", 8)
-    ImGui.AddElement("nebius_item_prompt", "nebius_item_submit", ImGuiElement.Button, "Generate Item")
-    ImGui.AddCallback("nebius_item_submit", ImGuiCallback.Clicked, submitPromptToBridge)
-    ImGui.AddCallback("nebius_item_prompt", ImGuiCallback.Render, function() pollBridgeJob() end)
-    ImGui.AddText("nebius_item_prompt", "Bridge idle", true, "nebius_item_status")
-    ImGui.AddText("nebius_item_prompt", "Elapsed: --", true, "nebius_item_elapsed")
-    ImGui.AddText("nebius_item_prompt", "Progress: 1) log handoff  2) item profile  3) icon  4) load into Isaac", true)
-    ImGui.AddText("nebius_item_prompt", "If Stage 1 lasts more than 5 seconds, keep `npm run bridge` open. If a generation fails, its reason appears above; edit the prompt and try again.", true)
-    promptWindowReady = true
-  end
-  ImGui.SetVisible("nebius_item_prompt", true)
-end
-
-pollBridgeJob = function()
-  if not bridgeJobId or Isaac.GetTime() - bridgeLastPollFrame < 1000 then return end
-  bridgeLastPollFrame = Isaac.GetTime()
-  bridgePollSlot = bridgePollSlot + 1
-  updatePromptWindowStatus()
-  local job, readError = readBridgeModule("bridge_status", bridgeJobId, bridgePollSlot)
-  local ok = type(job) == "table" and job.id == bridgeJobId
-  if ok and job.stage ~= bridgeLastObservedSnapshot then
-    bridgeLastObservedSnapshot = job.stage
-    Isaac.DebugString("[NebiusBridge] observed job " .. bridgeJobId .. " stage " .. tostring(job.stage or job.status))
-  end
-  if not ok then
-    if Isaac.GetTime() - bridgeSubmittedFrame > 10000 then
-      bridgeStatus = "Waiting for bridge acknowledgement. The local bridge is still preparing a response."
-    end
-  elseif job.status == "generating" then
-    local stages = {
-      text = "Stage 2/4: Designing and validating item stats...",
-      repair = "Stage 2/4: Invalid model response; retrying once...",
-      image = "Stage 3/4: Generating item artwork...",
-      art = "Stage 3/4: Removing background and preparing 32x32 sprite...",
-      publish = "Stage 4/4: Publishing validated item and artwork...",
-    }
-    bridgeStatus = stages[job.stage] or "Bridge received your prompt. Starting generation..."
-  end
-  if Isaac.GetTime() - bridgeSubmittedFrame > 370000 then
-    local elapsed = math.floor((Isaac.GetTime() - bridgeSubmittedFrame) / 1000)
-    bridgeJobId = nil
-    bridgeSubmittedFrame = nil
-    bridgeFinishedTimerText = "Stopped after " .. tostring(math.max(0, elapsed)) .. "s"
-    bridgeStatus = "Timed out waiting for completion. Check the bridge terminal before retrying."
-    updatePromptWindowStatus()
-    return
-  end
-  if not ok then updatePromptWindowStatus(); return end
-  if job.status == "ready" then
-    local elapsed = math.floor((Isaac.GetTime() - bridgeSubmittedFrame) / 1000)
-    bridgeJobId = nil
-    bridgeSubmittedFrame = nil
-    bridgeFinishedTimerText = "Completed in " .. tostring(math.max(0, elapsed)) .. "s"
-    if loadGeneratedProfile(job.id, bridgePollSlot) then
-      spawnCustomPedestal()
-      bridgeStatus = "Loaded " .. getActiveProfile().name .. ". " .. (getActiveProfile().description or "")
-    else
-      bridgeStatus = "Generated, but Isaac could not load the profile."
-    end
-    updatePromptWindowStatus()
-  elseif job.status == "error" then
-    local elapsed = math.floor((Isaac.GetTime() - bridgeSubmittedFrame) / 1000)
-    bridgeJobId = nil
-    bridgeSubmittedFrame = nil
-    bridgeFinishedTimerText = "Stopped after " .. tostring(math.max(0, elapsed)) .. "s"
-    bridgeStatus = "Generation failed: " .. tostring(job.error or "unknown error")
-    updatePromptWindowStatus()
+local function pollNativeProfile(allowApply)
+  if type(NebiusBridge) ~= "table" or type(NebiusBridge.Poll) ~= "function" or type(NebiusBridge.Ack) ~= "function" or not bridgeJson then return end
+  local envelope = pendingProfileEnvelope
+  if envelope then
+    if not allowApply then return end
+    pendingProfileEnvelope = nil
   else
-    updatePromptWindowStatus()
+    if Isaac.GetTime() - lastPollTime < 33 then return end
+    lastPollTime = Isaac.GetTime()
+    local pollOk, raw = pcall(NebiusBridge.Poll)
+    if not pollOk then Isaac.DebugString("[Live Sprite Swap Demo] native Poll failed: " .. tostring(raw)); return end
+    if raw == nil then return end
+    local decodeOk, decoded = pcall(bridgeJson.decode, raw)
+    if not decodeOk or type(decoded) ~= "table" then showStatus("AGENT: rejected malformed native bridge data"); return end
+    envelope = decoded
   end
+  if envelope.type == "hello" then return end
+  if envelope.type == "status" then
+    if allowedKeys(envelope, { version = true, type = true, id = true, status = true, detail = true }) and envelope.version == 1 and text(envelope.id, 1, 100) and (envelope.status == "generating" or envelope.status == "error") and text(envelope.detail, 1, 500) then
+      promptUi:receive(envelope.id, envelope.status, envelope.detail)
+    end
+    return
+  end
+  if not allowedKeys(envelope, { version = true, type = true, id = true, profile = true }) or envelope.version ~= 1 or envelope.type ~= "profile" or not text(envelope.id, 1, 100) then showStatus("AGENT: rejected native IPC envelope"); return end
+  local valid, reason = validateProfile(envelope.profile, envelope.id)
+  if not valid then promptUi:receive(envelope.id, "error", "Profile rejected: " .. reason); showStatus("AGENT: rejected profile (" .. reason .. ")"); return end
+  if not allowApply then
+    pendingProfileEnvelope = envelope
+    promptUi:receive(envelope.id, "generating", "Profile ready. Close the generator to spawn its pedestal.")
+    return
+  end
+  if not applyGeneratedProfile(envelope.profile) or not spawnCustomPedestal() then
+    showStatus("AGENT: profile valid but could not be applied")
+    promptUi:receive(envelope.id, "error", "Profile could not be applied; see Isaac log.")
+    return
+  end
+  local ackOk, queued = pcall(NebiusBridge.Ack, envelope.id)
+  promptUi:receive(envelope.id, "accepted", "Accepted: " .. getActiveProfile().name .. ". " .. getActiveProfile().description)
+  if not ackOk or not queued then showStatus("AGENT: applied " .. getActiveProfile().name .. "; acknowledgement queue full"); return end
+  showStatus("PROFILE ACCEPTED: " .. getActiveProfile().name .. "; pedestal spawned; ACK queued")
+  Isaac.DebugString("[Live Sprite Swap Demo] PROFILE_ACCEPTED id=" .. envelope.id .. " name=" .. getActiveProfile().name)
 end
 
 function Demo.onExecuteCommand(_, command, parameters)
@@ -391,25 +332,13 @@ function Demo.onExecuteCommand(_, command, parameters)
     return message
   end
 
-  if action == "generated" then
-    if loadGeneratedProfile() then
-      return "AGENT: generated profile loaded"
-    end
-    return "AGENT: generated profile unavailable"
-  end
-
-  if action == "generate" then
-    openPromptWindow()
-    return "AGENT: item generator opened"
-  end
-
   local profileIndex = tonumber(number)
   if action == "switch" and profileIndex and selectProfile(profileIndex) then
     return "AGENT: " .. getActiveProfile().name .. " profile active"
   end
 
-  showStatus("AGENT: use generate, generated, ping, state, or switch 1|2|3")
-  return "AGENT: use generate, generated, ping, state, or switch 1|2|3"
+  showStatus("AGENT: use ping, state, or switch 1|2|3; native profiles arrive through IPC")
+  return "AGENT: use ping, state, or switch 1|2|3"
 end
 
 function Demo.onInputAction(_, entity, inputHook, buttonAction)
@@ -433,7 +362,8 @@ function Demo:onGameStarted(isContinued)
 end
 
 function Demo:onPostUpdate()
-  pollBridgeJob()
+  promptUi:updateInput()
+  pollNativeProfile(true)
 end
 
 function Demo:onPickupInit(pickup)
@@ -460,6 +390,10 @@ function Demo:onPickupUpdate(pickup)
   local sprite = pickup:GetSprite()
   sprite:ReplaceSpritesheet(1, profiles[state.profileIndex].spriteSheet)
   sprite:LoadGraphics()
+  local layerOk, layer = pcall(sprite.GetLayer, sprite, 1)
+  if layerOk and layer and type(layer.SetVisible) == "function" then
+    layer:SetVisible(not (state.profileIndex == 4 and nativePedestalImage ~= nil))
+  end
   data.appliedProfileIndex = state.profileIndex
 end
 
@@ -472,7 +406,7 @@ function Demo:onEvaluateCache(player, cacheFlag)
   if cacheFlag == CacheFlag.CACHE_DAMAGE then
     player.Damage = player.Damage + profile.damage
   elseif cacheFlag == CacheFlag.CACHE_FIREDELAY then
-    player.MaxFireDelay = player.MaxFireDelay + profile.fireDelay
+    player.MaxFireDelay = math.max(0.5, player.MaxFireDelay + profile.fireDelay)
   elseif cacheFlag == CacheFlag.CACHE_RANGE then
     player.TearRange = player.TearRange + profile.range
   elseif cacheFlag == CacheFlag.CACHE_LUCK then
@@ -496,6 +430,7 @@ function Demo:onPostFireTear(tear)
   local profile = getActiveProfile()
   tear:GetData().liveProfileIndex = activeProfileIndex
   tear.TearFlags = tear.TearFlags | profile.tearFlag
+  tear.Scale = tear.Scale * (profile.tearScale or 1)
 
   -- Retain Isaac's native animated tear sprite. Its Color property gives each
   -- profile a distinct single-tear appearance without breaking multi-frame
@@ -510,31 +445,34 @@ function Demo:onPostFireTear(tear)
   runProfileRules("tear_fire", player)
 end
 
-local function ruleMayRun(profile, rule)
+local function ruleMayRun(profile, rule, ruleIndex, player)
   local roomIndex = Game():GetLevel():GetCurrentRoomIndex()
   local floorIndex = Game():GetLevel():GetAbsoluteStage()
   profile.ruleState = profile.ruleState or {}
+  local prefix = tostring(player.InitSeed) .. ":" .. tostring(ruleIndex) .. ":" .. tostring(floorIndex) .. ":"
+  local pendingKeys = {}
   for _, condition in ipairs(rule.conditions or {}) do
     if condition.type == "chance" and math.random() > (condition.chance or 0) then
       return false
     elseif condition.type == "once_per_room" then
-      local key = "room:" .. tostring(roomIndex) .. ":" .. tostring(rule.trigger)
+      local key = prefix .. "room:" .. tostring(roomIndex)
       if profile.ruleState[key] then return false end
-      profile.ruleState[key] = true
+      pendingKeys[#pendingKeys + 1] = key
     elseif condition.type == "once_per_floor" then
-      local key = "floor:" .. tostring(floorIndex) .. ":" .. tostring(rule.trigger)
+      local key = prefix .. "floor"
       if profile.ruleState[key] then return false end
-      profile.ruleState[key] = true
+      pendingKeys[#pendingKeys + 1] = key
     end
   end
+  for _, key in ipairs(pendingKeys) do profile.ruleState[key] = true end
   return true
 end
 
 runProfileRules = function(triggerName, player)
   if not player or not playerHasDemoItem(player) then return end
   local profile = getActiveProfile()
-  for _, rule in ipairs(profile.rules or {}) do
-    if rule.trigger == triggerName and ruleMayRun(profile, rule) then
+  for ruleIndex, rule in ipairs(profile.rules or {}) do
+    if rule.trigger == triggerName and ruleMayRun(profile, rule, ruleIndex, player) then
       for _, action in ipairs(rule.actions or {}) do
         if action.type == "grant_soul_hearts" then
           player:AddSoulHearts(action.amount or 1)
@@ -583,15 +521,47 @@ end
 
 function Demo:onPostAddCollectible(collectibleType, _, _, _, _, player)
   if collectibleType == CUSTOM_ITEM_ID then
+    local profile = getActiveProfile()
+    if profile.soulHearts and profile.soulHearts > 0 then player:AddSoulHearts(profile.soulHearts) end
     runProfileRules("pickup", player)
   end
 end
 
 function Demo:onPostRender()
-  pollBridgeJob()
+  pollNativeProfile(false)
+  promptUi:render()
+  -- Native objects are created only from the fixed generated-art location and
+  -- only from a render callback. The normal Sprite path remains visible until
+  -- both objects have loaded, then serves as a fallback if native loading fails.
+  if nativePedestalSheet and not nativePedestalImage and not nativePedestalLoadFailed and Renderer and type(Renderer.LoadImage) == "function" and SourceQuad and type(SourceQuad.NewFromRectangle) == "function" then
+    local imageOk, image = pcall(Renderer.LoadImage, nativePedestalSheet)
+    local quadOk, source = pcall(SourceQuad.NewFromRectangle, Vector(0, 0), 32, 32, false)
+    if imageOk and image and quadOk and source then
+      nativePedestalImage, nativePedestalSourceQuad = image, source
+      Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_ART_READY path=" .. nativePedestalSheet)
+    else
+      nativePedestalLoadFailed = true
+      Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_ART_FALLBACK path=" .. nativePedestalSheet)
+    end
+  end
   if statusUntil >= Game():GetFrameCount() then
     Isaac.RenderText(statusText, 38, 38, 1, 0.85, 0.2, 1)
   end
+end
+
+function Demo:onPickupRender(pickup, _)
+  if not nativePedestalImage or not nativePedestalSourceQuad or pickup.SubType ~= CUSTOM_ITEM_ID then return end
+  local state = demoPickupStates[pickup.InitSeed]
+  if not state or state.profileIndex ~= 4 or not DestinationQuad or type(DestinationQuad.NewFromRectangle) ~= "function" then return end
+  -- Once native art is ready, suppress the anm2 art layer so this is a real
+  -- replacement, not an alpha-stacked overlay. Keep the pedestal layer intact.
+  local sprite = pickup:GetSprite()
+  local layerOk, layer = pcall(sprite.GetLayer, sprite, 1)
+  if layerOk and layer and type(layer.SetVisible) == "function" then layer:SetVisible(false) end
+  local position = Isaac.WorldToScreen(pickup.Position + pickup.PositionOffset) + Vector(-16, -16)
+  local destinationOk, destination = pcall(DestinationQuad.NewFromRectangle, position, 32, 32)
+  if not destinationOk or not destination then return end
+  pcall(function() nativePedestalImage:Render(nativePedestalSourceQuad, destination, KColor(1, 1, 1, 1)) end)
 end
 
 function Demo:onPostHudRender()
@@ -612,7 +582,7 @@ for _, profile in ipairs(profiles) do
   Isaac.DebugString("[Live Sprite Swap Demo] sound " .. profile.name .. " ID " .. tostring(profile.soundId))
 end
 
-Isaac.DebugString("[Live Sprite Swap Demo] v1.3.0 loaded; custom item ID " .. tostring(CUSTOM_ITEM_ID))
+Isaac.DebugString("[Live Sprite Swap Demo] v1.5.0 loaded; custom item ID " .. tostring(CUSTOM_ITEM_ID) .. " prompt=KEY_8")
 
 Demo:AddCallback(ModCallbacks.MC_EXECUTE_CMD, Demo.onExecuteCommand)
 Demo:AddCallback(ModCallbacks.MC_INPUT_ACTION, Demo.onInputAction)
@@ -628,4 +598,5 @@ Demo:AddCallback(ModCallbacks.MC_ENTITY_TAKE_DMG, Demo.onEntityTakeDamage)
 Demo:AddCallback(ModCallbacks.MC_POST_NEW_LEVEL, Demo.onPostNewLevel)
 Demo:AddCallback(ModCallbacks.MC_POST_ADD_COLLECTIBLE, Demo.onPostAddCollectible)
 Demo:AddCallback(ModCallbacks.MC_POST_RENDER, Demo.onPostRender)
+Demo:AddCallback(ModCallbacks.MC_POST_PICKUP_RENDER, Demo.onPickupRender)
 Demo:AddCallback(ModCallbacks.MC_POST_HUD_RENDER, Demo.onPostHudRender)

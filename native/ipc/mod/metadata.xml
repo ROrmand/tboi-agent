@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <name>Nebius IPC Stage 2A</name>
+  <directory>nebius_ipc_stage2a</directory>
+  <description>Opt-in Poll/Ack test for the Nebius REPENTOGON bridge binding.</description>
+  <version>0.1.0</version>
+  <visibility>Private</visibility>
+  <tag id="Lua" />
+</metadata>

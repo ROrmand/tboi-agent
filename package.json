@@ -7,8 +7,11 @@
     "bridge": "node bridge/server.mjs",
     "generate": "node bridge/generate.mjs",
     "validate": "node bridge/generate.mjs --dry-run --no-image",
-    "test": "node --test bridge/*.test.mjs native/stage1/*.test.mjs",
+    "test": "node --test bridge/*.test.mjs native/stage1/*.test.mjs native/ipc/*.test.mjs",
     "native:prepare": "node native/stage1/prepare.mjs",
+    "ipc:prepare": "node native/ipc/prepare.mjs",
+    "art:prepare": "node native/ipc/prepare-art-slots.mjs",
+    "ipc:generate": "node native/ipc/request-profile.mjs",
     "test:native": "node --test native/stage1/*.test.mjs",
     "native:verify": "node native/stage1/verify.mjs"
   },

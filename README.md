@@ -1,12 +1,12 @@
 # Nebius Isaac Item Generator
 
-## Native runtime spike
+## Native runtime
 
-The isolated Stage 1 probe and acceptance steps are in [native/README.md](native/README.md).
-It creates a live 32x32 procedural image through REPENTOGON's native renderer
-bindings. It does not replace the existing bridge, repair its inbound handoff,
-or modify installed engine DLLs. In-game verification is required before the
-native milestone is accepted.
+The current product path uses a bounded native IPC channel between the local
+Node bridge and REPENTOGON. The native binding exposes only
+`NebiusBridge.Poll()` and `NebiusBridge.Ack(id)` to Lua; pipe I/O happens on a
+background worker, so a game update never waits on it. The isolated Stage 1
+renderer notes remain in [native/README.md](native/README.md).
 
 ## Current scope
 
@@ -16,9 +16,9 @@ uses Nebius Token Factory to produce a validated item profile and its visual
 assets. The mod assigns the accepted result to a pre-allocated item slot,
 without requiring a game restart.
 
-The first release deliberately covers passives only. Active collectibles are
-the next scope once passive generation, validation, and hot-swapping are
-reliable.
+The current release deliberately covers passives only. A generated result is
+declarative data, never model-produced Lua, and is applied only by fixed,
+tested Lua handlers.
 
 ## Run the first slice
 
@@ -38,10 +38,15 @@ reliable.
    `COMFYUI_CHECKPOINT` in `.env`. The project defaults to this local backend;
    no image API key is required.
 
-4. In Isaac, with the demo mod installed, collect **Live Profile Core** and
-   enter `agent generate` in the in-game console. The native prompt window
-   sends the request to the local bridge through Isaac's log (the mod sandbox
-   cannot open network sockets) and automatically loads the completed item.
+4. Enable only the **Live Sprite Swap Demo** mod in Isaac, start a run, and
+   press top-row or keypad `8`. Enter a passive-item prompt in **Nebius Passive
+   Item Generator**, then select **Generate Item**. The prompt writes a fixed
+   JSON request to Isaac's log; the bridge delivers the validated result back
+   through native IPC and spawns **Live Profile Core** as a pedestal.
+
+   Before the first native-art run, execute `npm run art:prepare`, then restart
+   Isaac. This predeclares 64 texture filenames that Isaac can discover at
+   startup. Restart Isaac and the bridge together before reusing those slots.
 
 `npm run generate -- --prompt "..."` remains available as a terminal fallback.
 
@@ -96,21 +101,24 @@ an AI prompt.
    catalog.
 4. The bridge requests the pedestal image, resizes it to the fixed 32x32
    runtime template, and writes it with the generated profile.
-5. The Isaac mod hot-swaps the slot's texture and applies its validated stats
-   and rule profile.
+5. The bridge publishes the profile over `\\\\.\\pipe\\nebius_isaac_bridge_v1`.
+6. The Isaac mod validates it again, updates the Live Profile Core texture and
+   fixed behavior handlers, spawns a pedestal, and acknowledges only after
+   application succeeds.
 
 ## Architecture
 
-- **Isaac + REPENTOGON:** in-game overlay, pre-allocated item shells, and
-  fixed Lua callback mappings.
+- **Isaac + REPENTOGON:** in-game prompt, native IPC binding, pre-allocated
+  item shell, native visual presentation, and fixed Lua callback mappings.
 - **Local bridge (Node.js):** Token Factory client, schema validation,
   asset processing, slot allocation, and fallback handling.
 - **Nebius Token Factory:** structured item-profile generation.
 - **ComfyUI:** local source-art generation from the item visual prompt.
 
-The mod pre-registers generic `Dynamic_Item_1` through `Dynamic_Item_20`
-definitions at startup. During a run it only changes data and graphics within
-those slots, using `Sprite:ReplaceSpritesheet()` and `Sprite:LoadGraphics()`.
+The present vertical slice has one shared generated shell, **Live Profile
+Core**. A later multi-item release will pre-register a bounded pool of item
+shells and retain an independent accepted profile per shell; it will not create
+runtime item definitions or execute generated code.
 
 ## Safety and fallbacks
 
@@ -123,14 +131,38 @@ those slots, using `Sprite:ReplaceSpritesheet()` and `Sprite:LoadGraphics()`.
   no behavior rule.
 - Slot and transient state are cleared on run start and exit.
 
-## Roadmap
+## Roadmap: more passive items, effects, and parameters
 
-1. Test generated profiles in Isaac, including malformed payloads and asset
-   failures.
-2. Add custom tear sheets and generated audio after the passive core is stable.
-3. Test state cleanup and slot reuse.
-4. Expand the passive trigger catalog.
-5. Add active collectibles after the passive system is proven.
+The next phase is a versioned **capability catalog**, not unconstrained model
+freedom. Each new effect is added in four places: a schema entry, bridge-side
+validation and numeric bounds, a fixed Lua handler, and automated plus live
+game coverage. Unsupported fields are rejected rather than interpreted.
+
+1. **Multiple generated collectibles.** Replace the single shared shell with a
+   bounded pool of predeclared passive shells, profile ownership per shell,
+   stable artwork-slot allocation, and clear run/save lifecycle rules.
+2. **Broader stat and tear profile.** Add carefully bounded fields for familiar
+   passive stats (for example, flying, spectral tears, knockback, tear height,
+   projectile speed and scale) plus an explicit allowlist of additional
+   `TearFlags`. Every boolean flag remains a known catalog ID, not a raw game
+   constant supplied by the model.
+3. **Richer rule parameters.** Expand existing actions with bounds such as
+   chance, cooldown, duration, stack limit, pickup subtype, spawn count, and
+   per-room/per-floor/run scopes. Add a fixed effect ledger so overlapping
+   generated items compose predictably and clean up correctly.
+4. **Additional passive effect families.** Implement controlled families such
+   as familiar spawning, orbitals, enemy debuffs, temporary auras, projectile
+   modifiers, room-clear rewards, damage retaliation, and resource conversion.
+   Each family receives a small declarative contract and fixed callbacks.
+5. **Presentation and player control.** Improve art direction, add optional
+   approved sound/animation catalogs, show accepted profile details in-game,
+   make the `8` hotkey configurable, and expose clear generation/error status.
+6. **Reliability and balance.** Add fuzzed malformed-envelope tests, save and
+   continue behavior, slot exhaustion recovery, deterministic replay fixtures,
+   balance budgets, and compatibility checks for REPENTOGON upgrades.
+7. **Future scope decision.** Consider active collectibles only after the
+   multi-item passive catalog is stable. They require their own explicit input,
+   charge, targeting, and safety contracts rather than extending passive rules.
 
 ## Existing design references
 

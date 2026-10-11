@@ -4,7 +4,7 @@
   <directory>live_sprite_swap_demo</directory>
   <id>900001</id>
   <description>Console-loaded, schema-validated passive collectible profiles.</description>
-  <version>1.3.0</version>
+  <version>1.5.0</version>
   <visibility>Private</visibility>
   <tag id="Lua" />
   <tag id="Items" />

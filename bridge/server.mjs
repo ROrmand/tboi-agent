@@ -6,6 +6,7 @@ import { watchFile } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import {atomicWrite, toLua} from './runtime.mjs';
+import { NativePipeServer } from '../native/ipc/server.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
@@ -20,7 +21,13 @@ const isaacLog = env.ISAAC_LOG_FILE || path.join(
 );
 const jobs = new Map();
 let activeJob = null;
+let finishingJob = false;
+let nextArtSlot = 0;
 let statusWrites = Promise.resolve();
+const nativePipe = new NativePipeServer({ seedHello: true });
+const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY
+  ? path.resolve(root, env.NEBIUS_OUTPUT_DIRECTORY)
+  : path.join(root, 'runtime', 'generated');
 // Isaac caches failed include() calls. One fresh module name is consumed each
 // second, so this covers the bridge's 370-second in-game timeout with margin.
 const GAME_MODULE_SLOT_COUNT = 400;
@@ -72,11 +79,13 @@ const server = createServer(async (request, response) => {
 
 function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
   if(activeJob) throw Error('Another item is generating. Wait for it to finish.');
+  if (nextArtSlot >= 64) throw Error('All artwork slots used. Restart both Isaac and the bridge before generating again.');
   const job = { id, status: "generating", createdAt: new Date().toISOString() };
   activeJob = job;
   jobs.set(id, job);
+  publishStatus(id, 'generating', 'Bridge received the prompt. Designing the passive item...');
   if (writeGameStatus) writeGameBridgeStatus(job);
-  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--request-id", id], {
+  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--request-id", id, "--art-slot", String(nextArtSlot++)], {
     cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   let output = "";
@@ -87,6 +96,7 @@ function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
     const lines = pending.split('\n'); pending = lines.pop();
     for(const line of lines) if(line.startsWith('@stage ')) {
       job.stage = line.slice(7).trim();
+      publishStatus(id, 'generating', 'Generating passive item: ' + job.stage);
       if(writeGameStatus) writeGameBridgeStatus(job);
       console.log(`Job ${id}: ${job.stage}`);
     }
@@ -99,14 +109,42 @@ function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
   return job;
 }
 
-function finishJob(job, error, writeGameStatus) {
-  if (job.completedAt) return;
+async function finishJob(job, error, writeGameStatus) {
+  if (job.completedAt || finishingJob) return;
+  finishingJob = true;
+  if (!error) {
+    try {
+      await publishNativeProfile(job);
+    } catch (publishError) {
+      error = `Native profile publish failed: ${publishError.message}`;
+    }
+  }
   job.status = error ? "error" : "ready";
   if (error) job.error = error;
   job.completedAt = new Date().toISOString();
   activeJob = null;
+  finishingJob = false;
+  if (error) publishStatus(job.id, 'error', error.slice(0, 500));
   console.log(`Job ${job.id}: ${job.status}${error ? ' - ' + error : ''}`);
   if (writeGameStatus) writeGameBridgeStatus(job);
+}
+
+function publishStatus(id, status, detail) {
+  try { nativePipe.publish({ version: 1, type: 'status', id, status, detail }); }
+  catch (error) { console.warn('Native IPC status skipped: ' + error.message); }
+}
+
+async function publishNativeProfile(job) {
+  const file = path.join(outputDirectory, 'item-profile.json');
+  const profile = JSON.parse(await readFile(file, 'utf8'));
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) {
+    throw Error('generated profile is not an object');
+  }
+  if (profile.version !== 1 || profile.bridge_request_id !== job.id) {
+    throw Error('generated profile does not belong to this request');
+  }
+  nativePipe.publish({ version: 1, type: 'profile', id: job.id, profile });
+  console.log(`Native IPC profile published: ${job.id}`);
 }
 
 async function writeGameBridgeStatus(job) {
@@ -145,8 +183,8 @@ async function watchIsaacLog() {
           const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
           const id = typeof input.id === "string" ? input.id : "";
           if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && prompt && prompt.length <= 2000 && !jobs.has(id)) {
-            if(activeJob) await writeGameBridgeStatus({id,status:'error',error:'Another item is generating. Wait until it finishes.'});
-            else startJob(prompt, id, true);
+            if(activeJob) publishStatus(id, 'error', 'Another item is generating. Wait until it finishes.');
+            else startJob(prompt, id);
           }
         } catch { /* Ignore malformed log lines. */ }
       }
@@ -173,3 +211,11 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`Nebius Isaac bridge listening at http://127.0.0.1:${port}`);
   watchIsaacLog();
 });
+
+nativePipe.start().then(() => {
+  console.log('Native IPC pipe ready at \\.\\pipe\\nebius_isaac_bridge_v1');
+}).catch((error) => {
+  console.error(`Native IPC pipe could not start: ${error.message}`);
+});
+
+nativePipe.on('ack', (id) => console.log(`Native IPC acknowledgement: ${id}`));

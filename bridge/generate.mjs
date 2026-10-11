@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { atomicWrite, makeIcon, validateSchema, toLua } from './runtime.mjs';
 import { generateComfyImage } from "./comfyui.mjs";
+import { artSlotFor, artSlotName } from '../native/ipc/art-slots.mjs';
 
 const GAME_MODULE_SLOT_COUNT = 400;
 
@@ -21,6 +22,7 @@ const dryRun = args.includes("--dry-run");
 const noImage = args.includes("--no-image");
 const prompt = readOption("--prompt") || args.filter((value) => !value.startsWith("--")).join(" ");
 const requestId = readOption("--request-id");
+const requestedArtSlot = readOption("--art-slot");
 
 if (!prompt && !dryRun) {
   fail('Usage: npm run generate -- --prompt "A cursed nail that poisons enemies"');
@@ -138,7 +140,7 @@ try {
   const profile = dryRun ? fixture : await generateProfile(prompt);
   validateProfile(profile);
   await writeOutputs(profile, noImage);
-  console.log(`Generated ${profile.metadata.display_name}. Run agent generated in Isaac to load it.`);
+  console.log(`Generated ${profile.metadata.display_name}. The bridge delivers requested profiles through native IPC.`);
 } catch(error) { console.error(`Generation failed: ${error.message}`); process.exitCode = 1; }
 
 function progress(stage) { console.log('@stage ' + stage); }
@@ -204,9 +206,18 @@ async function writeOutputs(profile, skipImage) {
   await mkdir(outputDirectory, { recursive: true });
   await mkdir(path.join(modDirectory, "resources", "gfx", "items", "collectibles"), { recursive: true });
   const runtimeProfile = { version: capabilities.version, generated_at: new Date().toISOString(), ...(requestId ? { bridge_request_id: requestId } : {}), ...profile };
-  const assetName = `generated_item_${Date.now()}.png`;
+  // Isaac indexes mod resources at startup. Generation therefore replaces one
+  // of these predeclared slots instead of adding a new invisible filename.
+  const artSlot = requestedArtSlot === '' ? artSlotFor(requestId || `${Date.now()}-${prompt}`) : Number(requestedArtSlot);
+  if (!Number.isInteger(artSlot) || artSlot < 0 || artSlot >= 64) fail('Artwork slot must be an integer from 0 to 63.');
+  const assetName = artSlotName(artSlot);
   runtimeProfile.sprite_sheet = 'gfx/items/collectibles/' + assetName;
   const runtimeAsset = path.join(modDirectory, 'resources', runtimeProfile.sprite_sheet);
+  try { await readFile(runtimeAsset); }
+  catch (error) {
+    if (error.code === 'ENOENT') fail('Native artwork slots are missing. Run `npm run art:prepare`, then restart Isaac before generating.');
+    throw error;
+  }
   if (skipImage) {
     await copyFile(path.join(modDirectory, "resources", "gfx", "items", "collectibles", "ember_orb.png"), runtimeAsset);
   } else {
