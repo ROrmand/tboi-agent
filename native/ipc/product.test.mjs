@@ -17,25 +17,31 @@ const profile = {
 
 const mocks = `
 frame, now, held, owns, stage, roomIndex = 0, 0, false, false, 1, 1
-logs, events, entities, uiCallbacks = {}, {}, {}, {}
+logs, events, entities, uiCallbacks, familiarTears, projectiles = {}, {}, {}, {}, {}, {}
 function Random() return 123 end
 function Color(...) return {...} end
 function KColor(...) return {...} end
 local vectorMeta = { __add = function(left, right) return Vector(left.X + right.X, left.Y + right.Y) end }
 Vector = setmetatable({ Zero = { X = 0, Y = 0 } }, { __call = function(_, horizontal, vertical) return setmetatable({ X = horizontal, Y = vertical }, vectorMeta) end })
-TearFlags = setmetatable({}, { __index = function() return 1 end })
+TearFlags = setmetatable({ TEAR_SLOW=2, TEAR_CHARM=4, TEAR_HOMING=8, TEAR_SPECTRAL=16, TEAR_BURN=64, TEAR_PIERCING=128, TEAR_GLOW=256, TEAR_FEAR=512, TEAR_BOUNCE=1024, TEAR_SPLIT=2048 }, { __index = function() return 1 end })
 CacheFlag = { CACHE_DAMAGE=1, CACHE_FIREDELAY=2, CACHE_RANGE=4, CACHE_LUCK=8, CACHE_SHOTSPEED=16, CACHE_SPEED=32 }
 ModCallbacks = setmetatable({}, { __index = function(_, key) return key end })
 Keyboard = { KEY_8=8, KEY_KP_8=108, KEY_BACKSLASH=92 }
 Input = { IsButtonPressed = function() return held end }
-EntityType = { ENTITY_PICKUP=5 }
+EntityType = { ENTITY_TEAR=2, ENTITY_PICKUP=5, ENTITY_FAMILIAR=3, ENTITY_PROJECTILE=9 }
 PickupVariant = { PICKUP_COLLECTIBLE=100, PICKUP_COIN=20, PICKUP_KEY=30, PICKUP_BOMB=40, PICKUP_HEART=10 }
+FamiliarVariant = { PUNCHING_BAG=67 }
+TearVariant = { BLUE=0 }
+EntityPartition = { ENEMY=1 }
+function EntityRef() return {} end
 function RegisterMod() return { AddCallback = function() end,
  SaveData=function(_,value) savedData=value end, HasData=function() return savedData~=nil end,
  LoadData=function() return savedData end } end
-function Sprite() return { Load=function() end, ReplaceSpritesheet=function() end, LoadGraphics=function() end, Play=function() end, RenderLayer=function() end } end
+spritesheetReplacements, pedestalLayerVisible = 0, true
+function Sprite() return { Load=function() end, ReplaceSpritesheet=function() spritesheetReplacements=spritesheetReplacements+1 end, LoadGraphics=function() end, Play=function() end, RenderLayer=function() end,
+ GetLayer=function() return { SetVisible=function(_, visible) pedestalLayerVisible=visible end } end } end
 function SFXManager() return { Play=function() end } end
-player = { InitSeed=11, Position=Vector(0,0), Damage=3.5, MaxFireDelay=10, TearRange=100, Luck=0, ShotSpeed=1, MoveSpeed=1, hearts=0,
+player = { InitSeed=11, Position=Vector(0,0), Damage=3.5, MaxFireDelay=10, TearRange=100, Luck=0, ShotSpeed=1, MoveSpeed=1, hearts=0, ToPlayer=function(self) return self end,
  HasCollectible=function() return owns end, AddCacheFlags=function() end, EvaluateItems=function() end,
  AddSoulHearts=function(self, amount) self.hearts=self.hearts+amount end }
 function Game() return { GetFrameCount=function() return frame end, GetNumPlayers=function() return 1 end,
@@ -43,8 +49,21 @@ function Game() return { GetFrameCount=function() return frame end, GetNumPlayer
  GetLevel=function() return { GetCurrentRoomIndex=function() return roomIndex end, GetAbsoluteStage=function() return stage end } end } end
 Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) return 733+tonumber(name:match("(%d+)$")) end,
  GetSoundIdByName=function() return 1 end, GetTime=function() return now+frame*34 end, GetPlayer=function() return player end,
- FindByType=function() return entities end, WorldToScreen=function(position) return position end, RenderText=function() end,
- Spawn=function(_, variant, subtype, position)
+ FindByType=function(entityType) if entityType==EntityType.ENTITY_PROJECTILE then return projectiles end return entities end, WorldToScreen=function(position) return position end, RenderText=function() end,
+ Spawn=function(entityType, variant, subtype, position, velocity)
+  if entityType==EntityType.ENTITY_FAMILIAR then
+   local data={}; local familiar={Position=position,PositionOffset=Vector(0,0),Visible=true,GetData=function() return data end,Exists=function() return true end}
+   function familiar:ToFamiliar() return self end
+   spawnedFamiliar=familiar
+   return familiar
+  end
+  if entityType==EntityType.ENTITY_TEAR then
+   local data={}; local tear={Position=position,Velocity=velocity or Vector(0,0),TearFlags=0,Scale=1,GetData=function() return data end}
+   function tear:ToTear() return self end
+   familiarTears[#familiarTears+1]=tear
+   spawnedFamiliarTear=tear
+   return tear
+  end
   events[#events+1]='spawn:'..tostring(variant)
   if failSpawn then return { ToPickup=function() return nil end } end
   local data = {}
@@ -52,7 +71,8 @@ Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByNa
   function pickup:ToPickup() return self end
   entities[#entities+1]=pickup
   return pickup
- end }
+ end,
+ FindInRadius=function() return enemies or {} end }
 encodedValues={}
 function deepCopy(value)
  if type(value)~='table' then return value end
@@ -84,7 +104,7 @@ ImGui = { CreateWindow=function() windows=windows+1 end, AddText=function() end,
  UpdateText=function(_, value) uiStatus=value end }
 Renderer = { LoadImage=function() return { Render=function() events[#events+1]='render' end } end }
 SourceQuad = { NewFromRectangle=function() return {} end }
-DestinationQuad = { NewFromRectangle=function() return {} end }
+DestinationQuad = { NewFromRectangle=function(position, width, height) lastDestination={x=position.X,y=position.Y,width=width,height=height}; return {} end }
 `;
 
 async function run(body, customProfile = profile) {
@@ -122,7 +142,7 @@ test('Randomize fills the prompt and leaves the user in control of generation', 
     assert(uiCallbacks.randomize~=nil)
     uiCallbacks.randomize()
     Demo:onPostRender()
-    assert(lastRequest==nil and uiInputDataType==1 and #uiInputValue>20 and uiStatus=='Random passive idea ready. Edit it or generate it.')
+    assert(lastRequest==nil and uiInputDataType==1 and uiInputValue=='When I reach a new floor, I sometimes find a heart. Tears burn. Take a speed hit for more damage.' and uiStatus=='Random passive idea ready. Edit it or generate it.')
     uiCallbacks.submit()
     assert(lastRequest and #lastRequest.prompt>20 and not uiVisible)
   `);
@@ -133,6 +153,8 @@ test('accepted native profile spawns before ACK, renders art, and applies passiv
     nextRaw='profile'; Demo:onPostUpdate()
     assert(events[1]=='spawn:100' and events[2]=='ack:123_0_1_123_1')
     Demo:onPostRender(); Demo:onPickupRender(entities[1]); assert(events[3]=='render')
+    assert(spritesheetReplacements==0 and pedestalLayerVisible==false)
+    assert(lastDestination.x==64 and lastDestination.y==-48 and lastDestination.width==32 and lastDestination.height==32)
     owns=true
     Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4.5)
     Demo:onEvaluateCache(player,CacheFlag.CACHE_FIREDELAY); assert(player.MaxFireDelay==9)
@@ -153,6 +175,124 @@ test('invalid profile and failed pedestal creation never ACK', async () => {
   await run(`envelope.profile.metadata.description=string.rep('x',65); nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`);
   await run(`failSpawn=true; nextRaw='profile'; Demo:onPostUpdate(); assert(#events==1 and events[1]=='spawn:100')`);
   await run(`envelope.profile.rules={extra='unsupported'}; nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`);
+});
+
+function familiarAttack(pattern, flags = ['poison']) {
+  return { pattern, flags, color: { r: 0.2, g: 0.9, b: 0.3, a: 1 }, scale: 1.2, speed: 8 };
+}
+
+test('sentry fires the item attack profile while aura stays separate', async () => {
+  const fixture = structuredClone(profile);
+  fixture.familiar = { type: 'sentry', damage: 1.5, cooldown: 30, range: 160, sprite_prompt: 'small red eye', attack: familiarAttack('single', ['homing', 'glow']) };
+  fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
+  fixture.aura = { type: 'damage', damage: 0.5, radius: 80, cooldown: 30 };
+  await run(`
+    local enemy={Position=Vector(80,0),damage=0,TakeDamage=function(self,amount) self.damage=self.damage+amount end}
+    enemies={enemy}; nextRaw='profile'; Demo:onPostUpdate(); owns=true; frame=30; Demo:onPostUpdate()
+    local angle=(30%360)*math.pi/180+1
+    assert(math.abs(spawnedFamiliar.Position.X-math.cos(angle)*28)<0.001)
+    assert(spawnedFamiliar.Visible==false)
+    local tear=spawnedFamiliarTear
+    local speed=math.sqrt(tear.Velocity.X*tear.Velocity.X+tear.Velocity.Y*tear.Velocity.Y)
+    assert(tear:GetData().familiarPattern=='single' and tear.CollisionDamage==1.5 and tear.Scale==1.2)
+    assert(tear.TearFlags==(8|256) and tear.Color[1]==0.2 and tear.Color[2]==0.9 and math.abs(speed-8)<0.001)
+    assert(enemy.damage==0.5 and #familiarTears==1)
+  `, fixture);
+});
+
+test('familiar attack pattern changes delivery without changing the item flags', async () => {
+  const fixture = structuredClone(profile);
+  fixture.familiar = { type: 'normal', damage: 1.5, cooldown: 30, range: 160, sprite_prompt: 'tiny prism wisp', attack: familiarAttack('fan', ['poison']) };
+  fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
+  await run(`
+    local enemy={Position=Vector(40,0)}
+    enemies={enemy}; nextRaw='profile'; Demo:onPostUpdate(); owns=true; frame=30; Demo:onPostUpdate()
+    assert(#familiarTears==3 and familiarTears[1]:GetData().familiarPattern=='fan')
+    assert(math.abs(familiarTears[2].CollisionDamage-1.5*0.7)<0.001 and familiarTears[3].TearFlags==1)
+    assert(spawnedFamiliar.Position.X==0 and spawnedFamiliar.Position.Y==20)
+  `, fixture);
+  fixture.familiar.attack = familiarAttack('lob', ['burn']);
+  await run(`
+    enemies={{Position=Vector(40,0)}}; nextRaw='profile'; Demo:onPostUpdate(); owns=true; frame=30; Demo:onPostUpdate()
+    local tear=spawnedFamiliarTear
+    assert(tear:GetData().familiarPattern=='lob' and math.abs(tear.CollisionDamage-1.5*1.25)<0.001)
+    assert(tear.FallingAcceleration==0.8 and tear.TearFlags==64 and tear.Color[2]==0.9)
+  `, fixture);
+  fixture.familiar.attack = familiarAttack('varied', ['poison']);
+  await run(`
+    math.random=function() return 4 end
+    enemies={{Position=Vector(40,0)}}; nextRaw='profile'; Demo:onPostUpdate(); owns=true; frame=30; Demo:onPostUpdate()
+    local tear=spawnedFamiliarTear
+    assert(tear:GetData().familiarPattern=='lob' and tear.TearFlags==1 and tear.Color[1]==0.2)
+    assert(math.abs(tear.CollisionDamage-1.5*1.25)<0.001)
+  `, fixture);
+});
+
+test('melee familiars strike nearby enemies and do not fire tears', async () => {
+  const fixture = structuredClone(profile);
+  fixture.familiar = { type: 'melee', damage: 1.5, cooldown: 30, range: 160, sprite_prompt: 'small knife imp' };
+  fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
+  await run(`
+    local enemy={Position=Vector(16,0),damage=0,TakeDamage=function(self,amount) self.damage=self.damage+amount end}
+    enemies={enemy}; nextRaw='profile'; Demo:onPostUpdate(); owns=true; frame=30; Demo:onPostUpdate()
+    assert(enemy.damage==1.5 and spawnedFamiliarTear==nil)
+    enemy.Position=Vector(80,0); enemy.damage=0; frame=60; Demo:onPostUpdate()
+    assert(enemy.damage==0 and spawnedFamiliarTear==nil)
+  `, fixture);
+});
+
+test('shield familiars block a hit, intercept touching shots, and deal contact damage', async () => {
+  const fixture = structuredClone(profile);
+  fixture.familiar = { type: 'shield', damage: 1.5, cooldown: 30, range: 160, sprite_prompt: 'small round shield' };
+  fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
+  await run(`
+    local enemy={Position=Vector(36,0),damage=0,TakeDamage=function(self,amount) self.damage=self.damage+amount end}
+    local function shot(x)
+      return {Position=Vector(x,0), Type=EntityType.ENTITY_PROJECTILE, removed=false, Remove=function(self) self.removed=true end}
+    end
+    local near, far = shot(20), shot(120)
+    enemies={enemy}; projectiles={near, far}
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true; frame=30; Demo:onPostUpdate()
+    assert(math.abs(spawnedFamiliar.Position.X-20)<0.001 and spawnedFamiliar.Position.Y==0)
+    assert(enemy.damage==1.5 and spawnedFamiliarTear==nil)
+    assert(near.removed and not far.removed)
+    assert(Demo:onEntityTakeDamage(player,1,0,nil)==false)
+    assert(Demo:onEntityTakeDamage(player,1,0,nil)==nil)
+    frame=60; assert(Demo:onEntityTakeDamage(player,1,0,nil)==false)
+  `, fixture);
+});
+
+test('familiar profiles are accepted and advertise the loaded runtime contract', async () => {
+  const fixture = structuredClone(profile);
+  fixture.familiar = { type: 'sentry', damage: 1, cooldown: 45, range: 160, sprite_prompt: 'thundercloud in a bottle', attack: familiarAttack('single', []) };
+  fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate()
+    assert(events[1]=='spawn:100' and events[2]=='ack:123_0_1_123_1')
+    local state=encodedValues[#encodedValues]
+    assert(state.runtime_contract==6 and state.count==1)
+  `, fixture);
+});
+
+test('familiar and aura parameters are rejected before a pedestal or ACK', async () => {
+  const fixture = structuredClone(profile);
+  fixture.familiar = { type: 'sentry', damage: 4, cooldown: 30, range: 160, sprite_prompt: 'eye' };
+  fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
+  await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`, fixture);
+  fixture.familiar.damage = 1;
+  fixture.familiar.type = 'orbital';
+  await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`, fixture);
+  fixture.familiar.type = 'sentry';
+  fixture.familiar.attack = familiarAttack('comet');
+  await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`, fixture);
+  fixture.familiar.attack = familiarAttack('single');
+  fixture.familiar.type = 'melee';
+  await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`, fixture);
+  fixture.familiar = { type: 'sentry', damage: 1, cooldown: 30, range: 160, sprite_prompt: 'eye' };
+  await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`, fixture);
+  fixture.familiar.attack = familiarAttack('single');
+  fixture.aura = { type: 'damage', damage: 1, radius: 999, cooldown: 30 };
+  await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`, fixture);
 });
 
 test('IPC status matches pending ID; error clears submission lock and permits retry', async () => {

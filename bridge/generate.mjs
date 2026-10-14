@@ -4,7 +4,8 @@ import process from "node:process";
 import { atomicWrite, makeIcon, validateSchema, toLua } from './runtime.mjs';
 import { assertComfyUiReady, generateComfyImage } from "./comfyui.mjs";
 import { requestTextModel } from "./network.mjs";
-import { artSlotName } from '../native/ipc/art-slots.mjs';
+import { artSlotName, familiarArtSlotName } from '../native/ipc/art-slots.mjs';
+import { applyRegion } from './prompt-features.mjs';
 
 const GAME_MODULE_SLOT_COUNT = 400;
 
@@ -35,8 +36,9 @@ if (!dryRun && requestedArtSlot === '') {
 const ITEM_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["metadata", "stats", "tear_profile", "visuals", "rules"],
+  required: ["region", "metadata", "stats", "tear_profile", "visuals", "rules"],
   properties: {
+    region: { type: "string", enum: capabilities.regions },
     metadata: {
       type: "object",
       additionalProperties: false,
@@ -89,6 +91,51 @@ const ITEM_SCHEMA = {
       required: ["pedestal_prompt"],
       properties: { pedestal_prompt: { type: "string", minLength: 1, maxLength: 500 } },
     },
+    familiar: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "damage", "cooldown", "range", "sprite_prompt"],
+      properties: {
+        type: { type: "string", enum: capabilities.familiars },
+        damage: { type: "number", minimum: 0.5, maximum: 3 },
+        cooldown: { type: "integer", minimum: 15, maximum: 90 },
+        range: { type: "number", minimum: 80, maximum: 320 },
+        sprite_prompt: { type: "string", minLength: 1, maxLength: 500 },
+        attack: {
+          type: "object",
+          additionalProperties: false,
+          required: ["pattern", "flags", "color", "scale", "speed"],
+          properties: {
+            pattern: { type: "string", enum: capabilities.familiar_patterns },
+            flags: { type: "array", maxItems: 3, items: { type: "string", enum: capabilities.tear_flags } },
+            color: {
+              type: "object",
+              additionalProperties: false,
+              required: ["r", "g", "b", "a"],
+              properties: {
+                r: { type: "number", minimum: 0, maximum: 1 },
+                g: { type: "number", minimum: 0, maximum: 1 },
+                b: { type: "number", minimum: 0, maximum: 1 },
+                a: { type: "number", minimum: 0, maximum: 1 },
+              },
+            },
+            scale: { type: "number", minimum: 0.5, maximum: 2 },
+            speed: { type: "number", minimum: 4, maximum: 12 },
+          },
+        },
+      },
+    },
+    aura: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "damage", "radius", "cooldown"],
+      properties: {
+        type: { type: "string", enum: capabilities.auras },
+        damage: { type: "number", minimum: 0.25, maximum: 2 },
+        radius: { type: "number", minimum: 50, maximum: 180 },
+        cooldown: { type: "integer", minimum: 15, maximum: 90 },
+      },
+    },
     rules: {
       type: "array",
       maxItems: 2,
@@ -133,6 +180,7 @@ const ITEM_SCHEMA = {
 };
 
 const fixture = {
+  region: "passive",
   metadata: { display_name: "Ashen Nail", description: "Poisons from beyond", quality: 2, theme: "cursed", balance_note: "" },
   stats: { damage: 0.4, tears: 0, shot_speed: 0, range: 0, speed: 0, luck: 0, soul_hearts: 0 },
   tear_profile: { flags: ["poison"], color: { r: 0.3, g: 0.75, b: 0.35, a: 1 }, scale: 1 },
@@ -210,6 +258,7 @@ function parseModelJson(content) {
 }
 
 async function writeOutputs(profile, skipImage) {
+  delete profile.region;
   await mkdir(outputDirectory, { recursive: true });
   await mkdir(path.join(modDirectory, "resources", "gfx", "items", "collectibles"), { recursive: true });
   const runtimeProfile = { version: capabilities.version, generated_at: new Date().toISOString(), ...(requestId ? { bridge_request_id: requestId } : {}), ...profile };
@@ -231,6 +280,20 @@ async function writeOutputs(profile, skipImage) {
     const source = await generateItemArtwork(profile);
     progress('art');
     await writeFile(runtimeAsset, await makeIcon(source));
+  }
+  if (profile.familiar) {
+    const familiarAsset = path.join(modDirectory, 'resources', 'gfx', 'items', 'collectibles', familiarArtSlotName(artSlot));
+    try { await readFile(familiarAsset); }
+    catch (error) {
+      if (error.code === 'ENOENT') fail('Native familiar artwork slots are missing. Run `npm run art:prepare`, then restart Isaac before generating.');
+      throw error;
+    }
+    runtimeProfile.familiar_sprite_sheet = 'gfx/items/collectibles/' + familiarArtSlotName(artSlot);
+    if (skipImage) await copyFile(path.join(modDirectory, 'resources', 'gfx', 'items', 'collectibles', 'ember_orb.png'), familiarAsset);
+    else {
+      progress('familiar_art');
+      await writeFile(familiarAsset, await makeIcon(await generateFamiliarArtwork(profile)));
+    }
   }
   progress('publish');
   await atomicWrite(path.join(outputDirectory, 'item-profile.json'), JSON.stringify(runtimeProfile,null,2));
@@ -274,6 +337,20 @@ async function generateItemArtwork(profile) {
   return Buffer.from(payload.data[0].b64_json, "base64");
 }
 
+async function generateFamiliarArtwork(profile) {
+  const prompt = `One tiny full-body pixel art character familiar: ${profile.familiar.sprite_prompt}. A readable miniature companion character with a head, body, and pose, centered and isolated, bold dark outline, limited palette, pure solid white background, no shadow, no text, no frame, no pedestal.`;
+  const negative = "text, letters, words, UI, border, frame, scenery, room, multiple characters, photorealistic, item icon, pedestal";
+  const backend = (env.IMAGE_BACKEND || "comfyui").toLowerCase();
+  if (backend === "comfyui") return generateComfyImage({ baseUrl: env.COMFYUI_URL || "http://127.0.0.1:8188", checkpoint: env.COMFYUI_CHECKPOINT, prompt, negative, onStage: progress });
+  if (backend !== "nebius") fail(`Unsupported IMAGE_BACKEND: ${backend}. Use comfyui, nebius, or --no-image.`);
+  progress('image');
+  const response = await fetch(`${env.NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1/"}images/generations`, { signal: AbortSignal.timeout(120000), method: "POST", headers: { Authorization: `Bearer ${env.NEBIUS_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: env.NEBIUS_IMAGE_MODEL, prompt, response_format: "b64_json", response_extension: "png", width: 512, height: 512, num_inference_steps: 4 }) });
+  if (!response.ok) fail(`Token Factory image request failed (${response.status}): ${await response.text()}`);
+  const payload = await response.json();
+  if (!payload.data?.[0]?.b64_json) fail("Token Factory returned no familiar image data.");
+  return Buffer.from(payload.data[0].b64_json, "base64");
+}
+
 async function preflightImageBackend() {
   if (dryRun || noImage) return;
   const backend = (env.IMAGE_BACKEND || "comfyui").toLowerCase();
@@ -283,8 +360,12 @@ async function preflightImageBackend() {
 }
 
 function validateProfile(profile) {
-  validateSchema(profile, ITEM_SCHEMA);
   if (!profile || typeof profile !== "object") fail("Profile must be an object.");
+  applyRegion(profile);
+  validateSchema(profile, ITEM_SCHEMA);
+  if (!capabilities.regions.includes(profile.region)) fail("region must be passive, familiar, aura, or familiar_aura.");
+  if ((profile.region === "familiar" || profile.region === "familiar_aura") && !profile.familiar) fail("A familiar region requires a familiar.");
+  if ((profile.region === "aura" || profile.region === "familiar_aura") && !profile.aura) fail("An aura region requires an aura.");
   assertText(profile.metadata?.display_name, "metadata.display_name", 32);
   assertText(profile.metadata?.description, "metadata.description", 64);
   assertText(profile.metadata?.balance_note, "metadata.balance_note", 256, true);
@@ -295,6 +376,24 @@ function validateProfile(profile) {
   for (const channel of ["r", "g", "b", "a"]) assertNumber(tear?.color?.[channel], `tear_profile.color.${channel}`, 0, 1);
   assertNumber(tear?.scale, "tear_profile.scale", 0.5, 2);
   assertText(profile.visuals?.pedestal_prompt, "visuals.pedestal_prompt", 500);
+  if (profile.familiar) {
+    const familiar = profile.familiar;
+    if (!capabilities.familiars.includes(familiar.type)) fail("familiar.type is not allowed.");
+    assertNumber(familiar.damage, "familiar.damage", 0.5, 3);
+    if (!Number.isInteger(familiar.cooldown) || familiar.cooldown < 15 || familiar.cooldown > 90) fail("familiar.cooldown must be an integer from 15–90.");
+    assertNumber(familiar.range, "familiar.range", 80, 320);
+    assertText(familiar.sprite_prompt, "familiar.sprite_prompt", 500);
+    const ranged = familiar.type === "sentry" || familiar.type === "normal";
+    if (ranged) validateFamiliarAttack(familiar.attack);
+    else if (familiar.attack) fail("Melee and shield familiars cannot include an attack.");
+  }
+  if (profile.aura) {
+    const aura = profile.aura;
+    if (!capabilities.auras.includes(aura.type)) fail("aura.type is not allowed.");
+    assertNumber(aura.damage, "aura.damage", 0.25, 2);
+    assertNumber(aura.radius, "aura.radius", 50, 180);
+    if (!Number.isInteger(aura.cooldown) || aura.cooldown < 15 || aura.cooldown > 90) fail("aura.cooldown must be an integer from 15–90.");
+  }
   if (!Array.isArray(profile.rules) || profile.rules.length > 2) fail("rules must contain at most two rules.");
   for (const rule of profile.rules) {
     if (!capabilities.triggers.includes(rule.trigger)) fail(`Unsupported trigger: ${rule.trigger}`);
@@ -311,8 +410,22 @@ function validateProfile(profile) {
   }
 }
 
+function validateFamiliarAttack(attack) {
+  if (!attack || typeof attack !== "object") fail("Sentry and normal familiars require an attack profile.");
+  if (!capabilities.familiar_patterns.includes(attack.pattern)) fail("familiar.attack.pattern is not allowed.");
+  if (!Array.isArray(attack.flags) || attack.flags.length > 3) fail("familiar.attack.flags is not allowed.");
+  const seen = new Set();
+  for (const flag of attack.flags) {
+    if (!capabilities.tear_flags.includes(flag) || seen.has(flag)) fail("familiar.attack.flags is not allowed.");
+    seen.add(flag);
+  }
+  for (const channel of ["r", "g", "b", "a"]) assertNumber(attack.color?.[channel], `familiar.attack.color.${channel}`, 0, 1);
+  assertNumber(attack.scale, "familiar.attack.scale", 0.5, 2);
+  assertNumber(attack.speed, "familiar.attack.speed", 4, 12);
+}
+
 function systemPrompt() {
-  return `Create one conservative Binding of Isaac passive item. Return only the supplied JSON schema. This first slice supports only passive stats, native tinted tears, and the listed declarative rules. Never output Lua, active-item behavior, custom callbacks, extra keys, or any state key. A missing mechanic is not an invitation to invent it. Stats omitted by the player should be 0.\nAllowed triggers: ${capabilities.triggers.join(", ")}.\nAllowed conditions: ${capabilities.conditions.join(", ")}.\nAllowed actions: ${capabilities.actions.join(", ")}.\nPedestal prompt: one centered object, transparent/plain background, no text, no character.`;
+  return `Create one conservative Binding of Isaac passive item. Return only the supplied JSON schema. Never output Lua, active-item behavior, custom callbacks, extra keys, or any state key. First choose region from the meaning of the wish, then fill only that region's blocks. passive: the wish is Isaac's own stats, tears, or a room, hurt, hit, or floor reward. familiar: the wish needs a separate actor that follows, orbits, shoots, strikes, or protects Isaac. aura: the wish is a damage field around Isaac rather than a shot or a proc. familiar_aura: the wish needs both a separate actor and a field around Isaac. Do not add a region to make the item more interesting. "Add luck. Tears glow. When I clear a room, grant me a soul heart." is passive. "Give me a friend that shoots explosive bombs." is familiar. "Enemies who stand near me get hurt." is aura. Familiar shots can use only the allowed tear flags. If the wish asks for a shot outside that list, choose the closest allowed flags and say so in metadata.balance_note. Familiar type is sentry (orbits and fires), normal (follows behind Isaac and fires), melee (contact strike, no attack), or shield (stands between Isaac and the nearest threat, blocks shots that touch it, cancels one hit per cooldown, deals contact damage, no attack). Sentry and normal require familiar.attack. Melee and shield must omit attack. attack.pattern is single, fan, lob, or varied. attack.flags holds up to three allowed tear flags and is the shot's only effect list. varied rerolls delivery and size using those same flags. attack.color, scale, and speed describe the shot. familiar.damage is one single shot; fan shots are 0.7x and lob shots are 1.25x. cooldown is frames between attacks. sprite_prompt must describe one tiny full-body companion character, not an object, icon, item, or pedestal. Omit familiar unless region is familiar or familiar_aura. Omit aura unless region is aura or familiar_aura. Stats omitted by the player should be 0.\nAllowed regions: ${capabilities.regions.join(", ")}.\nAllowed triggers: ${capabilities.triggers.join(", ")}.\nAllowed conditions: ${capabilities.conditions.join(", ")}.\nAllowed actions: ${capabilities.actions.join(", ")}.\nAllowed familiars: ${capabilities.familiars.join(", ")}. Allowed familiar patterns: ${capabilities.familiar_patterns.join(", ")}. Allowed auras: ${capabilities.auras.join(", ")}.\nPedestal prompt: one centered object, transparent/plain background, no text.`;
 }
 
 function readOption(name) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; }

@@ -1,4 +1,4 @@
-# Passive Item Runtime — v1.6.1
+# Passive Item Runtime — v1.9.0
 
 The product mod remains **Live Sprite Swap Demo** in `mods/live_sprite_swap_demo`.
 It now registers 64 independent passive shells, Generated Passive 00–63.
@@ -21,7 +21,15 @@ The existing paired REPENTOGON DLLs require no changes.
 
 ## Persistence and limits
 
-- Up to 64 generated item identities per run and 64 artwork filenames.
+- Up to 64 generated item identities per run and paired pedestal/familiar
+  artwork filenames. Familiar art is generated only for profiles that request
+  a sentry, melee, normal, or shield familiar and is rendered as an 8x8 companion.
+  A shield stands between Isaac and the nearest threat, blocks shots that
+  touch it, cancels one hit per cooldown, and deals contact damage.
+  Sentry and normal familiars fire the attack profile on that item: delivery,
+  flags, color, scale, and speed. `varied` rerolls delivery using those flags.
+  Pedestal art floats above
+  the pedestal and is not also stamped onto the pedestal sprite.
 - A second generation never changes an earlier item's stats, rules, or artwork.
 - Save and exit retains profiles and rule state. Continue restores owned items
   and pedestal presentation from their collectible IDs. PNGs remain on disk.

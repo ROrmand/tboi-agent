@@ -4,6 +4,10 @@
   "triggers": ["room_enter", "room_clear", "enemy_hit", "player_hurt", "pickup", "new_floor", "tear_fire"],
   "conditions": ["chance", "once_per_room", "once_per_floor"],
   "actions": ["spawn_pickup", "grant_soul_hearts"],
+  "regions": ["passive", "familiar", "aura", "familiar_aura"],
+  "familiars": ["sentry", "melee", "normal", "shield"],
+  "familiar_patterns": ["single", "fan", "lob", "varied"],
+  "auras": ["damage"],
   "pickup_types": ["coin", "key", "bomb", "heart"],
   "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow"],
   "stat_bounds": {

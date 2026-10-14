@@ -8,6 +8,7 @@ dist/
 Thumbs.db
 .reference-repentogon/
 runtime/generated/
+runtime/mod-backup-*/
 runtime/*.err
 demo/live-sprite-swap/generated_profile.lua
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item.png

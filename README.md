@@ -47,7 +47,8 @@ tested Lua handlers.
    Before the first native-art run, execute `npm run art:prepare`, then restart
    Isaac. This predeclares 64 texture filenames that Isaac can discover at
    startup. Install the v1.6.1 mod files and fully restart Isaac before the
-   first multi-item run. Begin a fresh run when upgrading from v1.5.0.
+   first multi-item run. The same prepare/restart step now predeclares paired
+   familiar textures for the bounded familiar capability.
 
 `npm run ipc:generate -- --prompt "..."` is the terminal fallback; keep the
 bridge running and a run open so it can reserve artwork safely.
@@ -63,9 +64,11 @@ and exit. Continue restores both owned items and uncollected pedestals by their
 collectible IDs. Artwork stays in the installed mod directory. There is no
 permanent item library.
 
-The generator window also has a **Randomize** button. It fills the editable
-prompt with a bounded passive-item idea; review or change it, then choose
-**Generate Item** normally.
+The generator window also has a **Randomize** button. Most clicks fill a
+plain sentence about stats, tears, or a room reward. Review or change it,
+then choose **Generate Item**. The model chooses one region from the meaning
+of that sentence: a normal passive, a familiar, an aura, or both. A familiar
+or an aura is kept only for the region the model chose.
 
 When `IMAGE_BACKEND=comfyui`, the bridge now checks that ComfyUI is reachable
 before asking the text model to design an item. Start ComfyUI and wait until it
@@ -94,11 +97,27 @@ instead of assigning new profiles to existing collectibles.
 Every accepted item resolves the following before it is applied:
 
 - Name, short pickup description, quality, and theme.
-- Explicit stat deltas: up, down, or unchanged for each supported stat.
+- Explicit stat deltas when the item changes Isaac. A later catalog makes
+  this optional: an item that only procs, follows, or pulses an aura sets
+  `affects_stats` to false and carries no stat block.
 - A bounded declarative behavior profile: triggers, conditions, actions,
   parameters, and runtime state.
 - A 32x32 pedestal/inventory/HUD icon.
 - A native tinted tear profile with bounded flags.
+- Optionally, one bounded familiar with its own ComfyUI-generated full-body
+  character sprite, rendered at 8x8 in-game. `sentry` orbits and fires,
+  `normal` follows behind Isaac and fires, `melee` closes in and strikes, and
+  `shield` stands between Isaac and the nearest threat. A shield removes enemy
+  shots that touch it, cancels one hit to Isaac per cooldown, and deals
+  contact damage. Sentry and normal familiars require an attack profile:
+  `single`, `fan`, `lob`, or `varied`, up to three tear flags, plus color,
+  scale (0.5–2), and speed (4–12). Those flags are the shot's only effects.
+  `varied` rerolls delivery and size from that same flag list. `familiar.damage`
+  is one single shot (0.5–3); each fan shot is 0.7× and a lob is 1.25×. Melee
+  and shield familiars omit the attack. An item may also include one bounded
+  damage aura.
+- Pedestal art is drawn once, floating above the pedestal. The pedestal sprite
+  itself keeps the default pedestal graphic.
 - A catalog-backed proc sound.
 
 Generated content is data, not executable model-produced Lua. Lua maps only
@@ -121,11 +140,9 @@ cannot invent callbacks, unbounded state, or arbitrary Lua. Runtime state is
 owned by the mod and scoped to an item, room, floor, or run (for example, a
 "once per room" proc or a cooldown).
 
-This catalog is intentionally extensible. After the passive slice is stable,
-we will add triggers through a versioned capability catalog and their matching
-Lua callback mappings, tests, parameter bounds, and fallbacks. Adding a
-trigger is therefore a controlled runtime feature, not simply a new phrase in
-an AI prompt.
+This catalog is intentionally extensible. A new trigger is a versioned catalog
+entry with a fixed handler, tests, bounds, and a fallback. It is not a new
+phrase the model is allowed to invent.
 
 ## Generation flow
 
@@ -135,10 +152,10 @@ an AI prompt.
    to a Nebius-hosted structured-output model.
 3. The bridge validates and clamps the profile against the local capability
    catalog.
-4. The bridge requests the pedestal image, resizes it to the fixed 32x32
-   runtime template, and writes it with the generated profile.
+4. The bridge requests the pedestal image and, when requested, a separate
+   familiar sprite from ComfyUI; both use paired fixed 32x32 runtime slots.
 5. The bridge publishes the profile over `\\\\.\\pipe\\nebius_isaac_bridge_v1`.
-6. The Isaac mod validates it again, updates the Live Profile Core texture and
+6. The Isaac mod validates it again, updates that slot's texture and the
    fixed behavior handlers, spawns a pedestal, and acknowledges only after
    application succeeds.
 
@@ -151,10 +168,9 @@ an AI prompt.
 - **Nebius Token Factory:** structured item-profile generation.
 - **ComfyUI:** local source-art generation from the item visual prompt.
 
-The present vertical slice has one shared generated shell, **Live Profile
-Core**. A later multi-item release will pre-register a bounded pool of item
-shells and retain an independent accepted profile per shell; it will not create
-runtime item definitions or execute generated code.
+The live mod pre-registers 64 passive shells and keeps an independent accepted
+profile on each one. It does not create item definitions at runtime, and it
+does not execute generated code.
 
 ## Safety and fallbacks
 
@@ -167,38 +183,98 @@ runtime item definitions or execute generated code.
   no behavior rule.
 - Slot and transient state are cleared on run start and exit.
 
-## Roadmap: more passive items, effects, and parameters
+## How an item is built
 
-The next phase is a versioned **capability catalog**, not unconstrained model
-freedom. Each new effect is added in four places: a schema entry, bridge-side
-validation and numeric bounds, a fixed Lua handler, and automated plus live
-game coverage. Unsupported fields are rejected rather than interpreted.
+The model decides what the wish is, then fills only the parameters that
+decision needs. It never writes Lua, callback names, or raw game constants.
 
-1. **Multiple generated collectibles.** Replace the single shared shell with a
-   bounded pool of predeclared passive shells, profile ownership per shell,
-   stable artwork-slot allocation, and clear run/save lifecycle rules.
-2. **Broader stat and tear profile.** Add carefully bounded fields for familiar
-   passive stats (for example, flying, spectral tears, knockback, tear height,
-   projectile speed and scale) plus an explicit allowlist of additional
-   `TearFlags`. Every boolean flag remains a known catalog ID, not a raw game
-   constant supplied by the model.
-3. **Richer rule parameters.** Expand existing actions with bounds such as
-   chance, cooldown, duration, stack limit, pickup subtype, spawn count, and
-   per-room/per-floor/run scopes. Add a fixed effect ledger so overlapping
-   generated items compose predictably and clean up correctly.
-4. **Additional passive effect families.** Implement controlled families such
-   as familiar spawning, orbitals, enemy debuffs, temporary auras, projectile
-   modifiers, room-clear rewards, damage retaliation, and resource conversion.
-   Each family receives a small declarative contract and fixed callbacks.
-5. **Presentation and player control.** Improve art direction, add optional
-   approved sound/animation catalogs, show accepted profile details in-game,
-   make the `8` hotkey configurable, and expose clear generation/error status.
-6. **Reliability and balance.** Add fuzzed malformed-envelope tests, save and
-   continue behavior, slot exhaustion recovery, deterministic replay fixtures,
-   balance budgets, and compatibility checks for REPENTOGON upgrades.
-7. **Future scope decision.** Consider active collectibles only after the
-   multi-item passive catalog is stable. They require their own explicit input,
-   charge, targeting, and safety contracts rather than extending passive rules.
+1. **Region.** `passive`, `familiar`, `aura`, or `familiar_aura`, from the
+   meaning of the prompt. This step is live.
+2. **Systems.** A short list of catalog systems the item actually uses, such
+   as `stats`, `tears`, `rules`, `familiar`, `aura`, `collision`, or
+   `on_hit`. A system the wish does not need is left off. The bridge drops any
+   parameter block that does not belong to a marked system, the same way a
+   passive region drops a familiar.
+3. **Parameters.** Only the marked systems are filled, inside the bounds in
+   `content-contract/capabilities.json`.
+
+`affects_stats` is its own flag. False means the item does not change damage,
+tears, shot speed, range, speed, or luck, so it has no `stats` object. A soul
+heart on room clear stays a rule action, not a cache stat. Today every profile
+still carries a full stat block; the next catalog version makes that block
+optional.
+
+## Callbacks, added without a per-frame tax
+
+Each Isaac callback is registered once, when the mod loads. The model does not
+name `ModCallbacks`, and accepting an item does not call `AddCallback`. A
+handler that no owned item opted into returns before it touches entities.
+
+When a profile is accepted, picked up, removed, or a run starts, the mod
+rebuilds a short list per system. `MC_EVALUATE_CACHE` walks only items with
+`affects_stats`, and only the cache flags those stats use (`CACHE_DAMAGE`,
+`CACHE_FIREDELAY`, `CACHE_SPEED`, `CACHE_SHOTSPEED`, `CACHE_RANGE`,
+`CACHE_LUCK`, `CACHE_TEARFLAG`). Gaining, losing, or changing such an item
+calls `player:EvaluateItems()`. Stat math never runs from `MC_POST_UPDATE` or
+`MC_POST_PLAYER_UPDATE`.
+
+Frame work stays on the lists that need it. Familiar movement, aura ticks, and
+projectile scans run for items on those lists. Tear changes run from
+`MC_POST_FIRE_TEAR` for items that marked `tears`. An empty list is the entire
+hot-path cost.
+
+New handlers follow the same lifecycle, implemented in the mod rather than
+generated:
+
+- **Init.** `MC_POST_[ENTITY]_INIT` sets `GetData()`, scale, and starting
+  velocity.
+- **Tick.** `MC_POST_[ENTITY]_UPDATE` runs only while `entity:Exists()` and the
+  entity is not dying. Convert with `ToPlayer`, `ToTear`, `ToNPC`, or
+  `ToFamiliar` before using type-specific methods.
+- **Cleanup.** `MC_POST_ENTITY_KILL` or `MC_POST_ENTITY_REMOVE` clears child
+  entities and effects stored on that entity.
+- **Collision.** `MC_PRE_[ENTITY]_COLLISION` returns `nil` or `true` to allow
+  the hit and `false` to ignore it.
+- **Damage.** `MC_ENTITY_TAKE_DMG` handles on-hit, reflection, and one-shot
+  protection after `DamageFlags` and `DamageSource` are checked.
+- **Tears.** `MC_POST_FIRE_TEAR` stores custom fields on `tear:GetData()`.
+  Impacts and status effects are read later from `MC_PRE_TEAR_COLLISION` or
+  `MC_POST_TEAR_UPDATE`.
+- **Actives, later.** `MC_USE_ITEM` returns a discharge table such as
+  `{ Discharge = true, Remove = false, ShowAnim = true }`. `MC_PRE_USE_ITEM`
+  can refuse the use before charge is spent.
+
+Custom state lives on `entity:GetData()` or the item's saved runtime record.
+It does not live in an untracked global that survives a room change.
+
+A system ships in four places: a catalog id, schema and numeric bounds, one
+fixed handler, and tests. An unknown system is rejected.
+
+## Roadmap
+
+Each new effect is still a versioned catalog system. Unsupported fields are
+rejected rather than interpreted.
+
+1. **Optional stats and a system index.** Add `affects_stats`, let the model
+   mark systems, and make every live callback consult that index before doing
+   work.
+2. **Tear and combat systems.** Add bounded tear-impact, status, homing, and
+   on-hit families. Each one is a catalog id plus the lifecycle handler above,
+   not a new tear flag invented in the prompt.
+3. **Richer rule parameters.** Expand actions with cooldown, duration, stack
+   limit, pickup subtype, and an effect ledger so overlapping items clean up
+   when the source item is gone.
+4. **More passive families.** Enemy debuffs, temporary auras, projectile
+   modifiers, damage retaliation, and resource conversion, each with the same
+   four-part contract.
+5. **Presentation.** Art direction, approved sound and animation catalogs,
+   in-game profile details, a configurable `8` hotkey, and clearer generation
+   errors.
+6. **Reliability and balance.** Fuzzed envelopes, deterministic fixtures,
+   balance budgets, and REPENTOGON compatibility checks.
+7. **Active collectibles.** Only after the passive systems stay idle when
+   unused. An active needs its own charge, input, targeting, and
+   `MC_USE_ITEM` contract. It is not another passive rule.
 
 ## Existing design references
 

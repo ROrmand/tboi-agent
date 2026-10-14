@@ -8,6 +8,7 @@ import process from "node:process";
 import {atomicWrite, toLua} from './runtime.mjs';
 import { NativePipeServer } from '../native/ipc/server.mjs';
 import { SlotLedger } from '../native/ipc/slot-ledger.mjs';
+import { assertRuntimeCompatible } from './compatibility.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
@@ -83,6 +84,7 @@ const server = createServer(async (request, response) => {
 function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
   if(activeJob) throw Error('Another item is generating. Wait for it to finish.');
   if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
+  assertRuntimeCompatible(gameContext);
   if (!id.startsWith(gameContext.run + '_')) id = gameContext.run + '_' + id;
   const artSlot = slotLedger.reserve(gameContext);
   const job = { id, status: "generating", createdAt: new Date().toISOString() };
@@ -120,6 +122,7 @@ async function finishJob(job, error, writeGameStatus) {
   if (!error) {
     try {
       if (!gameContext || !job.id.startsWith(gameContext.run + '_') || gameContext.blocked) throw Error('Run ended or changed before generation completed.');
+      assertRuntimeCompatible(gameContext);
       await publishNativeProfile(job);
     } catch (publishError) {
       error = `Native profile publish failed: ${publishError.message}`;

@@ -6,20 +6,51 @@ local statusId = "nebius_passive_status_v2"
 local inputId = "nebius_passive_input_v2"
 local randomizeId = "nebius_passive_randomize_v2"
 
-local randomPrompts = {
-  "A cracked lunar lantern that makes tears glow pale blue and occasionally drops a key after clearing a room.",
-  "A cursed honeycomb that makes tears sticky amber, adds a little damage, and sometimes drops a heart after taking damage.",
-  "A tiny thundercloud in a bottle that fires fast electric-blue tears and sometimes drops a coin on room clear.",
-  "A mossy knight helmet that grants range, poison-green tears, and a small chance to drop a bomb after clearing a room.",
-  "A glass telescope that gives homing cosmic tears, extra luck, and sometimes grants a soul heart on a new floor.",
-  "A rusted music box that makes slow violet tears, raises fire rate, and occasionally drops a key after a room clear.",
-  "A frozen peach that gives icy blue slow tears, a little movement speed, and sometimes drops a heart on room clear.",
-  "A beetle-shaped locket that gives piercing red tears, damage, and a chance to drop a coin when an enemy is hit.",
-  "A small angel statue with bright white spectral tears, range, and a chance to gain a soul heart on a new floor.",
-  "A bubbling cauldron that gives green poison tears, luck, and sometimes drops a bomb after clearing a room.",
-  "A black candle with orange burn tears, damage, and a chance to drop a key after clearing a room.",
-  "A clockwork eye that gives bouncing gold tears, shot speed, and sometimes drops a coin after an enemy is hit.",
+local moments = {
+  "clear a room", "get hit", "hit an enemy", "reach a new floor", "pick this up",
 }
+local payoffs = {
+  "I sometimes find a coin", "I sometimes find a key", "I sometimes find a bomb",
+  "I sometimes find a heart", "grant me a soul heart",
+}
+local tearLines = {
+  "Tears home in.", "Tears pass through rocks.", "Tears poison.", "Tears burn.",
+  "Tears slow enemies.", "Tears scare enemies.", "Tears charm enemies.",
+  "Tears bounce.", "Tears split.", "Tears glow.", "Tears pierce.", "Tears orbit me.",
+}
+local statLines = {
+  "Add damage.", "Fire a little faster.", "Raise shot speed.", "Add range.",
+  "Move a bit faster.", "Add luck.", "Take a speed hit for more damage.",
+  "Lower damage and raise tears.", "A little range, and no extra damage.",
+}
+local familiarLines = {
+  "A familiar orbits me and fires.",
+  "A familiar follows behind me and fires.",
+  "A familiar stays close and strikes in melee. It does not shoot.",
+  "A shield familiar stands between me and enemies, blocks a hit, and deals contact damage.",
+}
+local auraLines = {
+  "Enemies near me take a pulse of damage.",
+  "A short damage aura ticks around me.",
+}
+
+local function pick(list)
+  return list[(Random() % #list) + 1]
+end
+
+local function randomSentence()
+  local shape = (Random() % 8) + 1
+  if shape == 6 then
+    return pick(familiarLines) .. " " .. pick(tearLines)
+  elseif shape == 7 then
+    return pick(auraLines) .. " " .. pick(statLines)
+  elseif shape == 1 or shape == 4 then
+    return "When I " .. pick(moments) .. ", " .. pick(payoffs) .. ". " .. pick(tearLines) .. " " .. pick(statLines)
+  elseif shape == 2 or shape == 5 or shape == 8 then
+    return pick(statLines) .. " " .. pick(tearLines) .. " When I " .. pick(moments) .. ", " .. pick(payoffs) .. "."
+  end
+  return pick(tearLines) .. " " .. pick(statLines)
+end
 
 function Prompt.new(json)
   return setmetatable({ json = json, ready = false, failed = false, requested = false, held = false, sequence = 0, pending = nil, status = "Describe a passive item. Keep the local bridge running.", text = "" }, Prompt)
@@ -52,12 +83,9 @@ end
 
 function Prompt:randomize()
   if self.pending then return end
-  local choice = (Random() % #randomPrompts) + 1
-  if #randomPrompts > 1 and choice == self.lastRandomChoice then
-    choice = (choice % #randomPrompts) + 1
-  end
-  self.lastRandomChoice = choice
-  self.text = randomPrompts[choice]
+  self.text = randomSentence()
+  if self.text == self.lastRandomSentence then self.text = randomSentence() end
+  self.lastRandomSentence = self.text
   local updated = pcall(function()
     -- ImGuiData.Value is 1. Keeping the numeric form avoids relying on the
     -- enum table being exported by older REPENTOGON builds.

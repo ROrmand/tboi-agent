@@ -10,7 +10,7 @@ const modDirectory = env.ISAAC_MOD_DIRECTORY
   : path.join(root, 'demo', 'live-sprite-swap');
 
 await prepareArtSlots(modDirectory);
-console.log(`Prepared ${ART_SLOT_COUNT} native artwork slots in ${modDirectory}`);
+console.log(`Prepared ${ART_SLOT_COUNT} pedestal and familiar artwork slot pairs in ${modDirectory}`);
 
 async function readEnv(file) {
   const values = {};

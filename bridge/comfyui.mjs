@@ -17,13 +17,13 @@ export async function assertComfyUiReady(baseUrl) {
   }
 }
 
-export async function generateComfyImage({ baseUrl, checkpoint, prompt, onStage = () => {} }) {
+export async function generateComfyImage({ baseUrl, checkpoint, prompt, negative, onStage = () => {} }) {
   const url = baseUrl.replace(/\/$/, "");
   const clientId = `nebius-isaac-${randomUUID()}`;
   const response = await fetch(`${url}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: clientId, prompt: buildWorkflow(checkpoint, prompt) }),
+    body: JSON.stringify({ client_id: clientId, prompt: buildWorkflow(checkpoint, prompt, negative) }),
     signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) throw new Error(`ComfyUI is unavailable (${response.status}). Start it at ${url}.`);
@@ -50,8 +50,7 @@ export async function generateComfyImage({ baseUrl, checkpoint, prompt, onStage 
   throw new Error("ComfyUI image generation timed out after 120 seconds.");
 }
 
-function buildWorkflow(checkpoint, prompt) {
-  const negative = "text, letters, words, UI, border, frame, character, scenery, room, multiple objects, photorealistic";
+function buildWorkflow(checkpoint, prompt, negative = "text, letters, words, UI, border, frame, character, scenery, room, multiple objects, photorealistic") {
   return {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: checkpoint } },
     "2": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: ["1", 1] } },

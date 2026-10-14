@@ -3,8 +3,8 @@
   <name>Live Sprite Swap Demo</name>
   <directory>live_sprite_swap_demo</directory>
   <id>900001</id>
-  <description>64 independent JSON-driven passive collectibles with run persistence.</description>
-  <version>1.6.1</version>
+  <description>64 independent JSON-driven passive collectibles with sentry, melee, follower, and shield familiars.</description>
+  <version>1.9.0</version>
   <visibility>Private</visibility>
   <tag id="Lua" />
   <tag id="Items" />
