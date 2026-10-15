@@ -17,13 +17,13 @@ export async function assertComfyUiReady(baseUrl) {
   }
 }
 
-export async function generateComfyImage({ baseUrl, checkpoint, prompt, negative, onStage = () => {} }) {
+export async function generateComfyImage({ baseUrl, checkpoint, prompt, negative, width = 512, height = 512, onStage = () => {} }) {
   const url = baseUrl.replace(/\/$/, "");
   const clientId = `nebius-isaac-${randomUUID()}`;
   const response = await fetch(`${url}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ client_id: clientId, prompt: buildWorkflow(checkpoint, prompt, negative) }),
+    body: JSON.stringify({ client_id: clientId, prompt: buildWorkflow(checkpoint, prompt, negative, width, height) }),
     signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) throw new Error(`ComfyUI is unavailable (${response.status}). Start it at ${url}.`);
@@ -50,12 +50,12 @@ export async function generateComfyImage({ baseUrl, checkpoint, prompt, negative
   throw new Error("ComfyUI image generation timed out after 120 seconds.");
 }
 
-function buildWorkflow(checkpoint, prompt, negative = "text, letters, words, UI, border, frame, character, scenery, room, multiple objects, photorealistic") {
+function buildWorkflow(checkpoint, prompt, negative = "text, letters, words, UI, border, frame, character, scenery, room, multiple objects, photorealistic", width = 512, height = 512) {
   return {
     "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: checkpoint } },
     "2": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: ["1", 1] } },
     "3": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: ["1", 1] } },
-    "4": { class_type: "EmptyLatentImage", inputs: { width: 512, height: 512, batch_size: 1 } },
+    "4": { class_type: "EmptyLatentImage", inputs: { width, height, batch_size: 1 } },
     "5": { class_type: "KSampler", inputs: { seed: Math.floor(Math.random() * 2147483647), steps: 4, cfg: 1, sampler_name: "euler_ancestral", scheduler: "normal", denoise: 1, model: ["1", 0], positive: ["2", 0], negative: ["3", 0], latent_image: ["4", 0] } },
     "6": { class_type: "VAEDecode", inputs: { samples: ["5", 0], vae: ["1", 2] } },
     "7": { class_type: "SaveImage", inputs: { filename_prefix: "nebius_isaac", images: ["6", 0] } },

@@ -18,13 +18,13 @@ test('JSON retry, transparent icon, and image failure preserving the published p
  const icon=await makeIcon(source);
  const pixels=await sharp(icon).ensureAlpha().raw().toBuffer({resolveWithObject:true});
  assert.equal(pixels.info.width,32); assert.equal(pixels.data[3],0);
- const profile={region:'familiar_aura',metadata:{display_name:'Red Core',description:'Damage up',quality:2,theme:'cursed',balance_note:''},stats:{damage:1,tears:0,shot_speed:0,range:0,speed:0,luck:0,soul_hearts:0},tear_profile:{flags:[],color:{r:1,g:0,b:0,a:1},scale:1},visuals:{pedestal_prompt:'red core'},familiar:{type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'red floating eye',attack:{pattern:'single',flags:['burn'],color:{r:1,g:0.4,b:0.1,a:1},scale:1,speed:8}},aura:{type:'damage',damage:0.5,radius:80,cooldown:30},rules:[]};
- const utf8Overflow={...profile,metadata:{...profile.metadata,description:'x'.repeat(62)+'你'}};
+ const profile={region:'familiar_aura',systems:['stats','tears','familiar','aura'],affects_stats:true,metadata:{display_name:'Red Core',description:'Damage up',quality:2,theme:'cursed',balance_note:''},stats:{damage:1,tears:0,shot_speed:0,range:0,speed:0,luck:0,soul_hearts:0},tear_profile:{flags:[],color:{r:1,g:0,b:0,a:1},scale:1},visuals:{pedestal_prompt:'red core'},familiar:{type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'red floating eye',attack:{pattern:'single',flags:['burn'],color:{r:1,g:0.4,b:0.1,a:1},scale:1,speed:8}},aura:{type:'damage',damage:0.5,radius:80,cooldown:30},rules:[]};
+ const firstAttempt={...profile,stats:{...profile.stats,damage:99},metadata:{...profile.metadata,description:'x'.repeat(62)+'你'}};
  let attempts=0, imageFails=false;
  const server=createServer(async(req,res)=>{
    for await(const chunk of req) {};
    res.setHeader('Content-Type','application/json');
-   if(req.url.endsWith('chat/completions')) res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(++attempts===1?utf8Overflow:profile)}}]}));
+   if(req.url.endsWith('chat/completions')) res.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(++attempts===1?firstAttempt:profile)}}]}));
    else if(imageFails){res.statusCode=500;res.end('image failure');}
    else res.end(JSON.stringify({data:[{b64_json:source.toString('base64')}]}));
  });
@@ -43,7 +43,13 @@ test('JSON retry, transparent icon, and image failure preserving the published p
    assert.equal(publishedJson.bridge_request_id,'test');
    assert.equal(publishedJson.sprite_sheet,'gfx/items/collectibles/generated_slot_00.png');
    assert.equal(publishedJson.familiar_sprite_sheet,'gfx/items/collectibles/generated_familiar_slot_00.png');
+   assert.equal(publishedJson.familiar_animation,'gfx/familiars/generated_familiar_anim_00.anm2');
+   assert.equal(publishedJson.familiar_animation_sheet,'gfx/familiars/generated_familiar_sheet_00.png');
    await readFile(path.join(directory,'resources','gfx','items','collectibles','generated_familiar_slot_00.png'));
+   const sheet=await sharp(path.join(directory,'resources','gfx','familiars','generated_familiar_sheet_00.png')).metadata();
+   assert.equal(sheet.width,256); assert.equal(sheet.height,32);
+   const animation=await readFile(path.join(directory,'resources','gfx','familiars','generated_familiar_anim_00.anm2'),'utf8');
+   assert.match(animation,/Name="Spin"/); assert.match(animation,/familiars\/generated_familiar_sheet_00\.png/);
    const next=await run('1');assert.equal(next.code,0,next.output);
    const nextPublished=await readFile(path.join(directory,'generated_profile.lua'),'utf8');
    assert.match(nextPublished,/generated_slot_01\.png/);

@@ -24,7 +24,9 @@ tested Lua handlers.
 
 1. Copy [.env.example](.env.example) to `.env` and set `NEBIUS_API_KEY`.
    Set `ISAAC_MOD_DIRECTORY` to your installed `live_sprite_swap_demo` mod
-   directory so generated files reach the copy Isaac is running.
+   directory so generated files reach the copy Isaac is running. `npm run bridge`
+   copies the repository Lua and XML into that directory. Restart Isaac after
+   those files change; the running game keeps the Lua it loaded at startup.
 2. Install dependencies with `npm install`.
 3. Start the local bridge and leave this terminal running:
 
@@ -45,10 +47,10 @@ tested Lua handlers.
    through native IPC and spawns one of 64 independent generated collectibles.
 
    Before the first native-art run, execute `npm run art:prepare`, then restart
-   Isaac. This predeclares 64 texture filenames that Isaac can discover at
-   startup. Install the v1.6.1 mod files and fully restart Isaac before the
-   first multi-item run. The same prepare/restart step now predeclares paired
-   familiar textures for the bounded familiar capability.
+   Isaac. This predeclares 64 pedestal textures, 64 familiar portraits, and 64
+   familiar animation files that Isaac can discover at startup. Fully restart
+   Isaac after preparing those files. The animation files are blank until a
+   familiar is generated.
 
 `npm run ipc:generate -- --prompt "..."` is the terminal fallback; keep the
 bridge running and a run open so it can reserve artwork safely.
@@ -64,11 +66,10 @@ and exit. Continue restores both owned items and uncollected pedestals by their
 collectible IDs. Artwork stays in the installed mod directory. There is no
 permanent item library.
 
-The generator window also has a **Randomize** button. Most clicks fill a
-plain sentence about stats, tears, or a room reward. Review or change it,
-then choose **Generate Item**. The model chooses one region from the meaning
-of that sentence: a normal passive, a familiar, an aura, or both. A familiar
-or an aura is kept only for the region the model chose.
+The generator window also has a **Randomize** button. It asks the text model
+for one ordinary sentence and puts that sentence in the prompt. Review or
+change it, then choose **Generate Item**. The model chooses the region and
+the systems from that sentence.
 
 When `IMAGE_BACKEND=comfyui`, the bridge now checks that ComfyUI is reachable
 before asking the text model to design an item. Start ComfyUI and wait until it
@@ -96,18 +97,20 @@ instead of assigning new profiles to existing collectibles.
 
 Every accepted item resolves the following before it is applied:
 
-- Name, short pickup description, quality, and theme.
-- Explicit stat deltas when the item changes Isaac. A later catalog makes
-  this optional: an item that only procs, follows, or pulses an aura sets
-  `affects_stats` to false and carries no stat block.
+- The model's name, one sentence describing the effect, quality, and theme.
+  The pedestal and pickup banner show that name and sentence.
+- Stat deltas only when the item marks the `stats` system. `affects_stats`
+  is false otherwise, and that item is left out of `MC_EVALUATE_CACHE`. A
+  soul heart on room clear stays a rule, not a cache stat.
 - A bounded declarative behavior profile: triggers, conditions, actions,
   parameters, and runtime state.
 - A 32x32 pedestal/inventory/HUD icon.
 - A native tinted tear profile with bounded flags.
-- Optionally, one bounded familiar with its own ComfyUI-generated full-body
-  character sprite, rendered at 8x8 in-game. `sentry` orbits and fires,
-  `normal` follows behind Isaac and fires, `melee` closes in and strikes, and
-  `shield` stands between Isaac and the nearest threat. A shield removes enemy
+- Optionally, one bounded familiar with its own ComfyUI portrait and an
+  8-frame animation sheet. The familiar plays that sheet from one of 64
+  predeclared animation files: Float, Spin, Hop, or Idle. `sentry` orbits and fires like
+  Sacrificial Dagger, `normal` follows behind Isaac like Brother Bobby,
+  `melee` chases like a Leech, and `shield` orbits like Dry Baby. A shield removes enemy
   shots that touch it, cancels one hit to Isaac per cooldown, and deals
   contact damage. Sentry and normal familiars require an attack profile:
   `single`, `fan`, `lob`, or `varied`, up to three tear flags, plus color,
@@ -152,8 +155,10 @@ phrase the model is allowed to invent.
    to a Nebius-hosted structured-output model.
 3. The bridge validates and clamps the profile against the local capability
    catalog.
-4. The bridge requests the pedestal image and, when requested, a separate
-   familiar sprite from ComfyUI; both use paired fixed 32x32 runtime slots.
+4. The bridge requests the pedestal image and, when requested, a familiar
+   portrait plus an 8-frame animation sheet from ComfyUI. Portraits use fixed
+   32x32 slots. Each animation sheet is written into one of 64 predeclared
+   animation files.
 5. The bridge publishes the profile over `\\\\.\\pipe\\nebius_isaac_bridge_v1`.
 6. The Isaac mod validates it again, updates that slot's texture and the
    fixed behavior handlers, spawns a pedestal, and acknowledges only after
@@ -189,20 +194,21 @@ The model decides what the wish is, then fills only the parameters that
 decision needs. It never writes Lua, callback names, or raw game constants.
 
 1. **Region.** `passive`, `familiar`, `aura`, or `familiar_aura`, from the
-   meaning of the prompt. This step is live.
-2. **Systems.** A short list of catalog systems the item actually uses, such
-   as `stats`, `tears`, `rules`, `familiar`, `aura`, `collision`, or
-   `on_hit`. A system the wish does not need is left off. The bridge drops any
-   parameter block that does not belong to a marked system, the same way a
-   passive region drops a familiar.
+   meaning of the prompt.
+2. **Systems.** The catalog ids the wish actually needs:
+   `stats`, `tears`, `rules`, `familiar`, `aura`, `on_hit`, `on_kill`,
+   `tear_impact`, `collision`, `tear_update`, `bomb`, `laser`, and `knife`.
+   The bridge drops a block the system list does not include, and it rejects
+   a system with no matching block. `display_name` and `description` are each
+   at most 64 UTF-8 bytes.
 3. **Parameters.** Only the marked systems are filled, inside the bounds in
    `content-contract/capabilities.json`.
 
-`affects_stats` is its own flag. False means the item does not change damage,
-tears, shot speed, range, speed, or luck, so it has no `stats` object. A soul
-heart on room clear stays a rule action, not a cache stat. Today every profile
-still carries a full stat block; the next catalog version makes that block
-optional.
+`rules` owns room enter, room clear, pickup, new floor, and tear fire.
+`on_hit` owns player hurt and enemy hit. `on_kill`, `tear_impact`, and
+`collision` are separate procs with the same conditions and actions. `region`
+is removed before publish. `systems` and `affects_stats` are part of the
+profile Isaac validates.
 
 ## Callbacks, added without a per-frame tax
 
@@ -210,18 +216,20 @@ Each Isaac callback is registered once, when the mod loads. The model does not
 name `ModCallbacks`, and accepting an item does not call `AddCallback`. A
 handler that no owned item opted into returns before it touches entities.
 
-When a profile is accepted, picked up, removed, or a run starts, the mod
-rebuilds a short list per system. `MC_EVALUATE_CACHE` walks only items with
-`affects_stats`, and only the cache flags those stats use (`CACHE_DAMAGE`,
-`CACHE_FIREDELAY`, `CACHE_SPEED`, `CACHE_SHOTSPEED`, `CACHE_RANGE`,
-`CACHE_LUCK`, `CACHE_TEARFLAG`). Gaining, losing, or changing such an item
-calls `player:EvaluateItems()`. Stat math never runs from `MC_POST_UPDATE` or
-`MC_POST_PLAYER_UPDATE`.
+When a profile is accepted or a run starts, the mod rebuilds a short list per
+system and per rule trigger. `MC_EVALUATE_CACHE` walks only items that marked
+`stats`, and only for `CACHE_DAMAGE`, `CACHE_FIREDELAY`, `CACHE_SPEED`,
+`CACHE_SHOTSPEED`, `CACHE_RANGE`, and `CACHE_LUCK`. Picking up such an item
+calls `player:EvaluateItems()`. Stat math never runs from `MC_POST_UPDATE`.
 
-Frame work stays on the lists that need it. Familiar movement, aura ticks, and
-projectile scans run for items on those lists. Tear changes run from
-`MC_POST_FIRE_TEAR` for items that marked `tears`. An empty list is the entire
-hot-path cost.
+Familiar movement and aura ticks run only for items on those lists. Tear tint
+and flags run from `MC_POST_FIRE_TEAR` only for items that marked `tears`.
+`MC_POST_ENTITY_KILL`, `MC_PRE_TEAR_COLLISION`, and `MC_PRE_PLAYER_COLLISION`
+return immediately when no owned item marked `on_kill`, `tear_impact`, or
+`collision`. An empty list is the whole hot-path cost. Those three procs latch
+once per enemy, once per tear, or once per enemy touched in the room. Richer
+behavior inside each callback is the next rework, not more branches in the
+update loop.
 
 New handlers follow the same lifecycle, implemented in the mod rather than
 generated:
@@ -255,12 +263,12 @@ fixed handler, and tests. An unknown system is rejected.
 Each new effect is still a versioned catalog system. Unsupported fields are
 rejected rather than interpreted.
 
-1. **Optional stats and a system index.** Add `affects_stats`, let the model
-   mark systems, and make every live callback consult that index before doing
-   work.
-2. **Tear and combat systems.** Add bounded tear-impact, status, homing, and
-   on-hit families. Each one is a catalog id plus the lifecycle handler above,
-   not a new tear flag invented in the prompt.
+1. **Rework the new callbacks.** `on_kill`, `tear_impact`, and `collision`
+   currently spend the same pickup and soul-heart actions as rules. The next
+   pass gives each callback its own bounded effect instead of another
+   if/else in the update loop.
+2. **Tear and combat depth.** Status, homing, and on-hit behavior stay catalog
+   ids. Tear flags are not raw game constants from the model.
 3. **Richer rule parameters.** Expand actions with cooldown, duration, stack
    limit, pickup subtype, and an effect ledger so overlapping items clean up
    when the source item is gone.

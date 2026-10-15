@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "bridge": "node bridge/server.mjs",
+    "mod:sync": "node bridge/sync-mod.mjs",
     "generate": "node bridge/generate.mjs",
     "validate": "node bridge/generate.mjs --dry-run --no-image",
     "test": "node --test bridge/*.test.mjs native/stage1/*.test.mjs native/ipc/*.test.mjs",

@@ -1,18 +1,22 @@
-# Passive Item Runtime — v1.9.0
+# Passive Item Runtime — v1.13.2
 
 The product mod remains **Live Sprite Swap Demo** in `mods/live_sprite_swap_demo`.
 It now registers 64 independent passive shells, Generated Passive 00–63.
+The pedestal and the pickup banner show the model's name and one sentence describing the effect.
 All generated behavior remains validated JSON applied through fixed Lua handlers.
 
 ## Setup
 
-1. Close Isaac and install this directory into the existing product mod.
-2. Set `ISAAC_MOD_DIRECTORY` to that installed directory.
+1. Set `ISAAC_MOD_DIRECTORY` to the installed product mod. `npm run bridge`
+   copies this directory's Lua and XML there. Restart Isaac to load them.
+2. Leave `ISAAC_MOD_DIRECTORY` pointed at that installed directory.
 3. Run `npm run art:prepare` before launching Isaac.
 4. Start `npm run bridge` and your configured ComfyUI service.
 5. Enable only the product mod; leave native probe mods disabled.
-6. Start a fresh run when upgrading from v1.5.0. Press top-row or keypad
-   `8`, enter a prompt, or click **Randomize** to fill one in. Review or
+6. Start a fresh run when upgrading from v1.5.0 or from a familiar saved before
+   v1.13.0. Press top-row or keypad
+   `8`, enter a prompt, or click **Randomize**. Randomize asks the text model
+   for one sentence and fills the prompt with it. Review or
    edit it, then click Generate Item. Do not use `agent generate`.
 
 The terminal fallback is `npm run ipc:generate -- --prompt "..."` with a run open.
@@ -23,8 +27,11 @@ The existing paired REPENTOGON DLLs require no changes.
 
 - Up to 64 generated item identities per run and paired pedestal/familiar
   artwork filenames. Familiar art is generated only for profiles that request
-  a sentry, melee, normal, or shield familiar and is rendered as an 8x8 companion.
-  A shield stands between Isaac and the nearest threat, blocks shots that
+  a sentry, melee, normal, or shield familiar. ComfyUI paints an 8-frame strip,
+  and the familiar plays the predeclared animation for that slot: Idle, Float,
+  Hop, or Spin. `npm run art:prepare` writes all 64 animation files before
+  Isaac starts. Movement uses the game's familiar helpers: Brother Bobby follow, Sacrificial
+  Dagger orbit, Leech chase, and Dry Baby orbit. A shield blocks shots that
   touch it, cancels one hit per cooldown, and deals contact damage.
   Sentry and normal familiars fire the attack profile on that item: delivery,
   flags, color, scale, and speed. `varied` rerolls delivery using those flags.

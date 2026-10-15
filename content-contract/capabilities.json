@@ -5,6 +5,8 @@
   "conditions": ["chance", "once_per_room", "once_per_floor"],
   "actions": ["spawn_pickup", "grant_soul_hearts"],
   "regions": ["passive", "familiar", "aura", "familiar_aura"],
+  "systems": ["stats", "tears", "rules", "familiar", "aura", "on_hit", "on_kill", "tear_impact", "collision", "tear_update", "bomb", "laser", "knife"],
+  "tear_update_behaviors": ["home", "pulse", "shrink"],
   "familiars": ["sentry", "melee", "normal", "shield"],
   "familiar_patterns": ["single", "fan", "lob", "varied"],
   "auras": ["damage"],

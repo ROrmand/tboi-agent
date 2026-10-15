@@ -51,7 +51,7 @@ function validateEnvelope(value) {
   if (value.type === 'status') {
     if (Object.keys(value).some(key => !['version', 'type', 'id', 'status', 'detail'].includes(key))) throw Error('Unsupported IPC status field.');
     if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value.id)) throw Error('Invalid IPC status id.');
-    if (!['generating', 'error'].includes(value.status) || typeof value.detail !== 'string' || !value.detail.length || value.detail.length > 500) throw Error('Invalid IPC status payload.');
+    if (!['generating', 'error', 'sentence'].includes(value.status) || typeof value.detail !== 'string' || !value.detail.length || value.detail.length > 500) throw Error('Invalid IPC status payload.');
   }
   if (value.type === 'profile') {
     if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value.id)) throw Error('Invalid IPC profile id.');

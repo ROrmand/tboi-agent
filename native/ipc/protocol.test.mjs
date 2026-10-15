@@ -30,6 +30,8 @@ test('IPC accepts bounded profile data but never executable message types', () =
 test('IPC status is bounded declarative data with a validated request ID', () => {
   const status = { version: 1, type: 'status', id: 'ui_123_1', status: 'error', detail: 'Image service unavailable' };
   assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(status)).lines, [status]);
+  const sentence = { version: 1, type: 'status', id: 'ui_123_1', status: 'sentence', detail: 'A cracked bell that rings when nobody is looking.' };
+  assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(sentence)).lines, [sentence]);
   assert.throws(() => encodeEnvelope({ ...status, detail: 'x'.repeat(501) }), /payload/);
   assert.throws(() => encodeEnvelope({ ...status, id: '../path' }), /id/);
   assert.throws(() => encodeEnvelope({ ...status, code: 'os.execute()' }), /field/);

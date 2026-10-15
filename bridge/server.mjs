@@ -9,6 +9,8 @@ import {atomicWrite, toLua} from './runtime.mjs';
 import { NativePipeServer } from '../native/ipc/server.mjs';
 import { SlotLedger } from '../native/ipc/slot-ledger.mjs';
 import { assertRuntimeCompatible } from './compatibility.mjs';
+import { syncMod } from './sync-mod.mjs';
+import { requestRandomSentence } from './sentence.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
@@ -81,8 +83,43 @@ const server = createServer(async (request, response) => {
   }
 });
 
+function startSentence(id) {
+  if (activeJob) throw Error('Another request is running. Wait until it finishes.');
+  if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
+  assertRuntimeCompatible(gameContext);
+  if (!id.startsWith(gameContext.run + '_')) throw Error('Sentence request is from another run.');
+  const job = { id, status: 'generating', kind: 'sentence', createdAt: new Date().toISOString() };
+  activeJob = job;
+  jobs.set(id, job);
+  publishStatus(id, 'generating', 'Writing a random sentence...');
+  const timeout = setTimeout(() => finishSentence(job, 'The random sentence timed out. Try again.'), 100000);
+  requestRandomSentence(env).then(
+    (sentence) => finishSentence(job, null, sentence, timeout),
+    (error) => finishSentence(job, error.message, null, timeout),
+  );
+  return job;
+}
+
+function finishSentence(job, error, sentence, timeout) {
+  if (job.completedAt) return;
+  if (timeout) clearTimeout(timeout);
+  job.completedAt = new Date().toISOString();
+  if (activeJob === job) activeJob = null;
+  if (error) {
+    job.status = 'error';
+    job.error = error;
+    publishStatus(job.id, 'error', error.slice(0, 500));
+    console.log(`Job ${job.id}: error - ${error}`);
+    return;
+  }
+  job.status = 'ready';
+  job.sentence = sentence;
+  publishStatus(job.id, 'sentence', sentence);
+  console.log(`Job ${job.id}: sentence`);
+}
+
 function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
-  if(activeJob) throw Error('Another item is generating. Wait for it to finish.');
+  if(activeJob) throw Error('Another request is running. Wait until it finishes.');
   if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
   assertRuntimeCompatible(gameContext);
   if (!id.startsWith(gameContext.run + '_')) id = gameContext.run + '_' + id;
@@ -190,6 +227,21 @@ async function watchIsaacLog() {
           try { gameContext = JSON.parse(state[1]); gameContextAt = Date.now(); } catch {}
           continue;
         }
+        const sentenceMatch = line.match(/\[NebiusBridge\] sentence (\{.*\})/);
+        if (sentenceMatch) {
+          try {
+            const input = JSON.parse(sentenceMatch[1]);
+            const id = typeof input.id === "string" ? input.id : "";
+            if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && !jobs.has(id)) {
+              if (activeJob) publishStatus(id, 'error', 'Another request is running. Wait until it finishes.');
+              else {
+                try { startSentence(id); }
+                catch (error) { publishStatus(id, 'error', error.message.slice(0, 500)); }
+              }
+            }
+          } catch { /* Ignore malformed log lines. */ }
+          continue;
+        }
         const match = line.match(/\[NebiusBridge\] generate (\{.*\})/);
         if (!match) continue;
         try {
@@ -197,7 +249,7 @@ async function watchIsaacLog() {
           const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
           const id = typeof input.id === "string" ? input.id : "";
           if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && prompt && prompt.length <= 2000 && !jobs.has(id)) {
-            if(activeJob) publishStatus(id, 'error', 'Another item is generating. Wait until it finishes.');
+            if(activeJob) publishStatus(id, 'error', 'Another request is running. Wait until it finishes.');
             else {
               try { startJob(prompt, id); }
               catch (error) { publishStatus(id, 'error', error.message.slice(0,500)); }
@@ -222,6 +274,15 @@ async function readEnv(file) {
     }
   } catch (error) { if (error.code !== "ENOENT") throw error; }
   return values;
+}
+
+const modSource = path.join(root, "demo", "live-sprite-swap");
+try {
+  const synced = await syncMod(modSource, modDirectory);
+  if (synced.skipped) console.log("Isaac mod directory is the repository copy.");
+  else console.log(`Updated Isaac mod (${synced.copied.length} files) at ${modDirectory}. Restart Isaac to load Lua changes.`);
+} catch (error) {
+  console.error(`Could not update the installed mod at ${modDirectory}: ${error.message}`);
 }
 
 server.listen(port, "127.0.0.1", () => {

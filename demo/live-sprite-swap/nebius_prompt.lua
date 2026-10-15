@@ -6,52 +6,6 @@ local statusId = "nebius_passive_status_v2"
 local inputId = "nebius_passive_input_v2"
 local randomizeId = "nebius_passive_randomize_v2"
 
-local moments = {
-  "clear a room", "get hit", "hit an enemy", "reach a new floor", "pick this up",
-}
-local payoffs = {
-  "I sometimes find a coin", "I sometimes find a key", "I sometimes find a bomb",
-  "I sometimes find a heart", "grant me a soul heart",
-}
-local tearLines = {
-  "Tears home in.", "Tears pass through rocks.", "Tears poison.", "Tears burn.",
-  "Tears slow enemies.", "Tears scare enemies.", "Tears charm enemies.",
-  "Tears bounce.", "Tears split.", "Tears glow.", "Tears pierce.", "Tears orbit me.",
-}
-local statLines = {
-  "Add damage.", "Fire a little faster.", "Raise shot speed.", "Add range.",
-  "Move a bit faster.", "Add luck.", "Take a speed hit for more damage.",
-  "Lower damage and raise tears.", "A little range, and no extra damage.",
-}
-local familiarLines = {
-  "A familiar orbits me and fires.",
-  "A familiar follows behind me and fires.",
-  "A familiar stays close and strikes in melee. It does not shoot.",
-  "A shield familiar stands between me and enemies, blocks a hit, and deals contact damage.",
-}
-local auraLines = {
-  "Enemies near me take a pulse of damage.",
-  "A short damage aura ticks around me.",
-}
-
-local function pick(list)
-  return list[(Random() % #list) + 1]
-end
-
-local function randomSentence()
-  local shape = (Random() % 8) + 1
-  if shape == 6 then
-    return pick(familiarLines) .. " " .. pick(tearLines)
-  elseif shape == 7 then
-    return pick(auraLines) .. " " .. pick(statLines)
-  elseif shape == 1 or shape == 4 then
-    return "When I " .. pick(moments) .. ", " .. pick(payoffs) .. ". " .. pick(tearLines) .. " " .. pick(statLines)
-  elseif shape == 2 or shape == 5 or shape == 8 then
-    return pick(statLines) .. " " .. pick(tearLines) .. " When I " .. pick(moments) .. ", " .. pick(payoffs) .. "."
-  end
-  return pick(tearLines) .. " " .. pick(statLines)
-end
-
 function Prompt.new(json)
   return setmetatable({ json = json, ready = false, failed = false, requested = false, held = false, sequence = 0, pending = nil, status = "Describe a passive item. Keep the local bridge running.", text = "" }, Prompt)
 end
@@ -74,7 +28,7 @@ function Prompt:submit()
   local requestId = (context and context.run or "ui") .. "_" .. tostring(Random()) .. "_" .. tostring(self.sequence)
   local encodedOk, encoded = pcall(self.json.encode, { id = requestId, prompt = trimmed })
   if not encodedOk then self.status = "Could not encode the prompt."; return end
-  self.pending, self.started = requestId, Isaac.GetTime()
+  self.pending, self.started, self.pendingKind = requestId, Isaac.GetTime(), nil
   self.status = "Submitted. Waiting for the bridge..."
   if context then Isaac.DebugString("[NebiusBridge] state " .. self.json.encode(context)) end
   Isaac.DebugString("[NebiusBridge] generate " .. encoded)
@@ -83,19 +37,33 @@ end
 
 function Prompt:randomize()
   if self.pending then return end
-  self.text = randomSentence()
-  if self.text == self.lastRandomSentence then self.text = randomSentence() end
-  self.lastRandomSentence = self.text
-  local updated = pcall(function()
-    -- ImGuiData.Value is 1. Keeping the numeric form avoids relying on the
-    -- enum table being exported by older REPENTOGON builds.
-    self:call("UpdateData", inputId, 1, self.text)
-  end)
-  if updated then
-    self.status = "Random passive idea ready. Edit it or generate it."
-  else
-    self.status = "Random passive idea ready. Generate it or type to replace it."
+  local context = self.getContext and self.getContext()
+  if context and context.blocked then self.status = context.blocked; return end
+  if not self.json or type(self.json.encode) ~= "function" then self.status = "JSON support is unavailable."; return end
+  self.sequence = self.sequence + 1
+  local requestId = (context and context.run or "ui") .. "_" .. tostring(Random()) .. "_" .. tostring(self.sequence)
+  local encodedOk, encoded = pcall(self.json.encode, { id = requestId })
+  if not encodedOk then self.status = "Could not encode the sentence request."; return end
+  self.pending, self.started, self.pendingKind = requestId, Isaac.GetTime(), "sentence"
+  self.status = "Asking for a random sentence..."
+  if context then Isaac.DebugString("[NebiusBridge] state " .. self.json.encode(context)) end
+  Isaac.DebugString("[NebiusBridge] sentence " .. encoded)
+end
+
+function Prompt:applySentence(sentence)
+  local trimmed = type(sentence) == "string" and sentence:match("^%s*(.-)%s*$") or ""
+  if #trimmed < 12 or #trimmed > 180 or trimmed:find("\n", 1, true) then
+    self.pending, self.pendingKind = nil, nil
+    self.status = "The random sentence was unusable. Try again."
+    return
   end
+  self.text, self.lastRandomSentence = trimmed, trimmed
+  self.pending, self.pendingKind = nil, nil
+  -- ImGuiData.Value is 1. Keeping the numeric form avoids relying on the
+  -- enum table being exported by older REPENTOGON builds.
+  local updated = pcall(function() self:call("UpdateData", inputId, 1, self.text) end)
+  if updated then self.status = "Random sentence ready. Edit it or generate it."
+  else self.status = "Random sentence ready. Generate it or type to replace it." end
 end
 
 function Prompt:close()
@@ -105,8 +73,9 @@ end
 
 function Prompt:receive(id, status, detail)
   if id ~= self.pending then return end
+  if status == "sentence" and self.pendingKind == "sentence" then self:applySentence(detail); return end
   self.status = detail
-  if status == "error" or status == "accepted" then self.pending = nil end
+  if status == "error" or status == "accepted" then self.pending, self.pendingKind = nil, nil end
 end
 
 function Prompt:updateInput()
@@ -117,7 +86,7 @@ end
 
 function Prompt:render()
   if self.failed then return end
-  if self.pending and Isaac.GetTime() - self.started > 370000 then self.pending = nil; self.status = "Bridge timed out. Check its terminal before submitting again." end
+  if self.pending and Isaac.GetTime() - self.started > 370000 then self.pending, self.pendingKind = nil, nil; self.status = "Bridge timed out. Check its terminal before submitting again." end
   if not self.requested and not self.ready then return end
   if type(ImGui) ~= "table" then self.failed = true; Isaac.DebugString("[NebiusPrompt] UI_UNAVAILABLE"); return end
   local renderOk, failure = pcall(function()
