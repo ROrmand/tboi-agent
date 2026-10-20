@@ -7,6 +7,11 @@ for slot = 0, 63 do
   ids[slot+1], slotById[id] = id, slot+1
 end
 local records, runtime, usedArt, accepted = {}, {}, {}, {}
+local roomStatGrants = {}
+local function roomStamp()
+  local level = Game():GetLevel()
+  return tostring(level:GetAbsoluteStage()) .. ":" .. tostring(level:GetCurrentRoomIndex())
+end
 local session = tostring(Random()) .. "_" .. tostring(Isaac.GetTime())
 local serial, runToken, running, blocked = 0, nil, false, nil
 local pendingProfileEnvelope, lastPollTime, lastStateTime = nil, -999, -999
@@ -47,7 +52,7 @@ local function flagFromName(name)
     burn = TearFlags.TEAR_BURN, slow = TearFlags.TEAR_SLOW,
     fear = TearFlags.TEAR_FEAR, charm = TearFlags.TEAR_CHARM,
     bounce = TearFlags.TEAR_BOUNCE, split = TearFlags.TEAR_SPLIT,
-    orbit = TearFlags.TEAR_ORBIT, glow = TearFlags.TEAR_GLOW,
+    orbit = TearFlags.TEAR_ORBIT, glow = TearFlags.TEAR_GLOW, explosive = TearFlags.TEAR_EXPLOSIVE, confusion = TearFlags.TEAR_CONFUSION, knockback = TearFlags.TEAR_KNOCKBACK,
   }
   return flags[name] or 0
 end
@@ -60,9 +65,28 @@ local hitTriggers = { enemy_hit = true, player_hurt = true }
 local systemNames = { stats = true, tears = true, rules = true, familiar = true, aura = true, on_hit = true, on_kill = true, tear_impact = true, collision = true, tear_update = true, bomb = true, laser = true, knife = true }
 local tearUpdateBehaviors = { home = true, pulse = true, shrink = true }
 local conditions = { chance = true, once_per_room = true, once_per_floor = true }
-local actions = { spawn_pickup = true, grant_soul_hearts = true }
+-- Fixed heart reward catalog: amount is an integer from 1 to 4.
+local heartRewards = {
+  grant_half_red_hearts = { handler = "AddHearts", units = 1, label = "half red heart" },
+  grant_full_red_hearts = { handler = "AddHearts", units = 2, label = "full red heart" },
+  grant_black_hearts = { handler = "AddBlackHearts", units = 2, label = "black heart" },
+  grant_eternal_hearts = { handler = "AddEternalHearts", units = 1, label = "eternal heart" },
+  grant_bone_hearts = { handler = "AddBoneHearts", units = 1, label = "bone heart" },
+}
+local actions = { spawn_pickup = true, grant_soul_hearts = true, grant_stat = true }
+for name in pairs(heartRewards) do actions[name] = true end
+local function grantHeartReward(player, action)
+  if action.type == "grant_soul_hearts" then
+    player:AddSoulHearts(action.amount)
+    return true
+  end
+  local reward = heartRewards[action.type]
+  if not reward then return false end
+  player[reward.handler](player, action.amount * reward.units)
+  return true
+end
 local pickups = { coin = true, key = true, bomb = true, heart = true }
-local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true }
+local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true, explosive = true, confusion = true, knockback = true }
 local familiarTypes = { sentry = true, melee = true, normal = true, shield = true }
 local rangedFamiliars = { sentry = true, normal = true }
 local familiarPatterns = { single = true, fan = true, lob = true, varied = true }
@@ -113,10 +137,30 @@ local function marked(profile, name)
   return false
 end
 
+local function totalFlagEffects(profile)
+  local tear = type(profile.tear_profile) == "table" and profile.tear_profile.flags or nil
+  local attack = type(profile.familiar) == "table" and type(profile.familiar.attack) == "table" and profile.familiar.attack.flags or nil
+  local bomb = type(profile.bomb) == "table" and profile.bomb.flags or nil
+  return (type(tear) == "table" and #tear or 0) + (type(attack) == "table" and #attack or 0) + (type(bomb) == "table" and #bomb or 0)
+end
+
+local roomStatNames = { damage = true, tears = true, luck = true }
+local function validAction(action)
+  if not allowedKeys(action, { type = true, amount = true, pickup_type = true, stat = true }) or not actions[action.type] or not number(action.amount, 1, 4, true) then return false end
+  if action.type == "grant_stat" then return roomStatNames[action.stat] == true and action.pickup_type == nil end
+  return action.stat == nil and (action.type ~= "spawn_pickup" or pickups[action.pickup_type] == true)
+end
+local function validAura(aura)
+  if not allowedKeys(aura, { type=true, damage=true, radius=true, cooldown=true, duration=true }) or not number(aura.radius,50,180,false) or not number(aura.cooldown,15,90,true) then return false end
+  if aura.type == "damage" then return number(aura.damage,0.25,2,false) and aura.duration == nil end
+  if not ({ slow=true, burn=true, fear=true })[aura.type] or not number(aura.duration,15,120,true) then return false end
+  if aura.type == "burn" then return number(aura.damage,0.25,2,false) end
+  return aura.damage == nil
+end
 local function validProc(proc)
   if not allowedKeys(proc, { conditions = true, actions = true }) or not array(proc.conditions, 0, 2) or not array(proc.actions, 1, 2) then return false end
   for _, condition in ipairs(proc.conditions) do if not allowedKeys(condition, { type = true, chance = true }) or not conditions[condition.type] or (condition.type == "chance" and not number(condition.chance, 0, 1, false)) then return false end end
-  for _, action in ipairs(proc.actions) do if not allowedKeys(action, { type = true, amount = true, pickup_type = true }) or not actions[action.type] or not number(action.amount, 1, 4, true) or (action.type == "spawn_pickup" and not pickups[action.pickup_type]) then return false end end
+  for _, action in ipairs(proc.actions) do if not validAction(action) then return false end end
   return true
 end
 
@@ -131,12 +175,13 @@ local function validateProfile(profile, id)
   if not number(metadata.quality, 0, 4, true) then return false, "metadata quality" end
   if not ({ cursed = true, angelic = true, tech = true, gross = true, cosmic = true, none = true })[metadata.theme] then return false, "metadata theme" end
   if not text(metadata.balance_note, 0, 256) then return false, "metadata balance note" end
-  if not array(profile.systems, 0, 16) or type(profile.affects_stats) ~= "boolean" then return false, "systems" end
+  if not array(profile.systems, 0, 6) or type(profile.affects_stats) ~= "boolean" then return false, "systems" end
   local seenSystem = {}
   for _, name in ipairs(profile.systems) do
     if not systemNames[name] or seenSystem[name] then return false, "systems" end
     seenSystem[name] = true
   end
+  if totalFlagEffects(profile) > 3 then return false, "flag budget" end
   if profile.affects_stats ~= marked(profile, "stats") then return false, "affects_stats" end
   if marked(profile, "stats") then
     if not allowedKeys(profile.stats, { damage = true, tears = true, shot_speed = true, range = true, speed = true, luck = true, soul_hearts = true, flying = true }) then return false, "stat keys" end
@@ -169,7 +214,7 @@ local function validateProfile(profile, id)
   elseif profile.aura ~= nil then return false, "aura" end
   if profile.aura~=nil then
     local aura=profile.aura
-    if not allowedKeys(aura,{type=true,damage=true,radius=true,cooldown=true}) or aura.type~="damage" or not number(aura.damage,0.25,2,false) or not number(aura.radius,50,180,false) or not number(aura.cooldown,15,90,true) then return false,"aura" end
+    if not validAura(aura) then return false,"aura" end
   end
   for _, name in ipairs({ "on_kill", "tear_impact", "collision" }) do
     if marked(profile, name) then
@@ -182,7 +227,11 @@ local function validateProfile(profile, id)
   elseif profile.tear_update ~= nil then return false, "tear_update" end
   if marked(profile, "bomb") then
     local bomb = profile.bomb
-    if not allowedKeys(bomb, { damage = true, radius = true }) or not number(bomb.damage, 0.5, 3, false) or not number(bomb.radius, 40, 120, false) then return false, "bomb" end
+    if not allowedKeys(bomb, { damage = true, radius = true, flags = true }) or not number(bomb.damage, 0.5, 3, false) or not number(bomb.radius, 40, 120, false) then return false, "bomb" end
+    if bomb.flags ~= nil then
+      if not array(bomb.flags,0,1) then return false, "bomb flags" end
+      for _, flag in ipairs(bomb.flags) do if flag ~= "poison" then return false, "bomb flag" end end
+    end
   elseif profile.bomb ~= nil then return false, "bomb" end
   for _, name in ipairs({ "laser", "knife" }) do
     if marked(profile, name) then
@@ -200,7 +249,7 @@ local function validateProfile(profile, id)
       sawHit = true
     else return false, "rule" end
     for _, condition in ipairs(rule.conditions) do if not allowedKeys(condition, { type = true, chance = true }) or not conditions[condition.type] or (condition.type == "chance" and not number(condition.chance, 0, 1, false)) then return false, "condition" end end
-    for _, action in ipairs(rule.actions) do if not allowedKeys(action, { type = true, amount = true, pickup_type = true }) or not actions[action.type] or not number(action.amount, 1, 4, true) or (action.type == "spawn_pickup" and not pickups[action.pickup_type]) then return false, "action" end end
+    for _, action in ipairs(rule.actions) do if not validAction(action) then return false, "action" end end
   end
   if marked(profile, "rules") and not sawRule then return false, "rules" end
   if marked(profile, "on_hit") and not sawHit then return false, "on_hit" end
@@ -211,7 +260,7 @@ end
 local flagWords = {
   homing = "homing", spectral = "spectral", piercing = "piercing", poison = "poison",
   burn = "burning", slow = "slowing", fear = "fear", charm = "charm", bounce = "bouncing",
-  split = "splitting", orbit = "orbiting", glow = "glowing",
+  split = "splitting", orbit = "orbiting", glow = "glowing", explosive = "explosive", confusion = "confusing", knockback = "knockback",
 }
 local whenText = {
   room_enter = "when you enter a room", room_clear = "when a room is cleared",
@@ -248,6 +297,9 @@ local function actionPhrase(action, chance)
   if action.type == "grant_soul_hearts" then
     return lead .. "grants " .. (amount == 1 and "a soul heart" or (amount .. " soul hearts"))
   end
+  if action.type == "grant_stat" then return lead .. "grants +" .. amount .. " " .. action.stat .. " for this room" end
+  local reward = heartRewards[action.type]
+  if reward then return lead .. "grants " .. amount .. " " .. reward.label .. (amount == 1 and "" or "s") end
   local word = action.pickup_type or "pickup"
   local noun = amount == 1 and ("a " .. word) or (amount .. " " .. word .. "s")
   return lead .. "drops " .. noun
@@ -303,10 +355,13 @@ local function effectSummary(generated)
       parts[#parts + 1] = #flags > 0 and (lead .. " " .. flagClause(flags, "")) or (lead .. " tears")
     end
   end
-  if generated.aura then parts[#parts + 1] = "nearby enemies take damage" end
+  if generated.aura then
+    local auraText = { damage="nearby enemies take damage", slow="nearby enemies are slowed", burn="nearby enemies burn", fear="nearby enemies flee" }
+    parts[#parts + 1] = auraText[generated.aura.type]
+  end
   local updateText = { home = "tears drift toward enemies", pulse = "tears pulse in size", shrink = "tears shrink as they fly" }
   if generated.tear_update then parts[#parts + 1] = updateText[generated.tear_update.behavior] end
-  if generated.bomb then parts[#parts + 1] = "stronger bombs" end
+  if generated.bomb then parts[#parts + 1] = generated.bomb.flags and #generated.bomb.flags > 0 and "stronger poison bombs" or "stronger bombs" end
   if generated.laser then parts[#parts + 1] = "stronger lasers" end
   if generated.knife then parts[#parts + 1] = "stronger knives" end
   return effectSentence(parts, generated.metadata and generated.metadata.description)
@@ -400,7 +455,9 @@ local function saveRun()
   local states={}
   for index,profile in ipairs(runtime) do states[index]=profile.ruleState end
   local ok,err=pcall(function()
-    Demo:SaveData(bridgeJson.encode({version=2,records=records,ruleStates=states}))
+    local saved = {version=2,records=records,ruleStates=states}
+    if #roomStatGrants > 0 then saved.roomStats = {room=roomStamp(),grants=roomStatGrants} end
+    Demo:SaveData(bridgeJson.encode(saved))
   end)
   if not ok then blocked="Could not save generated items: "..tostring(err); showStatus(blocked) end
   return ok
@@ -480,8 +537,33 @@ local function pollNativeProfile(allowApply)
   Isaac.DebugString("[Live Sprite Swap Demo] PROFILE ACCEPTED: "..runtime[index].name.."; "..(ackOk and queued and "ACK queued" or "ACK unavailable"))
   publishState()
 end
+local function restoreRoomStats(saved)
+  if saved == nil then return true end
+  if not allowedKeys(saved,{room=true,grants=true}) or not text(saved.room,1,100) or not array(saved.grants,0,1536) then return false end
+  local seen = {}
+  for _, grant in ipairs(saved.grants) do
+    if not allowedKeys(grant,{index=true,player=true,stat=true,amount=true}) or not number(grant.index,1,#records,true) or not text(grant.player,1,40) or not roomStatNames[grant.stat] or not number(grant.amount,1,4,true) then return false end
+    local key=grant.index .. ":" .. grant.player .. ":" .. grant.stat
+    if seen[key] then return false end
+    seen[key]=true
+    -- A saved bonus must correspond to an action on its item.
+    local record=records[grant.index]
+    local matches=false
+    local function check(entry)
+      for _, action in ipairs(entry and entry.actions or {}) do
+        if action.type=="grant_stat" and action.stat==grant.stat and action.amount==grant.amount then matches=true end
+      end
+    end
+    for _, rule in ipairs(record.rules) do check(rule) end
+    check(record.on_kill); check(record.tear_impact); check(record.collision)
+    if not matches then return false end
+  end
+  if saved.room==roomStamp() then roomStatGrants=saved.grants end
+  return true
+end
 function Demo:onGameStarted(isContinued)
   records,runtime,accepted={},{},{}
+  roomStatGrants={}
   pendingProfileEnvelope,blocked,promptUi.pending,promptUi.pendingKind,pendingBanner,pendingStatPlayer=nil,nil,nil,nil,nil,nil
   serial=serial+1; runToken=session.."_"..serial; running=true
   if isContinued then
@@ -505,9 +587,10 @@ function Demo:onGameStarted(isContinued)
         runtime[index].ruleState=state; accepted[record.bridge_request_id]=true
         applyIdentity(index, runtime[index])
       end
+      if not blocked and not restoreRoomStats(saved.roomStats) then blocked="Invalid saved room stats." end
     end
   else saveRun() end
-  if blocked then records,runtime,accepted={},{},{}; showStatus(blocked) end
+  if blocked then records,runtime,accepted={},{},{}; roomStatGrants={}; showStatus(blocked) end
   rebuildSystems()
   for p=0,Game():GetNumPlayers()-1 do refreshStats(Isaac.GetPlayer(p)) end
   publishState()
@@ -780,8 +863,17 @@ function Demo:updatePassiveEffects()
         local ok,entities=pcall(Isaac.FindInRadius,player.Position,profile.aura.radius,EntityPartition.ENEMY)
         if ok and type(entities)=="table" then
           for _,enemy in ipairs(entities) do
-            hurtEnemy(enemy,profile.aura.damage,player)
-            if enemy.SetColor and Color then pcall(enemy.SetColor, enemy, Color(1, 0.45, 0.2, 1, 0.5, 0.1, 0), 10, 1, true, false) end
+            local aura=profile.aura
+            if aura.type=="damage" or withinDistance(player.Position,enemy.Position,aura.radius) then
+              if aura.type=="damage" then
+                hurtEnemy(enemy,aura.damage,player)
+                if enemy.SetColor and Color then pcall(enemy.SetColor, enemy, Color(1, 0.45, 0.2, 1, 0.5, 0.1, 0), 10, 1, true, false) end
+              elseif (not enemy.IsVulnerableEnemy or enemy:IsVulnerableEnemy()) and (not enemy.IsDead or not enemy:IsDead()) then
+                if aura.type=="slow" then enemy:AddSlowing(EntityRef(player),aura.duration,0.5,Color(0.5,0.7,1,1))
+                elseif aura.type=="burn" then enemy:AddBurn(EntityRef(player),aura.duration,aura.damage)
+                elseif aura.type=="fear" then enemy:AddFear(EntityRef(player),aura.duration) end
+              end
+            end
           end
         end
       end
@@ -801,7 +893,7 @@ if CacheFlag.CACHE_FLYING then
 end
 function Demo:onEvaluateCache(player,cacheFlag)
   local apply=cacheApply[cacheFlag]
-  if not apply or #members.stats==0 then return end
+  if not apply or (#members.stats==0 and #roomStatGrants==0) then return end
   local total={damage=0,fireDelay=0,range=0,luck=0,shotSpeed=0,speed=0,flying=false}
   eachOwned(members.stats, player, function(index, profile)
     local count = 1
@@ -814,7 +906,29 @@ function Demo:onEvaluateCache(player,cacheFlag)
       else total[key]=total[key]+profile[key]*count end
     end
   end)
+  for _, grant in ipairs(roomStatGrants) do
+    if grant.player==tostring(player.InitSeed) and owned(player,grant.index) then
+      if grant.stat=="tears" then total.fireDelay=total.fireDelay-grant.amount
+      else total[grant.stat]=total[grant.stat]+grant.amount end
+    end
+  end
   apply(player, total)
+end
+local function grantRoomStat(profile, player, action)
+  if action.type ~= "grant_stat" then return false end
+  local index
+  for i, candidate in ipairs(runtime) do if candidate==profile then index=i; break end end
+  if not index then return true end
+  local key=tostring(player.InitSeed)
+  for _, grant in ipairs(roomStatGrants) do
+    if grant.index==index and grant.player==key and grant.stat==action.stat then
+      if action.amount>grant.amount then grant.amount=action.amount; refreshStats(player) end
+      return true
+    end
+  end
+  roomStatGrants[#roomStatGrants+1]={index=index,player=key,stat=action.stat,amount=action.amount}
+  refreshStats(player)
+  return true
 end
 local function ruleMayRun(profile, rule, ruleIndex, player)
   local roomIndex = Game():GetLevel():GetCurrentRoomIndex()
@@ -843,9 +957,7 @@ local function runOneRuleSet(triggerName, player, profile)
   for ruleIndex, rule in ipairs(profile.rules or {}) do
     if rule.trigger == triggerName and ruleMayRun(profile, rule, ruleIndex, player) then
       for _, action in ipairs(rule.actions or {}) do
-        if action.type == "grant_soul_hearts" then
-          player:AddSoulHearts(action.amount or 1)
-        elseif action.type == "spawn_pickup" then
+        if not grantRoomStat(profile, player, action) and not grantHeartReward(player, action) and action.type == "spawn_pickup" then
           local variantByName = {
             coin = PickupVariant.PICKUP_COIN, key = PickupVariant.PICKUP_KEY,
             bomb = PickupVariant.PICKUP_BOMB, heart = PickupVariant.PICKUP_HEART,
@@ -867,9 +979,7 @@ end
 
 local function runActions(profile, player, list)
   for _, action in ipairs(list or {}) do
-    if action.type == "grant_soul_hearts" then
-      player:AddSoulHearts(action.amount or 1)
-    elseif action.type == "spawn_pickup" then
+    if not grantRoomStat(profile, player, action) and not grantHeartReward(player, action) and action.type == "spawn_pickup" then
       local variantByName = {
         coin = PickupVariant.PICKUP_COIN, key = PickupVariant.PICKUP_KEY,
         bomb = PickupVariant.PICKUP_BOMB, heart = PickupVariant.PICKUP_HEART,
@@ -937,7 +1047,13 @@ end
 local function forPlayers(trigger)
   for p=0,Game():GetNumPlayers()-1 do runProfileRules(trigger,Isaac.GetPlayer(p)) end
 end
-function Demo:onPostNewRoom() forPlayers("room_enter"); if running then saveRun() end end
+function Demo:onPostNewRoom()
+  local hadGrants=#roomStatGrants>0
+  roomStatGrants={}
+  if hadGrants then for p=0,Game():GetNumPlayers()-1 do refreshStats(Isaac.GetPlayer(p)) end end
+  forPlayers("room_enter")
+  if running then saveRun() end
+end
 function Demo:onPreSpawnCleanAward() forPlayers("room_clear") end
 function Demo:onPostNewLevel() forPlayers("new_floor") end
 function Demo:onEntityTakeDamage(entity,_,_,source)
@@ -1024,6 +1140,9 @@ function Demo:onPostFireBomb(bomb)
     if not profile.bomb then return end
     bomb.ExplosionDamage = (bomb.ExplosionDamage or 0) + profile.bomb.damage
     bomb.Radius = profile.bomb.radius
+    for _, flag in ipairs(profile.bomb.flags or {}) do
+      if flag == "poison" then bomb:AddTearFlags(TearFlags.TEAR_POISON) end
+    end
   end)
 end
 local function addWeaponDamage(listName, field, entity)

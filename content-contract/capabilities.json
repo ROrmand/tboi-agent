@@ -1,17 +1,33 @@
 {
   "version": 1,
   "entity_type": "passive_item",
+  "item_limits": {"max_systems":6,"max_total_flags":3},
   "triggers": ["room_enter", "room_clear", "enemy_hit", "player_hurt", "pickup", "new_floor", "tear_fire"],
   "conditions": ["chance", "once_per_room", "once_per_floor"],
-  "actions": ["spawn_pickup", "grant_soul_hearts"],
+  "actions": ["spawn_pickup", "grant_soul_hearts", "grant_half_red_hearts", "grant_full_red_hearts", "grant_black_hearts", "grant_eternal_hearts", "grant_bone_hearts", "grant_stat"],
+  "heart_rewards": {
+    "grant_half_red_hearts": {"handler":"AddHearts","units":1,"amount_bounds":[1,4],"label":"half red heart"},
+    "grant_full_red_hearts": {"handler":"AddHearts","units":2,"amount_bounds":[1,4],"label":"full red heart"},
+    "grant_black_hearts": {"handler":"AddBlackHearts","units":2,"amount_bounds":[1,4],"label":"black heart"},
+    "grant_eternal_hearts": {"handler":"AddEternalHearts","units":1,"amount_bounds":[1,4],"label":"eternal heart"},
+    "grant_bone_hearts": {"handler":"AddBoneHearts","units":1,"amount_bounds":[1,4],"label":"bone heart"}
+  },
   "regions": ["passive", "familiar", "aura", "familiar_aura"],
   "systems": ["stats", "tears", "rules", "familiar", "aura", "on_hit", "on_kill", "tear_impact", "collision", "tear_update", "bomb", "laser", "knife"],
   "tear_update_behaviors": ["home", "pulse", "shrink"],
   "familiars": ["sentry", "melee", "normal", "shield"],
   "familiar_patterns": ["single", "fan", "lob", "varied"],
-  "auras": ["damage"],
+  "auras": ["damage", "slow", "burn", "fear"],
+  "room_stat_reward": {"handler":"MC_EVALUATE_CACHE","stats":["damage","tears","luck"],"amount_bounds":[1,4],"integer":true,"stacking":"maximum_per_item_player_stat","expires":"next_room","tears_unit":"fire_delay_reduction"},
+  "aura_statuses": {
+    "slow": {"handler":"AddSlowing","duration_bounds":[15,120],"radius_bounds":[50,180],"cooldown_bounds":[15,90],"slow_factor":0.5},
+    "burn": {"handler":"AddBurn","duration_bounds":[15,120],"damage_bounds":[0.25,2],"radius_bounds":[50,180],"cooldown_bounds":[15,90]},
+    "fear": {"handler":"AddFear","duration_bounds":[15,120],"radius_bounds":[50,180],"cooldown_bounds":[15,90]}
+  },
+  "bomb_flags": ["poison"],
+  "bomb_flag_effects": {"poison":{"handler":"AddTearFlags","flag":"TEAR_POISON","max_flags":1}},
   "pickup_types": ["coin", "key", "bomb", "heart"],
-  "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow"],
+  "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow", "explosive", "confusion", "knockback"],
   "stat_bounds": {
     "damage": [-10, 15],
     "tears": [-5, 10],

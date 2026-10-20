@@ -10,6 +10,8 @@ Thumbs.db
 runtime/generated/
 runtime/mod-backup-*/
 runtime/*.err
+work/test-tmp/
+work/repentogon-v1.1.3*/
 demo/live-sprite-swap/generated_profile.lua
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item.png
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item_*.png
