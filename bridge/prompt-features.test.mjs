@@ -10,10 +10,11 @@ const featured = (region) => ({
 });
 
 test("a passive region drops familiar and aura the model also filled", () => {
-  const profile = applyRegion(featured("passive"));
+  const profile = applyRegion({ ...featured("passive"), systems: ["stats", "familiar", "aura", "tears"] });
   assert.equal(profile.familiar, undefined);
   assert.equal(profile.aura, undefined);
   assert.equal(profile.stats.luck, 1);
+  assert.deepEqual(profile.systems, ["stats", "tears"]);
 });
 
 test("a familiar region keeps the companion and drops the aura", () => {
@@ -65,6 +66,8 @@ test("repair notes name the missing object", () => {
   assert.match(repairNote("The on_kill system requires its proc."), /on_kill/);
   assert.match(repairNote("The tear_impact system requires its proc."), /tear_impact/);
   assert.match(repairNote("metadata.description exceeds the 64-byte game limit."), /60 characters/);
+  assert.match(repairNote("Item spends 14 weight and quality 3 allows 18. The weight budget cannot hold this item."), /Quality 4 allows 24/);
+  assert.match(repairNote("The aura system must match the region."), /passive cannot include familiar or aura/);
 });
 
 test("a speed and room-clear wish gets the missing stats object and rule", () => {

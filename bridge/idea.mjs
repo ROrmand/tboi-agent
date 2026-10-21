@@ -1,10 +1,10 @@
 import { requestTextModel } from "./network.mjs";
 
-const MECHANICAL_CUES = /\b(?:damage|tear(?:s)?|luck|speed|range|shot|heart|bomb(?:s)?|laser(?:s)?|knife|aura|familiar|enemy|room|pickup|coin|key|stat|poison|burn|slow|fear|explosive|confusion|knockback|grant|spawn|clear|fire|hit|kill|collision|flying)\b/i;
+const MECHANICAL_CUES = /\b(?:damage|tear(?:s)?|luck|speed|range|shot|heart|bomb(?:s)?|laser(?:s)?|knife|aura|familiar|enemy|room|pickup|coin|key|stat|poison|burn|slow|fear|explosive|confusion|knockback|grant|spawn|clear|fire|hit|kill|collision|flying|spider|pooter|pill|card|battery|trinket|chest|continuum|boomerang|creep|wiggle)\b/i;
 
 export function isUnderspecifiedIdea(value) {
   const words = String(value ?? "").trim().match(/[\p{L}\p{N}]+/gu) || [];
-  return words.length <= 24 && !MECHANICAL_CUES.test(words.join(" "));
+  return words.length > 0 && !MECHANICAL_CUES.test(words.join(" "));
 }
 
 export function cleanIdeaBrief(value) {
@@ -27,7 +27,9 @@ export async function expandIdea(prompt, capabilities, env, request = requestTex
     `heart rewards: ${Object.keys(capabilities.heart_rewards).join(", ")}`,
     `auras: ${capabilities.auras.join(", ")}`,
     `bomb effects: ${Object.keys(capabilities.bomb_flag_effects).join(", ")}`,
-  ].join("; ");
+    capabilities.pickup_types ? `pickups: ${capabilities.pickup_types.join(", ")}` : "",
+    capabilities.friendlies ? `friendlies: ${capabilities.friendlies.join(", ")}` : "",
+  ].filter(Boolean).join("; ");
   const response = await request(`${(env.NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1/").replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.NEBIUS_API_KEY}`, "Content-Type": "application/json" },
@@ -36,7 +38,7 @@ export async function expandIdea(prompt, capabilities, env, request = requestTex
       temperature: 0.9,
       max_tokens: 140,
       messages: [
-        { role: "system", content: `Expand a sparse Binding of Isaac passive-item idea into one compact creative brief. Preserve its theme and choose two or three distinct mechanics from this catalog: ${catalog}. Use only these catalog terms for mechanics. Do not add unsupported abilities, active items, synergies, weapons, parameters, Lua, callbacks, costumes, or sounds. Return only one paragraph under 360 characters.` },
+        { role: "system", content: `Expand a sparse Binding of Isaac passive-item idea into one compact creative brief. Preserve its theme and choose one primary mechanic plus one secondary mechanic from this catalog: ${catalog}. Use only these catalog terms for mechanics. Do not add unsupported abilities, active items, synergies, weapons, parameters, Lua, callbacks, costumes, or sounds. Return only one paragraph under 360 characters.` },
         { role: "user", content: `Sparse idea: ${prompt}` },
       ],
     }),

@@ -52,7 +52,9 @@ local function flagFromName(name)
     burn = TearFlags.TEAR_BURN, slow = TearFlags.TEAR_SLOW,
     fear = TearFlags.TEAR_FEAR, charm = TearFlags.TEAR_CHARM,
     bounce = TearFlags.TEAR_BOUNCE, split = TearFlags.TEAR_SPLIT,
-    orbit = TearFlags.TEAR_ORBIT, glow = TearFlags.TEAR_GLOW, explosive = TearFlags.TEAR_EXPLOSIVE, confusion = TearFlags.TEAR_CONFUSION, knockback = TearFlags.TEAR_KNOCKBACK,
+    orbit = TearFlags.TEAR_ORBIT | TearFlags.TEAR_SPECTRAL, glow = TearFlags.TEAR_GLOW, explosive = TearFlags.TEAR_EXPLOSIVE, confusion = TearFlags.TEAR_CONFUSION, knockback = TearFlags.TEAR_KNOCKBACK,
+    continuum = TearFlags.TEAR_CONTINUUM, boomerang = TearFlags.TEAR_BOOMERANG, grow = TearFlags.TEAR_GROW, shrink = TearFlags.TEAR_SHRINK,
+    sticky = TearFlags.TEAR_WAIT, wiggle = TearFlags.TEAR_WIGGLE, slowing_creep = TearFlags.TEAR_GISH,
   }
   return flags[name] or 0
 end
@@ -73,7 +75,7 @@ local heartRewards = {
   grant_eternal_hearts = { handler = "AddEternalHearts", units = 1, label = "eternal heart" },
   grant_bone_hearts = { handler = "AddBoneHearts", units = 1, label = "bone heart" },
 }
-local actions = { spawn_pickup = true, grant_soul_hearts = true, grant_stat = true }
+local actions = { spawn_pickup = true, spawn_friendly = true, grant_soul_hearts = true, grant_stat = true }
 for name in pairs(heartRewards) do actions[name] = true end
 local function grantHeartReward(player, action)
   if action.type == "grant_soul_hearts" then
@@ -85,15 +87,31 @@ local function grantHeartReward(player, action)
   player[reward.handler](player, action.amount * reward.units)
   return true
 end
-local pickups = { coin = true, key = true, bomb = true, heart = true }
-local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true, explosive = true, confusion = true, knockback = true }
+local pickups = { coin = true, key = true, bomb = true, heart = true, pill = true, card = true, battery = true, trinket = true, chest = true, sack = true }
+local friendlies = { attack_fly = true, spider = true, pooter = true }
+local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true, explosive = true, confusion = true, knockback = true, continuum = true, boomerang = true, grow = true, shrink = true, sticky = true, wiggle = true, slowing_creep = true }
 local familiarTypes = { sentry = true, melee = true, normal = true, shield = true }
 local rangedFamiliars = { sentry = true, normal = true }
 local familiarPatterns = { single = true, fan = true, lob = true, varied = true }
 local statBounds = {
-  damage = {-10, 15}, tears = {-5, 10}, shot_speed = {-1, 1.5}, range = {-10, 20},
-  speed = {-1, 0.5}, luck = {-5, 10}, soul_hearts = {0, 4},
+  damage = {-1, 15}, tears = {-1, 10}, shot_speed = {-0.3, 1.5}, range = {-5, 20},
+  speed = {-0.15, 0.5}, luck = {-1, 10}, soul_hearts = {-4, 4},
 }
+-- Keep these numbers in step with content-contract/capabilities.json weights.
+local qualityBudgets = { [0] = 4, [1] = 8, [2] = 12, [3] = 18, [4] = 24 }
+local flagWeights = {
+  glow = 6, spectral = 6, bounce = 6, wiggle = 6, poison = 6, burn = 6, slow = 6, fear = 6, charm = 6,
+  confusion = 6, split = 6, knockback = 6, grow = 6, shrink = 6, sticky = 6, slowing_creep = 6,
+  piercing = 6, orbit = 6, continuum = 6, boomerang = 6, homing = 6, explosive = 6,
+}
+local pickupWeights = { coin = 1, heart = 2, key = 2, bomb = 2, pill = 2, card = 2, battery = 2, sack = 2, trinket = 3, chest = 3 }
+local heartWeights = { grant_half_red_hearts = 2, grant_full_red_hearts = 3, grant_soul_hearts = 8, grant_black_hearts = 4, grant_bone_hearts = 4, grant_eternal_hearts = 5 }
+local friendlyWeights = { attack_fly = 2, spider = 2, pooter = 3 }
+local statWeights = {
+  damage = { step = 1, weight = 1 }, damage_multiplier = { base = 1, step = 0.1, weight = 1, activation_weight = 1 }, tears = { step = 1, weight = 1 }, shot_speed = { step = 0.1, weight = 3 },
+  range = { step = 1, weight = 1 }, speed = { step = 0.1, weight = 4 }, luck = { step = 1, weight = 1 }, soul_hearts = { step = 1, weight = 2 },
+}
+local systemWeights = { familiar = 4, aura = 6, bomb = 3, laser = 3, knife = 3, tear_update = 6 }
 
 local function allowedKeys(value, keys)
   if type(value) ~= "table" then return false end
@@ -146,9 +164,68 @@ end
 
 local roomStatNames = { damage = true, tears = true, luck = true }
 local function validAction(action)
-  if not allowedKeys(action, { type = true, amount = true, pickup_type = true, stat = true }) or not actions[action.type] or not number(action.amount, 1, 4, true) then return false end
-  if action.type == "grant_stat" then return roomStatNames[action.stat] == true and action.pickup_type == nil end
-  return action.stat == nil and (action.type ~= "spawn_pickup" or pickups[action.pickup_type] == true)
+  if not allowedKeys(action, { type = true, amount = true, pickup_type = true, stat = true, friendly_type = true }) or not actions[action.type] or not number(action.amount, 1, 4, true) then return false end
+  if action.type == "grant_stat" then return roomStatNames[action.stat] == true and action.pickup_type == nil and action.friendly_type == nil end
+  if action.type == "spawn_friendly" then return action.amount == 1 and friendlies[action.friendly_type] == true and action.pickup_type == nil and action.stat == nil end
+  if action.type == "spawn_pickup" then return pickups[action.pickup_type] == true and action.stat == nil and action.friendly_type == nil end
+  return action.stat == nil and action.pickup_type == nil and action.friendly_type == nil
+end
+local function statSteps(value, step)
+  if not value or value == 0 then return 0 end
+  local steps = math.floor(math.abs(value) / step - 1e-9 + 0.5)
+  if steps == 0 then steps = 1 end
+  return value < 0 and -steps or steps
+end
+-- Price damage reductions by their equivalent inverse increase. This makes
+-- 2.0x cost 11 and 0.5x refund 11, while 0.9x still refunds 2.
+local function multiplierWeight(value, spec)
+  local base = spec.base or 1
+  if value == base then return 0 end
+  if value > base then
+    local steps = statSteps(value - base, spec.step)
+    return steps * spec.weight + (spec.activation_weight or 0)
+  end
+  local inverseGain = base / value - 1
+  local steps = math.floor(inverseGain / spec.step + 0.5)
+  if steps < 1 then steps = 1 end
+  return -(steps * spec.weight + (spec.activation_weight or 0))
+end
+local function profileWeight(profile)
+  local total = 0
+  local tear = type(profile.tear_profile) == "table" and profile.tear_profile.flags or nil
+  local attack = type(profile.familiar) == "table" and type(profile.familiar.attack) == "table" and profile.familiar.attack.flags or nil
+  local bomb = type(profile.bomb) == "table" and profile.bomb.flags or nil
+  for _, list in ipairs({ tear, attack, bomb }) do
+    if type(list) == "table" then for _, flag in ipairs(list) do total = total + (flagWeights[flag] or 0) end end
+  end
+  if type(profile.stats) == "table" then
+    for name, spec in pairs(statWeights) do
+      local value = profile.stats[name] or spec.base or 0
+      if name == "damage_multiplier" then
+        total = total + multiplierWeight(value, spec)
+      else
+        local steps = statSteps(value - (spec.base or 0), spec.step)
+        total = total + steps * spec.weight + (steps == 0 and 0 or (steps > 0 and 1 or -1) * (spec.activation_weight or 0))
+      end
+    end
+    if profile.stats.flying then total = total + 8 end
+  end
+  for name, weight in pairs(systemWeights) do if marked(profile, name) then total = total + weight end end
+  local roomStats = {}
+  local function spend(action)
+    if type(action) ~= "table" then return end
+    if action.type == "spawn_pickup" then total = total + (pickupWeights[action.pickup_type] or 0) * (action.amount or 1)
+    elseif action.type == "spawn_friendly" then total = total + (friendlyWeights[action.friendly_type] or 0) * (action.amount or 1)
+    elseif heartWeights[action.type] then total = total + heartWeights[action.type] * (action.amount or 1)
+    elseif action.type == "grant_stat" then roomStats[action.stat] = math.max(roomStats[action.stat] or 0, action.amount or 0) end
+  end
+  for _, rule in ipairs(profile.rules or {}) do for _, action in ipairs(rule.actions or {}) do spend(action) end end
+  for _, name in ipairs({ "on_kill", "tear_impact", "collision" }) do
+    local proc = profile[name]
+    if type(proc) == "table" then for _, action in ipairs(proc.actions or {}) do spend(action) end end
+  end
+  for _, amount in pairs(roomStats) do total = total + amount end
+  return total
 end
 local function validAura(aura)
   if not allowedKeys(aura, { type=true, damage=true, radius=true, cooldown=true, duration=true }) or not number(aura.radius,50,180,false) or not number(aura.cooldown,15,90,true) then return false end
@@ -184,8 +261,9 @@ local function validateProfile(profile, id)
   if totalFlagEffects(profile) > 3 then return false, "flag budget" end
   if profile.affects_stats ~= marked(profile, "stats") then return false, "affects_stats" end
   if marked(profile, "stats") then
-    if not allowedKeys(profile.stats, { damage = true, tears = true, shot_speed = true, range = true, speed = true, luck = true, soul_hearts = true, flying = true }) then return false, "stat keys" end
+    if not allowedKeys(profile.stats, { damage = true, damage_multiplier = true, tears = true, shot_speed = true, range = true, speed = true, luck = true, soul_hearts = true, flying = true }) then return false, "stat keys" end
     for name, bounds in pairs(statBounds) do if not number(profile.stats[name], bounds[1], bounds[2], name == "soul_hearts") then return false, "stat " .. name end end
+    if profile.stats.damage_multiplier ~= nil and not number(profile.stats.damage_multiplier, 0.5, 2, false) then return false, "damage multiplier" end
     if profile.stats.flying ~= nil and type(profile.stats.flying) ~= "boolean" then return false, "flying" end
   elseif profile.stats ~= nil then return false, "stats" end
   local tear = profile.tear_profile
@@ -253,6 +331,8 @@ local function validateProfile(profile, id)
   end
   if marked(profile, "rules") and not sawRule then return false, "rules" end
   if marked(profile, "on_hit") and not sawHit then return false, "on_hit" end
+  local budget = qualityBudgets[metadata.quality]
+  if budget == nil or profileWeight(profile) > budget then return false, "weight budget" end
   return true
 end
 
@@ -261,6 +341,7 @@ local flagWords = {
   homing = "homing", spectral = "spectral", piercing = "piercing", poison = "poison",
   burn = "burning", slow = "slowing", fear = "fear", charm = "charm", bounce = "bouncing",
   split = "splitting", orbit = "orbiting", glow = "glowing", explosive = "explosive", confusion = "confusing", knockback = "knockback",
+  continuum = "wrapping", boomerang = "returning", grow = "growing", shrink = "shrinking", sticky = "sticky", wiggle = "wiggling", slowing_creep = "slowing creep",
 }
 local whenText = {
   room_enter = "when you enter a room", room_clear = "when a room is cleared",
@@ -298,6 +379,10 @@ local function actionPhrase(action, chance)
     return lead .. "grants " .. (amount == 1 and "a soul heart" or (amount .. " soul hearts"))
   end
   if action.type == "grant_stat" then return lead .. "grants +" .. amount .. " " .. action.stat .. " for this room" end
+  if action.type == "spawn_friendly" then
+    local names = { attack_fly = "attack fly", spider = "spider", pooter = "pooter" }
+    return lead .. "spawns a friendly " .. (names[action.friendly_type] or "enemy")
+  end
   local reward = heartRewards[action.type]
   if reward then return lead .. "grants " .. amount .. " " .. reward.label .. (amount == 1 and "" or "s") end
   local word = action.pickup_type or "pickup"
@@ -331,8 +416,12 @@ local function effectSummary(generated)
     end
     if #up > 0 then parts[#parts + 1] = clauseList(up) .. " up" end
     if #down > 0 then parts[#parts + 1] = clauseList(down) .. " down" end
+    if stats.damage_multiplier and stats.damage_multiplier ~= 1 then
+      parts[#parts + 1] = "damage x" .. string.format("%.1f", stats.damage_multiplier)
+    end
     local hearts = stats.soul_hearts or 0
     if hearts > 0 then parts[#parts + 1] = "grants " .. hearts .. " soul heart" .. (hearts == 1 and "" or "s") end
+    if hearts < 0 then parts[#parts + 1] = "removes " .. -hearts .. " soul heart" .. (hearts == -1 and "" or "s") end
     if stats.flying == true then parts[#parts + 1] = "grants flight" end
   end
   local tear = generated.tear_profile
@@ -380,10 +469,11 @@ local function makeProfile(generated)
     tearColor = Color(color.r or 1, color.g or 1, color.b or 1, color.a or 1, 0, 0, 0),
     tearFlag = tearFlags, tearFlagNames = tear and tear.flags or {}, tearScale = tear and tear.scale or 1, soundName = "LIVE PROFILE EMBER",
     affectsStats = generated.affects_stats == true,
-    damage = stats.damage or 0, fireDelay = -(stats.tears or 0),
+    damage = stats.damage or 0, damageMultiplier = stats.damage_multiplier or 1, fireDelay = -(stats.tears or 0),
     range = stats.range or 0, luck = stats.luck or 0,
     shotSpeed = stats.shot_speed or 0, speed = stats.speed or 0,
     soulHearts = stats.soul_hearts or 0, flying = stats.flying == true, rules = generated.rules or {}, familiar = generated.familiar, aura = generated.aura,
+    friendlyToken = generated.bridge_request_id,
     on_kill = generated.on_kill, tear_impact = generated.tear_impact, collision = generated.collision,
     tear_update = generated.tear_update, bomb = generated.bomb, laser = generated.laser, knife = generated.knife,
     familiarSpriteSheet = generated.familiar_sprite_sheet, familiarAnimation = generated.familiar_animation, familiarAnimationSheet = generated.familiar_animation_sheet, familiarEntities = {}, ruleState = {},
@@ -881,7 +971,7 @@ function Demo:updatePassiveEffects()
   end
 end
 local cacheApply = {
-  [CacheFlag.CACHE_DAMAGE] = function(player, total) player.Damage=player.Damage+total.damage end,
+  [CacheFlag.CACHE_DAMAGE] = function(player, total) player.Damage=(player.Damage+total.damage)*total.damageMultiplier end,
   [CacheFlag.CACHE_FIREDELAY] = function(player, total) player.MaxFireDelay=math.max(0.5,player.MaxFireDelay+total.fireDelay) end,
   [CacheFlag.CACHE_RANGE] = function(player, total) player.TearRange=player.TearRange+total.range end,
   [CacheFlag.CACHE_LUCK] = function(player, total) player.Luck=player.Luck+total.luck end,
@@ -894,7 +984,7 @@ end
 function Demo:onEvaluateCache(player,cacheFlag)
   local apply=cacheApply[cacheFlag]
   if not apply or (#members.stats==0 and #roomStatGrants==0) then return end
-  local total={damage=0,fireDelay=0,range=0,luck=0,shotSpeed=0,speed=0,flying=false}
+  local total={damage=0,damageMultiplier=1,fireDelay=0,range=0,luck=0,shotSpeed=0,speed=0,flying=false}
   eachOwned(members.stats, player, function(index, profile)
     local count = 1
     if player.GetCollectibleNum then
@@ -903,6 +993,7 @@ function Demo:onEvaluateCache(player,cacheFlag)
     end
     for key in pairs(total) do
       if key == "flying" then if profile.flying then total.flying = true end
+      elseif key == "damageMultiplier" then total.damageMultiplier=total.damageMultiplier*(profile.damageMultiplier ^ count)
       else total[key]=total[key]+profile[key]*count end
     end
   end)
@@ -953,24 +1044,48 @@ local function ruleMayRun(profile, rule, ruleIndex, player)
   return true
 end
 
+local pickupVariants = {
+  coin = PickupVariant.PICKUP_COIN, key = PickupVariant.PICKUP_KEY,
+  bomb = PickupVariant.PICKUP_BOMB, heart = PickupVariant.PICKUP_HEART,
+  pill = PickupVariant.PICKUP_PILL, card = PickupVariant.PICKUP_TAROTCARD,
+  battery = PickupVariant.PICKUP_LIL_BATTERY, trinket = PickupVariant.PICKUP_TRINKET,
+  chest = PickupVariant.PICKUP_CHEST, sack = PickupVariant.PICKUP_GRAB_BAG,
+}
+local friendlyTypes = {
+  attack_fly = EntityType.ENTITY_ATTACKFLY, spider = EntityType.ENTITY_SPIDER, pooter = EntityType.ENTITY_POOTER,
+}
+local function friendlyAlive(token, entityType)
+  local found = Isaac.FindByType(entityType)
+  if type(found) ~= "table" then return false end
+  for _, entity in ipairs(found) do
+    local data = entity.GetData and entity:GetData()
+    if data and data.nebiusFriendlyItem == token and (not entity.Exists or entity:Exists()) then return true end
+  end
+  return false
+end
+local function runAction(profile, player, action)
+  if grantRoomStat(profile, player, action) or grantHeartReward(player, action) then return end
+  if action.type == "spawn_pickup" then
+    local variant = pickupVariants[action.pickup_type]
+    if not variant then return end
+    for _ = 1, action.amount or 1 do
+      local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 0, true)
+      Isaac.Spawn(EntityType.ENTITY_PICKUP, variant, 0, position, Vector.Zero, player)
+    end
+  elseif action.type == "spawn_friendly" then
+    local entityType = friendlyTypes[action.friendly_type]
+    if not entityType or friendlyAlive(profile.friendlyToken, entityType) then return end
+    local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 40, true)
+    local npc = Isaac.Spawn(entityType, 0, 0, position, Vector.Zero, player)
+    if not npc then return end
+    if npc.GetData then npc:GetData().nebiusFriendlyItem = profile.friendlyToken end
+    if npc.AddCharmed then npc:AddCharmed(EntityRef(player), -1) end
+  end
+end
 local function runOneRuleSet(triggerName, player, profile)
   for ruleIndex, rule in ipairs(profile.rules or {}) do
     if rule.trigger == triggerName and ruleMayRun(profile, rule, ruleIndex, player) then
-      for _, action in ipairs(rule.actions or {}) do
-        if not grantRoomStat(profile, player, action) and not grantHeartReward(player, action) and action.type == "spawn_pickup" then
-          local variantByName = {
-            coin = PickupVariant.PICKUP_COIN, key = PickupVariant.PICKUP_KEY,
-            bomb = PickupVariant.PICKUP_BOMB, heart = PickupVariant.PICKUP_HEART,
-          }
-          local variant = variantByName[action.pickup_type]
-          if variant then
-            for count = 1, action.amount or 1 do
-              local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 0, true)
-              Isaac.Spawn(EntityType.ENTITY_PICKUP, variant, 0, position, Vector.Zero, player)
-            end
-          end
-        end
-      end
+      for _, action in ipairs(rule.actions or {}) do runAction(profile, player, action) end
       playProfileSound(profile, 0.45)
     end
   end
@@ -978,21 +1093,7 @@ end
 
 
 local function runActions(profile, player, list)
-  for _, action in ipairs(list or {}) do
-    if not grantRoomStat(profile, player, action) and not grantHeartReward(player, action) and action.type == "spawn_pickup" then
-      local variantByName = {
-        coin = PickupVariant.PICKUP_COIN, key = PickupVariant.PICKUP_KEY,
-        bomb = PickupVariant.PICKUP_BOMB, heart = PickupVariant.PICKUP_HEART,
-      }
-      local variant = variantByName[action.pickup_type]
-      if variant then
-        for _ = 1, action.amount or 1 do
-          local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 0, true)
-          Isaac.Spawn(EntityType.ENTITY_PICKUP, variant, 0, position, Vector.Zero, player)
-        end
-      end
-    end
-  end
+  for _, action in ipairs(list or {}) do runAction(profile, player, action) end
   playProfileSound(profile, 0.45)
 end
 local function runProfileRules(trigger,player)
@@ -1200,7 +1301,7 @@ function Demo:onPostAddCollectible(collectibleType,_,firstTime,_,_,player)
   local profile=index and runtime[index]
   if not profile or firstTime==false then return end
   if profile.affectsStats then
-    if profile.soulHearts>0 then player:AddSoulHearts(profile.soulHearts) end
+    if profile.soulHearts~=0 then player:AddSoulHearts(profile.soulHearts) end
     refreshStats(player)
     pendingStatPlayer = player
   end

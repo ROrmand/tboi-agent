@@ -18,6 +18,8 @@ const env = { NEBIUS_API_KEY: "test", NEBIUS_TEXT_MODEL: "test", NEBIUS_BASE_URL
 test("sparse flavor ideas are expanded while mechanical requests pass through", () => {
   assert.equal(isUnderspecifiedIdea("poopsock"), true);
   assert.equal(isUnderspecifiedIdea("A sock that hums softly in the dark"), true);
+  assert.equal(isUnderspecifiedIdea("The jar of pickle brine sits in the lunchbox, its glass cool and slick with condensation on one side where the liquid has seeped through the paper liner."), true);
+  assert.equal(isUnderspecifiedIdea("A friendly spider follows Isaac"), false);
   assert.equal(isUnderspecifiedIdea("Explosive tears and a slow aura"), false);
   assert.equal(isUnderspecifiedIdea("My bombs gain poison"), false);
   assert.throws(() => cleanIdeaBrief("too short"), /usable expanded idea/);

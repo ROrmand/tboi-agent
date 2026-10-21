@@ -2,9 +2,10 @@
   "version": 1,
   "entity_type": "passive_item",
   "item_limits": {"max_systems":6,"max_total_flags":3},
+  "quality_budgets": [4, 8, 12, 18, 24],
   "triggers": ["room_enter", "room_clear", "enemy_hit", "player_hurt", "pickup", "new_floor", "tear_fire"],
   "conditions": ["chance", "once_per_room", "once_per_floor"],
-  "actions": ["spawn_pickup", "grant_soul_hearts", "grant_half_red_hearts", "grant_full_red_hearts", "grant_black_hearts", "grant_eternal_hearts", "grant_bone_hearts", "grant_stat"],
+  "actions": ["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_half_red_hearts", "grant_full_red_hearts", "grant_black_hearts", "grant_eternal_hearts", "grant_bone_hearts", "grant_stat"],
   "heart_rewards": {
     "grant_half_red_hearts": {"handler":"AddHearts","units":1,"amount_bounds":[1,4],"label":"half red heart"},
     "grant_full_red_hearts": {"handler":"AddHearts","units":2,"amount_bounds":[1,4],"label":"full red heart"},
@@ -17,6 +18,7 @@
   "tear_update_behaviors": ["home", "pulse", "shrink"],
   "familiars": ["sentry", "melee", "normal", "shield"],
   "familiar_patterns": ["single", "fan", "lob", "varied"],
+  "friendlies": ["attack_fly", "spider", "pooter"],
   "auras": ["damage", "slow", "burn", "fear"],
   "room_stat_reward": {"handler":"MC_EVALUATE_CACHE","stats":["damage","tears","luck"],"amount_bounds":[1,4],"integer":true,"stacking":"maximum_per_item_player_stat","expires":"next_room","tears_unit":"fire_delay_reduction"},
   "aura_statuses": {
@@ -26,15 +28,53 @@
   },
   "bomb_flags": ["poison"],
   "bomb_flag_effects": {"poison":{"handler":"AddTearFlags","flag":"TEAR_POISON","max_flags":1}},
-  "pickup_types": ["coin", "key", "bomb", "heart"],
-  "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow", "explosive", "confusion", "knockback"],
+  "pickup_types": ["coin", "key", "bomb", "heart", "pill", "card", "battery", "trinket", "chest", "sack"],
+  "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow", "explosive", "confusion", "knockback", "continuum", "boomerang", "grow", "shrink", "sticky", "wiggle", "slowing_creep"],
   "stat_bounds": {
-    "damage": [-10, 15],
-    "tears": [-5, 10],
-    "shot_speed": [-1, 1.5],
-    "range": [-10, 20],
-    "speed": [-1, 0.5],
-    "luck": [-5, 10],
-    "soul_hearts": [0, 4]
+    "damage": [-1, 15],
+    "damage_multiplier": [0.5, 2.0],
+    "tears": [-1, 10],
+    "shot_speed": [-0.3, 1.5],
+    "range": [-5, 20],
+    "speed": [-0.15, 0.5],
+    "luck": [-1, 10],
+    "soul_hearts": [-4, 4]
+  },
+  "weights": {
+    "tear_flags": {
+      "glow": 6,
+      "spectral": 6, "bounce": 6, "wiggle": 6,
+      "poison": 6, "burn": 6, "slow": 6, "fear": 6, "charm": 6, "confusion": 6, "split": 6, "knockback": 6,
+      "grow": 6, "shrink": 6, "sticky": 6, "slowing_creep": 6,
+      "piercing": 6, "orbit": 6, "continuum": 6, "boomerang": 6,
+      "homing": 6, "explosive": 6
+    },
+    "pickups": {
+      "coin": 1,
+      "heart": 2, "key": 2, "bomb": 2, "pill": 2, "card": 2, "battery": 2, "sack": 2,
+      "trinket": 3, "chest": 3
+    },
+    "heart_rewards": {
+      "grant_half_red_hearts": 2,
+      "grant_full_red_hearts": 3,
+      "grant_soul_hearts": 8,
+      "grant_black_hearts": 4,
+      "grant_bone_hearts": 4,
+      "grant_eternal_hearts": 5
+    },
+    "friendlies": {"attack_fly": 2, "spider": 2, "pooter": 3},
+    "stats": {
+      "damage": {"step": 1, "weight": 1},
+      "damage_multiplier": {"base": 1, "step": 0.1, "weight": 1, "activation_weight": 1},
+      "tears": {"step": 1, "weight": 1},
+      "shot_speed": {"step": 0.1, "weight": 3},
+      "range": {"step": 1, "weight": 1},
+      "speed": {"step": 0.1, "weight": 4},
+      "luck": {"step": 1, "weight": 1},
+      "soul_hearts": {"step": 1, "weight": 2}
+    },
+    "flying": 8,
+    "systems": {"familiar": 4, "aura": 6, "bomb": 3, "laser": 3, "knife": 3, "tear_update": 6},
+    "grant_stat": 1
   }
 }

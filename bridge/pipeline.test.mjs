@@ -18,7 +18,7 @@ test('JSON retry, transparent icon, and image failure preserving the published p
  const icon=await makeIcon(source);
  const pixels=await sharp(icon).ensureAlpha().raw().toBuffer({resolveWithObject:true});
  assert.equal(pixels.info.width,32); assert.equal(pixels.data[3],0);
- const profile={region:'familiar_aura',systems:['stats','tears','familiar','aura'],affects_stats:true,metadata:{display_name:'Red Core',description:'Damage up',quality:2,theme:'cursed',balance_note:''},stats:{damage:1,tears:0,shot_speed:0,range:0,speed:0,luck:0,soul_hearts:0},tear_profile:{flags:[],color:{r:1,g:0,b:0,a:1},scale:1},visuals:{pedestal_prompt:'red core'},familiar:{type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'red floating eye',attack:{pattern:'single',flags:['burn'],color:{r:1,g:0.4,b:0.1,a:1},scale:1,speed:8}},aura:{type:'damage',damage:0.5,radius:80,cooldown:30},rules:[]};
+ const profile={region:'familiar_aura',systems:['stats','tears','familiar','aura'],affects_stats:true,metadata:{display_name:'Red Core',description:'Damage up',quality:4,theme:'cursed',balance_note:''},stats:{damage:0.5,tears:0,shot_speed:0,range:0,speed:0,luck:0,soul_hearts:0},tear_profile:{flags:[],color:{r:1,g:0,b:0,a:1},scale:1},visuals:{pedestal_prompt:'red core'},familiar:{type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'red floating eye',attack:{pattern:'single',flags:['burn'],color:{r:1,g:0.4,b:0.1,a:1},scale:1,speed:8}},aura:{type:'damage',damage:0.5,radius:80,cooldown:30},rules:[]};
  const firstAttempt={...profile,stats:{...profile.stats,damage:99},metadata:{...profile.metadata,description:'x'.repeat(62)+'你'}};
  let attempts=0, imageFails=false;
  const server=createServer(async(req,res)=>{

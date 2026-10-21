@@ -2,15 +2,16 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { LuaFactory } from 'wasmoon';
 import { toLua } from '../../bridge/runtime.mjs';
+import { fitWeightBudget, profileWeight, raiseQualityToFit } from '../../bridge/weights.mjs';
 
 const mainSource = await readFile(new URL('../../demo/live-sprite-swap/main.lua', import.meta.url), 'utf8');
 const promptSource = await readFile(new URL('../../demo/live-sprite-swap/nebius_prompt.lua', import.meta.url), 'utf8');
 const factory = new LuaFactory();
 const profile = {
   version: 1, generated_at: '2026-10-11', bridge_request_id: '123_0_1_123_1', sprite_sheet: 'gfx/items/collectibles/generated_slot_00.png',
-  metadata: { display_name: 'Emerald Eye', description: 'Poison and damage', quality: 2, theme: 'cursed', balance_note: '' },
+  metadata: { display_name: 'Emerald Eye', description: 'Poison and damage', quality: 4, theme: 'cursed', balance_note: '' },
   systems: ['stats', 'tears', 'rules'], affects_stats: true,
-  stats: { damage: 1, tears: 1, shot_speed: 0.1, range: 2, speed: 0.1, luck: 1, soul_hearts: 2 },
+  stats: { damage: 0.5, tears: 0, shot_speed: 0, range: 0, speed: 0.1, luck: 0, soul_hearts: 0 },
   tear_profile: { flags: ['poison'], color: { r: 0.2, g: 1, b: 0.3, a: 1 }, scale: 1.5 },
   visuals: { pedestal_prompt: 'emerald eye' },
   rules: [{ trigger: 'room_clear', conditions: [{ type: 'once_per_room' }], actions: [{ type: 'spawn_pickup', pickup_type: 'coin', amount: 1 }] }],
@@ -18,7 +19,7 @@ const profile = {
 
 const mocks = `
 frame, now, held, owns, stage, roomIndex = 0, 0, false, false, 1, 1
-logs, events, entities, uiCallbacks, familiarTears, projectiles, itemBanners = {}, {}, {}, {}, {}, {}, {}
+logs, events, entities, uiCallbacks, familiarTears, projectiles, itemBanners, friendlies = {}, {}, {}, {}, {}, {}, {}, {}
 function Random() return 123 end
 function Color(...) return {...} end
 function KColor(...) return {...} end
@@ -32,8 +33,8 @@ CacheFlag = { CACHE_DAMAGE=1, CACHE_FIREDELAY=2, CACHE_RANGE=4, CACHE_LUCK=8, CA
 ModCallbacks = setmetatable({}, { __index = function(_, key) return key end })
 Keyboard = { KEY_8=8, KEY_KP_8=108, KEY_BACKSLASH=92 }
 Input = { IsButtonPressed = function() return held end }
-EntityType = { ENTITY_TEAR=2, ENTITY_PICKUP=5, ENTITY_FAMILIAR=3, ENTITY_PROJECTILE=9 }
-PickupVariant = { PICKUP_COLLECTIBLE=100, PICKUP_COIN=20, PICKUP_KEY=30, PICKUP_BOMB=40, PICKUP_HEART=10 }
+EntityType = { ENTITY_TEAR=2, ENTITY_PICKUP=5, ENTITY_FAMILIAR=3, ENTITY_PROJECTILE=9, ENTITY_ATTACKFLY=18, ENTITY_SPIDER=85, ENTITY_POOTER=14 }
+PickupVariant = { PICKUP_COLLECTIBLE=100, PICKUP_COIN=20, PICKUP_KEY=30, PICKUP_BOMB=40, PICKUP_HEART=10, PICKUP_PILL=70, PICKUP_TAROTCARD=300, PICKUP_LIL_BATTERY=90, PICKUP_TRINKET=350, PICKUP_CHEST=50, PICKUP_GRAB_BAG=69 }
 FamiliarVariant = { PUNCHING_BAG=67 }
 TearVariant = { BLUE=0 }
 EntityPartition = { ENEMY=1 }
@@ -54,7 +55,15 @@ function Game() return { GetFrameCount=function() return frame end, GetNumPlayer
  GetLevel=function() return { GetCurrentRoomIndex=function() return roomIndex end, GetAbsoluteStage=function() return stage end } end } end
 Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) return 733+tonumber(name:match("(%d+)$")) end,
  GetSoundIdByName=function() return 1 end, GetTime=function() return now+frame*34 end, GetPlayer=function() return player end,
- FindByType=function(entityType) if entityType==EntityType.ENTITY_PROJECTILE then return projectiles end return entities end, WorldToScreen=function(position) return position end, RenderText=function() end,
+ FindByType=function(entityType)
+  if entityType==EntityType.ENTITY_PROJECTILE then return projectiles end
+  if entityType==EntityType.ENTITY_ATTACKFLY or entityType==EntityType.ENTITY_SPIDER or entityType==EntityType.ENTITY_POOTER then
+   local found={}
+   for _, npc in ipairs(friendlies) do if npc.Type==entityType then found[#found+1]=npc end end
+   return found
+  end
+  return entities
+ end, WorldToScreen=function(position) return position end, RenderText=function() end,
  Spawn=function(entityType, variant, subtype, position, velocity)
   if entityType==EntityType.ENTITY_FAMILIAR then
    local data={}; local familiar={Position=position,PositionOffset=Vector(0,0),Visible=true,GetData=function() return data end,Exists=function() return true end}
@@ -70,6 +79,12 @@ Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByNa
    end
    spawnedFamiliar=familiar
    return familiar
+  end
+  if entityType==EntityType.ENTITY_ATTACKFLY or entityType==EntityType.ENTITY_SPIDER or entityType==EntityType.ENTITY_POOTER then
+   local data={}; local npc={Position=position, Type=entityType, GetData=function() return data end, Exists=function() return data.dead~=true end, AddCharmed=function(self, _, duration) self.charmed=duration end}
+   friendlies[#friendlies+1]=npc
+   function npc:Remove() data.dead=true end
+   return npc
   end
   if entityType==EntityType.ENTITY_TEAR then
    local data={}; local tear={Position=position,Velocity=velocity or Vector(0,0),TearFlags=0,Scale=1,GetData=function() return data end}
@@ -176,13 +191,13 @@ test('accepted native profile spawns before ACK, renders art, and applies passiv
     assert(spritesheetReplacements==0 and pedestalLayerVisible==false)
     assert(lastDestination.x==64 and lastDestination.y==-48 and lastDestination.width==32 and lastDestination.height==32)
     owns=true
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4.5)
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_FIREDELAY); assert(player.MaxFireDelay==9)
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_RANGE); assert(player.TearRange==102)
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_LUCK); assert(player.Luck==1)
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_SHOTSPEED); assert(player.ShotSpeed==1.1)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_FIREDELAY); assert(player.MaxFireDelay==10)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_RANGE); assert(player.TearRange==100)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_LUCK); assert(player.Luck==0)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_SHOTSPEED); assert(player.ShotSpeed==1)
     Demo:onEvaluateCache(player,CacheFlag.CACHE_SPEED); assert(player.MoveSpeed==1.1)
-    Demo:onPostAddCollectible(733,nil,nil,nil,nil,player); assert(player.hearts==2)
+    Demo:onPostAddCollectible(733,nil,nil,nil,nil,player); assert(player.hearts==0)
     local tear={SpawnerEntity={ToPlayer=function() return player end}, TearFlags=0, Scale=1, GetData=function() return {} end}
     Demo:onPostFireTear(tear); assert(tear.TearFlags==1 and tear.Scale==1.5 and tear.Color[2]==1)
     Demo:onPreSpawnCleanAward(); Demo:onPreSpawnCleanAward(); assert(#events==4)
@@ -216,12 +231,25 @@ test('invalid profile and failed pedestal creation never ACK', async () => {
   await run(`envelope.profile.rules={extra='unsupported'}; nextRaw='profile'; Demo:onPostUpdate(); assert(#events==0)`);
 });
 
+function dropProbe(fixture) {
+  fixture.metadata.quality = 4;
+  fixture.affects_stats = false;
+  delete fixture.stats;
+  fixture.systems = fixture.systems.filter((name) => name !== 'stats');
+  if (fixture.rules?.every((rule) => rule.actions?.every((action) => action.type === 'spawn_pickup' && action.pickup_type === 'coin'))) {
+    fixture.rules = [];
+    fixture.systems = fixture.systems.filter((name) => name !== 'rules');
+  }
+  return fixture;
+}
+
 function familiarAttack(pattern, flags = ['poison']) {
   return { pattern, flags, color: { r: 0.2, g: 0.9, b: 0.3, a: 1 }, scale: 1.2, speed: 8 };
 }
 
 test('sentry fires the item attack profile while aura stays separate', async () => {
-  const fixture = structuredClone(profile);
+  const fixture = dropProbe(structuredClone(profile));
+  fixture.tear_profile.flags = [];
   fixture.familiar = { type: 'sentry', damage: 1.5, cooldown: 30, range: 160, sprite_prompt: 'small red eye', attack: familiarAttack('single', ['homing', 'glow']) };
   fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
   fixture.familiar_animation = 'gfx/familiars/generated_familiar_anim_00.anm2';
@@ -244,7 +272,7 @@ test('sentry fires the item attack profile while aura stays separate', async () 
 });
 
 test('familiar attack pattern changes delivery without changing the item flags', async () => {
-  const fixture = structuredClone(profile);
+  const fixture = dropProbe(structuredClone(profile));
   fixture.familiar = { type: 'normal', damage: 1.5, cooldown: 30, range: 160, sprite_prompt: 'tiny prism wisp', attack: familiarAttack('fan', ['poison']) };
   fixture.familiar_sprite_sheet = 'gfx/items/collectibles/generated_familiar_slot_00.png';
   fixture.familiar_animation = 'gfx/familiars/generated_familiar_anim_00.anm2';
@@ -336,7 +364,7 @@ test('an item runs only the systems it marks', async () => {
   fixture.systems = ['rules', 'on_kill', 'tear_impact', 'collision'];
   fixture.affects_stats = false;
   fixture.rules = [{ trigger: 'room_clear', conditions: [], actions: [{ type: 'grant_soul_hearts', amount: 1 }] }];
-  const proc = { conditions: [], actions: [{ type: 'grant_soul_hearts', amount: 1 }] };
+  const proc = { conditions: [], actions: [{ type: 'spawn_pickup', pickup_type: 'coin', amount: 1 }] };
   fixture.on_kill = proc;
   fixture.tear_impact = structuredClone(proc);
   fixture.collision = structuredClone(proc);
@@ -346,12 +374,17 @@ test('an item runs only the systems it marks', async () => {
     local tearData={}
     local tear={SpawnerEntity={ToPlayer=function() return player end}, TearFlags=0, Scale=1, GetData=function() return tearData end}
     Demo:onPostFireTear(tear); assert(tear.TearFlags==0 and tear.Scale==1 and tear.Color==nil)
-    Demo:onPostAddCollectible(733,nil,nil,nil,nil,player); assert(player.hearts==0)
-    Demo:onPreSpawnCleanAward(); assert(player.hearts==1)
+    local function coins()
+      local n=0
+      for _, event in ipairs(events) do if event=='spawn:20' then n=n+1 end end
+      return n
+    end
+    Demo:onPostAddCollectible(733,nil,nil,nil,nil,player); assert(player.hearts==0 and coins()==0)
+    Demo:onPreSpawnCleanAward(); assert(player.hearts==1 and coins()==0)
     local enemy={InitSeed=9, ToPlayer=function() return nil end, ToNPC=function(self) return self end}
-    Demo:onPostEntityKill(enemy); Demo:onPostEntityKill(enemy); assert(player.hearts==2)
-    Demo:onPreTearCollision(tear, enemy); Demo:onPreTearCollision(tear, enemy); assert(player.hearts==3)
-    Demo:onPrePlayerCollision(player, enemy); Demo:onPrePlayerCollision(player, enemy); assert(player.hearts==4)
+    Demo:onPostEntityKill(enemy); Demo:onPostEntityKill(enemy); assert(player.hearts==1 and coins()==1)
+    Demo:onPreTearCollision(tear, enemy); Demo:onPreTearCollision(tear, enemy); assert(player.hearts==1 and coins()==2)
+    Demo:onPrePlayerCollision(player, enemy); Demo:onPrePlayerCollision(player, enemy); assert(player.hearts==1 and coins()==3)
   `, fixture);
 });
 
@@ -363,17 +396,24 @@ test('a 64-byte name is accepted and weapon callbacks apply once', async () => {
   const named = structuredClone(profile);
   named.metadata = { ...named.metadata, display_name: 'n'.repeat(64), description: 'd'.repeat(64) };
   await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100')`, named);
-  const fixture = structuredClone(profile);
-  fixture.stats = { ...fixture.stats, flying: true };
-  fixture.systems = ['stats', 'tears', 'tear_update', 'bomb', 'laser', 'knife'];
-  fixture.rules = [];
+  const flyer = structuredClone(profile);
+  flyer.systems = ['stats'];
+  flyer.rules = [];
+  delete flyer.tear_profile;
+  flyer.stats = { damage: 0, tears: 0, shot_speed: 0, range: 0, speed: 0, luck: 0, soul_hearts: 0, flying: true };
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    Demo:onEvaluateCache(player, CacheFlag.CACHE_FLYING); assert(player.CanFly==true)
+  `, flyer);
+  const fixture = dropProbe(structuredClone(profile));
+  fixture.tear_profile.flags = [];
+  fixture.systems = ['tears', 'tear_update', 'bomb', 'laser', 'knife'];
   fixture.tear_update = { behavior: 'home', strength: 1 };
   fixture.bomb = { damage: 2, radius: 80 };
   fixture.laser = { damage: 1.5 };
   fixture.knife = { damage: 1 };
   await run(`
     nextRaw='profile'; Demo:onPostUpdate(); owns=true
-    Demo:onEvaluateCache(player, CacheFlag.CACHE_FLYING); assert(player.CanFly==true)
     local data={}
     local tear={Position=Vector(0,0), Velocity=Vector(1,0), Scale=1, TearFlags=0, SpawnerEntity={ToPlayer=function() return player end}, GetData=function() return data end}
     enemies={{Position=Vector(10,0)}}
@@ -463,20 +503,20 @@ test('two collectibles have independent profiles, art, ownership and persisted r
     envelope=deepCopy(envelope)
     envelope.id='123_0_1_second'; envelope.profile.bridge_request_id=envelope.id
     envelope.profile.sprite_sheet='gfx/items/collectibles/generated_slot_01.png'
-    envelope.profile.stats.damage=2
+    envelope.profile.stats.damage=1
     frame=1; nextRaw='profile'; Demo:onPostUpdate()
     assert(entities[1].SubType==733 and entities[2].SubType==734)
     player.HasCollectible=function(_,id) return id==733 end
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4.5)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4)
     player.Damage=3.5; player.HasCollectible=function() return true end
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==6.5)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==5)
     Demo:onPreSpawnCleanAward(); assert(#events==6)
     Demo:onPreGameExit(true)
     -- Reload all Lua runtime state to simulate closing and reopening Isaac.
     Demo=assert(load(mainSource.."\\nreturn Demo"))()
     Demo:onGameStarted(true)
     player.Damage=3.5
-    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==6.5)
+    Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==5)
     Demo:onPreSpawnCleanAward(); assert(#events==6)
     Demo:onPostRender()
     Demo:onPickupRender(entities[1]); Demo:onPickupRender(entities[2]); assert(#events==8)
@@ -561,9 +601,11 @@ for (const [type, method, units] of heartCases) {
   });
 
   test(`${type}: room clear grants exact units once, persists the latch, and works in the next room`, async () => {
-    for (const amount of [1, 4]) {
-      const fixture = structuredClone(profile);
-      fixture.rules[0].actions = [{ type, amount }];
+    for (const amount of [1, 4].filter((amount) => catalog.weights.heart_rewards[type] * amount <= catalog.quality_budgets[4])) {
+      const fixture = dropProbe(structuredClone(profile));
+      delete fixture.tear_profile;
+      fixture.systems = ['rules'];
+      fixture.rules = [{ trigger: 'room_clear', conditions: [{ type: 'once_per_room' }], actions: [{ type, amount }] }];
       await run(`
         local calls={}
         for _, name in ipairs({'AddHearts','AddBlackHearts','AddEternalHearts','AddBoneHearts'}) do
@@ -597,7 +639,7 @@ for (const [type, method, units] of heartCases) {
   });
 
   test(`${type}: shared proc handler grants the same reward`, async () => {
-    const fixture=structuredClone(profile);
+    const fixture=dropProbe(structuredClone(profile));
     fixture.systems.push('on_kill');
     fixture.on_kill={conditions:[],actions:[{type,amount:1}]};
     await run(`
@@ -630,7 +672,7 @@ test('explosive tear schema accepts up to three catalog flags and rejects a four
 
 test('explosive tears receive the named bit, preserve existing bits, and stop applying when unowned', async () => {
   for (const flags of [['explosive'], ['explosive','homing','piercing']]) {
-    const fixture=structuredClone(profile);
+    const fixture=dropProbe(structuredClone(profile));
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
@@ -663,7 +705,7 @@ test('invalid tear flags and invented explosive parameters are rejected before p
 });
 
 test('shared familiar flag catalog supports explosive while retaining the three-flag limit', async () => {
-  const fixture=structuredClone(profile);
+  const fixture=dropProbe(structuredClone(profile));
   fixture.systems.push('familiar');
   fixture.familiar={type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'small eye',attack:familiarAttack('single',['explosive'])};
   fixture.familiar_sprite_sheet='gfx/items/collectibles/generated_familiar_slot_00.png';
@@ -687,7 +729,7 @@ test('confusion tear schema accepts up to three catalog flags and rejects a four
 
 test('confusion tears receive the named bit, preserve existing bits, and stop applying when unowned', async () => {
   for (const flags of [['confusion'], ['confusion','homing','piercing']]) {
-    const fixture=structuredClone(profile);
+    const fixture=dropProbe(structuredClone(profile));
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
@@ -720,7 +762,7 @@ test('invalid tear flags and invented confusion parameters are rejected before p
 });
 
 test('shared familiar flag catalog supports confusion while retaining the three-flag limit', async () => {
-  const fixture=structuredClone(profile);
+  const fixture=dropProbe(structuredClone(profile));
   fixture.systems.push('familiar');
   fixture.familiar={type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'small eye',attack:familiarAttack('single',['confusion'])};
   fixture.familiar_sprite_sheet='gfx/items/collectibles/generated_familiar_slot_00.png';
@@ -744,7 +786,7 @@ test('knockback tear schema accepts up to three catalog flags and rejects a four
 
 test('knockback tears receive the named bit, preserve existing bits, and stop applying when unowned', async () => {
   for (const flags of [['knockback'], ['knockback','homing','piercing']]) {
-    const fixture=structuredClone(profile);
+    const fixture=dropProbe(structuredClone(profile));
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
@@ -777,7 +819,7 @@ test('invalid tear flags and invented knockback parameters are rejected before p
 });
 
 test('shared familiar flag catalog supports knockback while retaining the three-flag limit', async () => {
-  const fixture=structuredClone(profile);
+  const fixture=dropProbe(structuredClone(profile));
   fixture.systems.push('familiar');
   fixture.familiar={type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'small eye',attack:familiarAttack('single',['knockback'])};
   fixture.familiar_sprite_sheet='gfx/items/collectibles/generated_familiar_slot_00.png';
@@ -789,7 +831,7 @@ test('shared familiar flag catalog supports knockback while retaining the three-
 });
 
 test('explosive, confusion, and knockback compose as three flags; a fourth is rejected', async () => {
-  const fixture=structuredClone(profile);
+  const fixture=dropProbe(structuredClone(profile));
   fixture.tear_profile.flags=['explosive','confusion','knockback'];
   validateSchema(fixture.tear_profile, tearSchema);
   await run(`
@@ -808,7 +850,7 @@ import { applyRegion, applySystems, repairProfile } from '../../bridge/prompt-fe
 const validateDesign = vm.runInNewContext(
   generator.slice(generator.indexOf('const HIT_TRIGGERS ='), generator.indexOf('const fixture =')) + '\n' +
   generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt)')) + '\nvalidateProfile',
-  { capabilities:catalog, validateSchema, applyRegion, applySystems, repairProfile, Buffer },
+  { capabilities:catalog, validateSchema, applyRegion, applySystems, repairProfile, Buffer, profileWeight },
 );
 function designFor(fixture) {
   const design=structuredClone(fixture);
@@ -846,7 +888,7 @@ const cacheHarness=`
     Demo:onEvaluateCache(self,CacheFlag.CACHE_LUCK)
   end
 `;
-for (const [stat,field,base,sign] of [['damage','Damage',4.5,1],['tears','MaxFireDelay',9,-1],['luck','Luck',1,1]]) {
+for (const [stat,field,base,sign] of [['damage','Damage',4,1],['tears','MaxFireDelay',10,-1],['luck','Luck',0,1]]) {
   test(`grant_stat ${stat}: bounded cache bonus does not stack, reloads, and expires next room`,async()=>{
     for (const amount of [1,4]) {
       const fixture=structuredClone(profile);
@@ -922,7 +964,7 @@ test('corrupt temporary stat saves fail closed; old saves need no roomStats fiel
   `,fixture);
   await run(`nextRaw='profile'; Demo:onPostUpdate(); Demo:onPreGameExit(true); assert(encodedValues[savedData].roomStats==nil)
     Demo=assert(load(mainSource.."\\nreturn Demo"))(); Demo:onGameStarted(true)
-    owns=true; player.Damage=3.5; Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4.5)`);
+    owns=true; player.Damage=3.5; Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE); assert(player.Damage==4)`);
 });
 
 for(const [type,method] of [['slow','AddSlowing'],['burn','AddBurn'],['fear','AddFear']]) {
@@ -984,7 +1026,7 @@ test('poison bombs preserve other flags and change only marked owned bombs',asyn
 
 test('bomb flags are optional for old profiles; unknown, duplicate, and excessive flags reject',async()=>{
   for(const flags of [undefined,[],['poison']]){
-    const f=structuredClone(profile);f.systems.push('bomb');f.bomb={damage:1,radius:80,...(flags?{flags}:{})};
+    const f=dropProbe(structuredClone(profile));f.systems.push('bomb');f.bomb={damage:1,radius:80,...(flags?{flags}:{})};
     validateDesign(designFor(f));await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100')`,f);
   }
   for(const flags of [['burn'],['unknown'],['poison','poison'],['poison','burn'],[1],'poison']){
@@ -992,10 +1034,10 @@ test('bomb flags are optional for old profiles; unknown, duplicate, and excessiv
   }
 });
 
-const allTearFlags={homing:'TEAR_HOMING',spectral:'TEAR_SPECTRAL',piercing:'TEAR_PIERCING',poison:'TEAR_POISON',burn:'TEAR_BURN',slow:'TEAR_SLOW',fear:'TEAR_FEAR',charm:'TEAR_CHARM',bounce:'TEAR_BOUNCE',split:'TEAR_SPLIT',orbit:'TEAR_ORBIT',glow:'TEAR_GLOW',explosive:'TEAR_EXPLOSIVE',confusion:'TEAR_CONFUSION',knockback:'TEAR_KNOCKBACK'};
+const allTearFlags={homing:'TEAR_HOMING',spectral:'TEAR_SPECTRAL',piercing:'TEAR_PIERCING',poison:'TEAR_POISON',burn:'TEAR_BURN',slow:'TEAR_SLOW',fear:'TEAR_FEAR',charm:'TEAR_CHARM',bounce:'TEAR_BOUNCE',split:'TEAR_SPLIT',orbit:'TEAR_ORBIT',glow:'TEAR_GLOW',explosive:'TEAR_EXPLOSIVE',confusion:'TEAR_CONFUSION',knockback:'TEAR_KNOCKBACK',continuum:'TEAR_CONTINUUM',boomerang:'TEAR_BOOMERANG',grow:'TEAR_GROW',shrink:'TEAR_SHRINK',sticky:'TEAR_WAIT',wiggle:'TEAR_WIGGLE',slowing_creep:'TEAR_GISH'};
 test('every catalog tear flag has an explicit test case',()=>assert.deepEqual([...catalog.tear_flags].sort(),Object.keys(allTearFlags).sort()));
 for(const [flag,constant] of Object.entries(allTearFlags)) test(`flag audit: ${flag} maps to ${constant} for player and familiar tears`,async()=>{
-  const fixture=structuredClone(profile);fixture.tear_profile.flags=[flag];fixture.systems.push('familiar');
+  const fixture=structuredClone(profile);fixture.tear_profile.flags=[flag];fixture.systems=['tears','familiar'];fixture.affects_stats=false;delete fixture.stats;fixture.rules=[];
   fixture.familiar={type:'sentry',damage:1,cooldown:30,range:160,sprite_prompt:'test eye',attack:familiarAttack('single',[flag])};
   fixture.familiar_sprite_sheet='gfx/items/collectibles/generated_familiar_slot_00.png';fixture.familiar_animation='gfx/familiars/generated_familiar_anim_00.anm2';fixture.familiar_animation_sheet='gfx/familiars/generated_familiar_sheet_00.png';
   validateDesign(designFor(fixture));
@@ -1003,15 +1045,15 @@ for(const [flag,constant] of Object.entries(allTearFlags)) test(`flag audit: ${f
     TearFlags.${constant}=33554432
     nextRaw='profile'; Demo:onPostUpdate(); owns=true
     local tear={SpawnerEntity=player,TearFlags=0,Scale=1,GetData=function() return {} end}
-    Demo:onPostFireTear(tear);assert(tear.TearFlags==33554432)
+    Demo:onPostFireTear(tear);assert(tear.TearFlags==${flag === 'orbit' ? '(33554432|TearFlags.TEAR_SPECTRAL)' : '33554432'})
     enemies={{Position=Vector(80,0)}};frame=30;Demo:updatePassiveEffects()
-    assert(spawnedFamiliarTear.TearFlags==33554432)
+    assert(spawnedFamiliarTear.TearFlags==${flag === 'orbit' ? '(33554432|TearFlags.TEAR_SPECTRAL)' : '33554432'})
   `,fixture);
 });
 
 const repairDesign = vm.runInNewContext(
   generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt)'),generator.indexOf('function validateProfile(profile)')) + '\nrepairGeneratedProfile',
-  {repairProfile},
+  { repairProfile, applyRegion, applySystems, raiseQualityToFit, fitWeightBudget, capabilities: catalog },
 );
 test('room-only stat wording does not acquire an unintended permanent stat during repair',()=>{
   for(const prompt of ['When I get hit, add damage for this room.','When I get hit, add luck until the next room.','When I get hit, add damage for the rest of this room.']) {
@@ -1042,9 +1084,9 @@ test('room-stat grants use the maximum across rules on one item, and room-enter 
   validateDesign(designFor(f));
   await run(cacheHarness+`
     nextRaw='profile';Demo:onPostUpdate();owns=true
-    Demo:onPreSpawnCleanAward();assert(player.Damage==8.5)
-    Demo:onPreSpawnCleanAward();assert(player.Damage==8.5)
-    roomIndex=2;Demo:onPostNewRoom();assert(player.Damage==6.5)
+    Demo:onPreSpawnCleanAward();assert(player.Damage==8)
+    Demo:onPreSpawnCleanAward();assert(player.Damage==8)
+    roomIndex=2;Demo:onPostNewRoom();assert(player.Damage==6)
   `,f);
 });
 
@@ -1053,4 +1095,72 @@ test('damage aura retains its original shape and rejects status-only fields',asy
   validateDesign(designFor(f));await run(`nextRaw='profile';Demo:onPostUpdate();assert(events[1]=='spawn:100')`,f);
   f.aura.duration=60;await rejectedByBoth(f);
   delete f.aura.duration;delete f.aura.damage;await rejectedByBoth(f);
+});
+
+test('weight budget rejects an overspent quality and a speed drop below -0.15', async () => {
+  const over = structuredClone(profile);
+  over.metadata.quality = 0;
+  over.stats = { damage: 0, tears: 0, shot_speed: 0, range: 0, speed: 0, luck: 0, soul_hearts: 0 };
+  over.tear_profile.flags = ['homing', 'glow'];
+  over.rules = [];
+  await rejectedByBoth(over);
+  const slow = structuredClone(profile);
+  slow.stats.speed = -0.16;
+  await rejectedByBoth(slow);
+  const priced = structuredClone(profile);
+  priced.metadata.quality = 1;
+  priced.systems = ['tears'];
+  priced.affects_stats = false;
+  delete priced.stats;
+  priced.rules = [];
+  priced.tear_profile.flags = ['glow'];
+  validateDesign(designFor(priced));
+  assert.equal(profileWeight(designFor(priced), catalog), 6);
+});
+
+test('signed health and damage multipliers agree across bridge and game', async () => {
+  const fixture = structuredClone(profile);
+  fixture.metadata.quality = 4;
+  fixture.stats = { damage: 1, damage_multiplier: 1.1, tears: -1, shot_speed: 0, range: 1, speed: 0, luck: -1, soul_hearts: -2 };
+  fixture.tear_profile.flags = ['orbit'];
+  fixture.rules = [];
+  fixture.systems = ['stats', 'tears'];
+  const design = designFor(fixture);
+  assert.equal(profileWeight(design, catalog), 1 + 2 - 1 + 1 - 1 - 4 + 6);
+  validateDesign(design);
+  await run(`
+    nextRaw='profile';Demo:onPostUpdate();assert(events[1]=='spawn:100')
+    owns=true;player.Damage=3.5;Demo:onEvaluateCache(player,CacheFlag.CACHE_DAMAGE)
+    assert(math.abs(player.Damage-4.95)<0.001)
+    player.hearts=4;Demo:onPostAddCollectible(733,nil,true,nil,nil,player)
+    assert(player.hearts==2)
+    local tear={SpawnerEntity=player,TearFlags=0,Scale=1,GetData=function() return {} end}
+    Demo:onPostFireTear(tear)
+    assert((tear.TearFlags & TearFlags.TEAR_SPECTRAL)~=0)
+  `, fixture);
+  fixture.stats.damage_multiplier = 2.1;
+  await rejectedByBoth(fixture);
+});
+
+test('new pickups spawn their variants and one friendly stays alive', async () => {
+  const fixture = structuredClone(profile);
+  fixture.metadata.quality = 4;
+  fixture.systems = ['rules'];
+  fixture.affects_stats = false;
+  delete fixture.stats;
+  delete fixture.tear_profile;
+  fixture.rules = [{ trigger: 'room_clear', conditions: [], actions: [
+    { type: 'spawn_pickup', pickup_type: 'pill', amount: 1 },
+    { type: 'spawn_friendly', friendly_type: 'spider', amount: 1 },
+  ] }];
+  validateDesign(designFor(fixture));
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    Demo:onPreSpawnCleanAward()
+    assert(events[#events]=='spawn:70' and #friendlies==1 and friendlies[1].charmed==-1 and friendlies[1].Type==85)
+    Demo:onPreSpawnCleanAward()
+    assert(#friendlies==1)
+  `, fixture);
+  fixture.rules[0].actions[1].amount = 2;
+  await rejectedByBoth(fixture);
 });

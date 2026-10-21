@@ -24,6 +24,13 @@ export function applyRegion(profile) {
   const wantsAura = profile.region === "aura" || profile.region === "familiar_aura";
   if (!wantsFamiliar) delete profile.familiar;
   if (!wantsAura) delete profile.aura;
+  if (Array.isArray(profile.systems)) {
+    profile.systems = profile.systems.filter((system) => {
+      if (system === "familiar") return wantsFamiliar;
+      if (system === "aura") return wantsAura;
+      return true;
+    });
+  }
   return profile;
 }
 
@@ -143,6 +150,7 @@ function completeStats(existing, patch) {
   const stats = { damage: 0, tears: 0, shot_speed: 0, range: 0, speed: 0, luck: 0, soul_hearts: 0 };
   if (existing && typeof existing === "object") {
     for (const key of STAT_KEYS) if (existing[key] != null) stats[key] = existing[key];
+    if (existing.damage_multiplier != null) stats.damage_multiplier = existing.damage_multiplier;
     if (typeof existing.flying === "boolean") stats.flying = existing.flying;
   }
   for (const [key, value] of Object.entries(patch)) {
@@ -248,6 +256,12 @@ export function repairNote(message) {
   }
   if (message.includes("collision")) {
     return `${base} Keep collision in systems and set collision to {"conditions":[{"type":"chance","chance":0.35}],"actions":[{"type":"spawn_pickup","pickup_type":"bomb","amount":1}]}. Change pickup_type to match the wish. Do not put this proc in rules.`;
+  }
+  if (message.includes("must match the region")) {
+    return `${base} passive cannot include familiar or aura. A familiar region keeps the familiar system and drops aura. An aura region keeps the aura system and drops familiar. familiar_aura keeps both. Change region or remove the system the region does not allow.`;
+  }
+  if (message.includes("weight budget") || message.includes("spends")) {
+    return `${base} Stay inside the quality weight budget. Quality 4 allows 24. Remove effects until the spend is 24 or less. Speed cannot go below -0.15. Do not deal damage to Isaac.`;
   }
   if (message.includes("tear_update") || message.includes("bomb") || message.includes("laser") || message.includes("knife")) {
     return `${base} Keep that system and include its object. tear_update needs behavior home, pulse, or shrink and strength from 0.5 to 2. bomb needs damage and radius. laser and knife need damage.`;

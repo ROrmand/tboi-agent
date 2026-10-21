@@ -7,6 +7,7 @@ import { requestTextModel } from "./network.mjs";
 import { buildDesignPrompt, isUnderspecifiedIdea } from "./idea.mjs";
 import { artSlotName, familiarArtSlotName, familiarAnimationResource, familiarSheetResource } from '../native/ipc/art-slots.mjs';
 import { applyRegion, applySystems, repairNote, repairProfile } from './prompt-features.mjs';
+import { assertCatalogWeights, fitWeightBudget, profileWeight } from './weights.mjs';
 
 const GAME_MODULE_SLOT_COUNT = 400;
 
@@ -15,6 +16,7 @@ const env = { ...await readEnv(path.join(root, ".env")), ...process.env };
 const capabilities = JSON.parse(
   await readFile(path.join(root, "content-contract", "capabilities.json"), "utf8"),
 );
+assertCatalogWeights(capabilities);
 const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY || path.join(root, "runtime", "generated");
 const modDirectory = env.ISAAC_MOD_DIRECTORY
   ? path.resolve(root, env.ISAAC_MOD_DIRECTORY)
@@ -37,6 +39,7 @@ if (!dryRun && requestedArtSlot === '') {
 const HIT_TRIGGERS = new Set(["player_hurt", "enemy_hit"]);
 const MAX_ITEM_SYSTEMS = capabilities.item_limits?.max_systems ?? 6;
 const MAX_TOTAL_FLAGS = capabilities.item_limits?.max_total_flags ?? 3;
+const updatedBalanceGuidance = 'Balance rules: flat damage +1 costs 1 and -1 refunds 1; damage_multiplier can be any value from 0.5x through 2.0x. 1.1x costs 2 and 2.0x costs 11; 0.9x refunds 2 and 0.5x refunds 11. Range, tears, and luck cost or refund 1 per unit; signed soul_hearts cost or refund 2 per half-heart; speed and shot_speed retain their catalog costs; each named tear flag and each aura or tear_update system costs 6; flight costs 8. Orbit tears always become spectral in game, so orbit alone requests both effects. Keep explicit flags within the three-flag limit.';
 const PROC_SYSTEMS = ["on_kill", "tear_impact", "collision"];
 const WEAPON_SYSTEMS = ["tear_update", "bomb", "laser", "knife"];
 const conditionSchema = {
@@ -59,6 +62,7 @@ const actionSchema = {
     type: { type: "string", enum: capabilities.actions, description: heartRewardGuidance + " " + batchGuidance },
     amount: { type: "integer", minimum: 1, maximum: 4 },
     pickup_type: { type: "string", enum: capabilities.pickup_types },
+    friendly_type: { type: "string", enum: capabilities.friendlies },
     stat: { type: "string", enum: capabilities.room_stat_reward.stats },
   },
 };
@@ -97,13 +101,14 @@ const ITEM_SCHEMA = {
       additionalProperties: false,
       required: ["damage", "tears", "shot_speed", "range", "speed", "luck", "soul_hearts"],
       properties: {
-        damage: { type: "number", minimum: -10, maximum: 15 },
-        tears: { type: "number", minimum: -5, maximum: 10 },
-        shot_speed: { type: "number", minimum: -1, maximum: 1.5 },
-        range: { type: "number", minimum: -10, maximum: 20 },
-        speed: { type: "number", minimum: -1, maximum: 0.5 },
-        luck: { type: "number", minimum: -5, maximum: 10 },
-        soul_hearts: { type: "integer", minimum: 0, maximum: 4 },
+        damage: { type: "number", minimum: capabilities.stat_bounds.damage[0], maximum: capabilities.stat_bounds.damage[1] },
+        damage_multiplier: { type: "number", minimum: capabilities.stat_bounds.damage_multiplier[0], maximum: capabilities.stat_bounds.damage_multiplier[1] },
+        tears: { type: "number", minimum: capabilities.stat_bounds.tears[0], maximum: capabilities.stat_bounds.tears[1] },
+        shot_speed: { type: "number", minimum: capabilities.stat_bounds.shot_speed[0], maximum: capabilities.stat_bounds.shot_speed[1] },
+        range: { type: "number", minimum: capabilities.stat_bounds.range[0], maximum: capabilities.stat_bounds.range[1] },
+        speed: { type: "number", minimum: capabilities.stat_bounds.speed[0], maximum: capabilities.stat_bounds.speed[1] },
+        luck: { type: "number", minimum: capabilities.stat_bounds.luck[0], maximum: capabilities.stat_bounds.luck[1] },
+        soul_hearts: { type: "integer", minimum: -4, maximum: 4 },
         flying: { type: "boolean" },
       },
     },
@@ -272,11 +277,11 @@ async function generateProfile(playerPrompt) {
     headers: { Authorization: `Bearer ${env.NEBIUS_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: env.NEBIUS_TEXT_MODEL,
-      temperature: 0,
+      temperature: attempt ? 0 : 0.7,
       max_tokens: 4096,
       response_format: { type: "json_schema", json_schema: { name: "passive_item_profile", strict: true, schema: ITEM_SCHEMA } },
       messages: [
-        { role: "system", content: systemPrompt() + '\nRequired schema: ' + JSON.stringify(ITEM_SCHEMA) },
+        { role: "system", content: systemPrompt() + '\n' + updatedBalanceGuidance + '\nRequired schema: ' + JSON.stringify(ITEM_SCHEMA) },
         { role: "user", content: designPrompt + correction },
       ],
     }),
@@ -446,7 +451,13 @@ function repairGeneratedProfile(profile, playerPrompt) {
   // Permanent-stat phrase repair must not turn a room-only request into a passive bonus.
   const permanentPrompt = playerPrompt.split(/(?<=[.!?;])\s+/)
     .filter(sentence => !/\b(?:for (?:this|the current|one|the rest of (?:this|the)) room|until (?:the )?next room|room[- ]long)\b/i.test(sentence)).join(" ");
-  return repairProfile(profile, permanentPrompt);
+  repairProfile(profile, permanentPrompt);
+  applyRegion(profile);
+  applySystems(profile);
+  fitWeightBudget(profile, capabilities);
+  applyRegion(profile);
+  applySystems(profile);
+  return profile;
 }
 
 function validateProfile(profile) {
@@ -487,8 +498,14 @@ function validateProfile(profile) {
   assertText(profile.metadata?.description, "metadata.description", 64);
   assertText(profile.metadata?.balance_note, "metadata.balance_note", 256, true);
   if (!Number.isInteger(profile.metadata?.quality) || profile.metadata.quality < 0 || profile.metadata.quality > 4) fail("metadata.quality must be 0–4.");
+  const spent = profileWeight(profile, capabilities);
+  const budget = capabilities.quality_budgets[profile.metadata.quality];
+  if (spent > budget) fail(`Item spends ${spent} weight and quality ${profile.metadata.quality} allows ${budget}. The weight budget cannot hold this item.`);
   if (profile.stats) {
-    for (const [name, bounds] of Object.entries(capabilities.stat_bounds)) assertNumber(profile.stats?.[name], `stats.${name}`, bounds[0], bounds[1]);
+    for (const [name, bounds] of Object.entries(capabilities.stat_bounds)) {
+      if (name === "damage_multiplier" && profile.stats[name] === undefined) continue;
+      assertNumber(profile.stats?.[name], `stats.${name}`, bounds[0], bounds[1]);
+    }
     if (profile.stats.flying !== undefined && typeof profile.stats.flying !== "boolean") fail("stats.flying must be a boolean.");
   }
   if (profile.tear_update) {
@@ -545,12 +562,7 @@ function validateProfile(profile) {
       if (!capabilities.conditions.includes(condition.type)) fail(`Unsupported condition: ${condition.type}`);
       if (condition.type === "chance") assertNumber(condition.chance, "condition.chance", 0, 1);
     }
-    for (const action of rule.actions) {
-      validateActionStat(action);
-      if (!capabilities.actions.includes(action.type)) fail(`Unsupported action: ${action.type}`);
-      if (!Number.isInteger(action.amount) || action.amount < 1 || action.amount > 4) fail("action.amount must be an integer from 1–4.");
-      if (action.type === "spawn_pickup" && !capabilities.pickup_types.includes(action.pickup_type)) fail("spawn_pickup requires an allowed pickup_type.");
-    }
+    for (const action of rule.actions) validateAction(action, "action");
   }
   if (selected.has("rules") && !sawRule) fail("The rules system requires a room, pickup, floor, or tear rule.");
   if (selected.has("on_hit") && !sawHit) fail("The on_hit system requires a player_hurt or enemy_hit rule.");
@@ -564,18 +576,27 @@ function validateActionStat(action) {
   } else if (action.stat !== undefined) fail("stat requires grant_stat.");
 }
 
+function validateAction(action, label) {
+  validateActionStat(action);
+  if (!capabilities.actions.includes(action.type)) fail(`Unsupported action: ${action.type}`);
+  if (!Number.isInteger(action.amount) || action.amount < 1 || action.amount > 4) fail(`${label}.amount must be an integer from 1–4.`);
+  if (action.type === "spawn_pickup") {
+    if (!capabilities.pickup_types.includes(action.pickup_type)) fail("spawn_pickup requires an allowed pickup_type.");
+    if (action.friendly_type !== undefined) fail("spawn_pickup cannot include friendly_type.");
+  } else if (action.pickup_type !== undefined) fail("pickup_type requires spawn_pickup.");
+  if (action.type === "spawn_friendly") {
+    if (action.amount !== 1) fail("spawn_friendly amount must be 1.");
+    if (!capabilities.friendlies.includes(action.friendly_type)) fail("spawn_friendly requires friendly_type attack_fly, spider, or pooter.");
+  } else if (action.friendly_type !== undefined) fail("friendly_type requires spawn_friendly.");
+}
+
 function validateProc(proc, name) {
   if (!Array.isArray(proc.conditions) || !Array.isArray(proc.actions) || !proc.actions.length) fail(`${name} needs conditions and at least one action.`);
   for (const condition of proc.conditions) {
     if (!capabilities.conditions.includes(condition.type)) fail(`Unsupported condition: ${condition.type}`);
     if (condition.type === "chance") assertNumber(condition.chance, `${name}.chance`, 0, 1);
   }
-  for (const action of proc.actions) {
-    validateActionStat(action);
-    if (!capabilities.actions.includes(action.type)) fail(`Unsupported action: ${action.type}`);
-    if (!Number.isInteger(action.amount) || action.amount < 1 || action.amount > 4) fail(`${name}.amount must be an integer from 1–4.`);
-    if (action.type === "spawn_pickup" && !capabilities.pickup_types.includes(action.pickup_type)) fail("spawn_pickup requires an allowed pickup_type.");
-  }
+  for (const action of proc.actions) validateAction(action, name);
 }
 
 function validateFamiliarAttack(attack) {
@@ -593,7 +614,7 @@ function validateFamiliarAttack(attack) {
 }
 
 function systemPrompt() {
-  return `${heartRewardGuidance}\n${tearFlagGuidance}\n${batchGuidance}\nCreate one conservative Binding of Isaac passive item. Return only the supplied JSON schema. Never output Lua, callback names, extra keys, or any state key. First choose region from the meaning of the wish. Then choose systems, and fill a parameter block only for a system you chose. passive: Isaac's own stats, tears, or a reward. familiar: a separate actor that follows, orbits, shoots, strikes, or protects Isaac. aura: a damage or status field around Isaac. familiar_aura: both. Do not add a region or a system to make the item more interesting. "Add luck. Tears glow. When I clear a room, grant me a soul heart." is passive with systems stats, tears, and rules, and the rule trigger is room_clear. "When I get hit, I sometimes find a coin. Tears poison. Add luck." is passive with systems stats, tears, and on_hit. stats.luck is above 0 and the other stats are 0. tear_profile.flags is ["poison"]. rules is one player_hurt rule with a chance condition and action spawn_pickup, pickup_type coin, amount 1. "When I hit an enemy" uses trigger enemy_hit. "When an enemy dies" is the on_kill proc, not a rule. "When a tear hits an enemy" is tear_impact. "When I touch an enemy" is collision. "When I clear a room", "reach a new floor", "pick this up", and "enter a room" use the rules system. "Give me a friend that shoots explosive bombs." is familiar with the familiar system and no stats unless the wish also changes Isaac. "Enemies who stand near me get hurt." is aura. Systems: stats changes damage, tears, shot speed, range, speed, or luck. tears changes Isaac's own shots. rules covers room_enter, room_clear, pickup, new_floor, and tear_fire. on_hit is only player_hurt and enemy_hit, and that system is invalid without one of those rules. familiar and aura must match the region. on_kill procs once per dead enemy. tear_impact procs once per tear that hits an enemy. collision procs once per enemy Isaac touches in a room. Those three procs use the same conditions and actions as rules. Omit stats, tear_profile, familiar, aura, on_kill, tear_impact, collision, tear_update, bomb, laser, and knife when their system is not selected. affects_stats is true only when stats is selected. Unselected stat numbers are omitted, not zero. Selecting a system without its object is invalid: stats needs the stats object, tears needs tear_profile, and on_kill, tear_impact, and collision need their own objects with conditions and actions. "Move a bit faster" is stats.speed. "Add range" is stats.range. "Raise shot speed" is stats.shot_speed, not the tears system. "Tears split", "Tears can pierce", "Tears pierce", "Tears poison", "Tears charm enemies", and "Tears orbit me" are tear_profile flags, including when a familiar is also present. "When an enemy dies, I sometimes find a coin" is on_kill with a chance condition and spawn_pickup coin. "When a tear hits an enemy, I sometimes find a key" is tear_impact, not a rule. description is one sentence that says what the item does, under 60 characters. Example: Poison tears and a coin when a room is cleared. stats.flying is true only when the wish grants flight. tear_update is home, pulse, or shrink with strength 0.5–2, for a tear that keeps changing after it is fired. bomb, laser, and knife add bounded damage when Isaac fires that weapon. display_name and description are each at most 64 UTF-8 bytes. Familiar shots can use only the allowed tear flags. If the wish asks for a shot outside that list, choose the closest allowed flags and say so in metadata.balance_note. Familiar type is sentry (orbits and fires), normal (follows behind Isaac and fires), melee (contact strike, no attack), or shield (stands between Isaac and the nearest threat, blocks shots that touch it, cancels one hit per cooldown, deals contact damage, no attack). Sentry and normal require familiar.attack. Melee and shield must omit attack. attack.pattern is single, fan, lob, or varied. attack.flags holds up to three allowed tear flags and is the shot's only effect list. varied rerolls delivery and size using those same flags. attack.color, scale, and speed describe the shot. familiar.damage is one single shot; fan shots are 0.7x and lob shots are 1.25x. cooldown is frames between attacks. sprite_prompt must describe one tiny full-body companion character, not an object, icon, item, or pedestal.\nAllowed regions: ${capabilities.regions.join(", ")}.\nAllowed systems: ${capabilities.systems.join(", ")}.\nAllowed triggers: ${capabilities.triggers.join(", ")}.\nAllowed conditions: ${capabilities.conditions.join(", ")}.\nAllowed actions: ${capabilities.actions.join(", ")}.\nAllowed familiars: ${capabilities.familiars.join(", ")}. Allowed familiar patterns: ${capabilities.familiar_patterns.join(", ")}. Allowed auras: ${capabilities.auras.join(", ")}.\nPedestal prompt: one centered object, transparent/plain background, no text.`;
+  return `${heartRewardGuidance}\n${tearFlagGuidance}\n${batchGuidance}\nCreate one conservative Binding of Isaac passive item. Return only the supplied JSON schema. Never output Lua, callback names, extra keys, or any state key. First choose region from the meaning of the wish. Then choose systems, and fill a parameter block only for a system you chose. passive: Isaac's own stats, tears, or a reward. familiar: a separate actor that follows, orbits, shoots, strikes, or protects Isaac. aura: a damage or status field around Isaac. familiar_aura: both. Do not add a region or a system to make the item more interesting. "Add luck. Tears glow. When I clear a room, grant me a soul heart." is passive with systems stats, tears, and rules, and the rule trigger is room_clear. "When I get hit, I sometimes find a coin. Tears poison. Add luck." is passive with systems stats, tears, and on_hit. stats.luck is above 0 and the other stats are 0. tear_profile.flags is ["poison"]. rules is one player_hurt rule with a chance condition and action spawn_pickup, pickup_type coin, amount 1. "When I hit an enemy" uses trigger enemy_hit. "When an enemy dies" is the on_kill proc, not a rule. "When a tear hits an enemy" is tear_impact. "When I touch an enemy" is collision. "When I clear a room", "reach a new floor", "pick this up", and "enter a room" use the rules system. "Give me a friend that shoots explosive bombs." is familiar with the familiar system and no stats unless the wish also changes Isaac. "Enemies who stand near me get hurt." is aura. Systems: stats changes damage, tears, shot speed, range, speed, or luck. tears changes Isaac's own shots. rules covers room_enter, room_clear, pickup, new_floor, and tear_fire. on_hit is only player_hurt and enemy_hit, and that system is invalid without one of those rules. familiar and aura must match the region. on_kill procs once per dead enemy. tear_impact procs once per tear that hits an enemy. collision procs once per enemy Isaac touches in a room. Those three procs use the same conditions and actions as rules. Omit stats, tear_profile, familiar, aura, on_kill, tear_impact, collision, tear_update, bomb, laser, and knife when their system is not selected. affects_stats is true only when stats is selected. Unselected stat numbers are omitted, not zero. Selecting a system without its object is invalid: stats needs the stats object, tears needs tear_profile, and on_kill, tear_impact, and collision need their own objects with conditions and actions. "Move a bit faster" is stats.speed. "Add range" is stats.range. "Raise shot speed" is stats.shot_speed, not the tears system. "Tears split", "Tears can pierce", "Tears pierce", "Tears poison", "Tears charm enemies", and "Tears orbit me" are tear_profile flags, including when a familiar is also present. "When an enemy dies, I sometimes find a coin" is on_kill with a chance condition and spawn_pickup coin. "When a tear hits an enemy, I sometimes find a key" is tear_impact, not a rule. description is one sentence that says what the item does, under 60 characters. Example: Poison tears and a coin when a room is cleared. stats.flying is true only when the wish grants flight. tear_update is home, pulse, or shrink with strength 0.5–2, for a tear that keeps changing after it is fired. bomb, laser, and knife add bounded damage when Isaac fires that weapon. display_name and description are each at most 64 UTF-8 bytes. Familiar shots can use only the allowed tear flags. If the wish asks for a shot outside that list, choose the closest allowed flags and say so in metadata.balance_note. Familiar type is sentry (orbits and fires), normal (follows behind Isaac and fires), melee (contact strike, no attack), or shield (stands between Isaac and the nearest threat, blocks shots that touch it, cancels one hit per cooldown, deals contact damage, no attack). Sentry and normal require familiar.attack. Melee and shield must omit attack. attack.pattern is single, fan, lob, or varied. attack.flags holds up to three allowed tear flags and is the shot's only effect list. varied rerolls delivery and size using those same flags. attack.color, scale, and speed describe the shot. familiar.damage is one single shot; fan shots are 0.7x and lob shots are 1.25x. cooldown is frames between attacks. sprite_prompt must describe one tiny full-body companion character, not an object, icon, item, or pedestal.\nAllowed regions: ${capabilities.regions.join(", ")}.\nAllowed systems: ${capabilities.systems.join(", ")}.\nAllowed triggers: ${capabilities.triggers.join(", ")}.\nAllowed conditions: ${capabilities.conditions.join(", ")}.\nAllowed actions: ${capabilities.actions.join(", ")}.\nAllowed familiars: ${capabilities.familiars.join(", ")}. Allowed familiar patterns: ${capabilities.familiar_patterns.join(", ")}. Allowed auras: ${capabilities.auras.join(", ")}. Allowed friendlies: ${capabilities.friendlies.join(", ")}.\nQuality is a weight budget ${capabilities.quality_budgets.map((budget, quality) => `${quality}=${budget}`).join(", ")}. Spend at most that many weight points on one primary effect. Weights: ${JSON.stringify(capabilities.weights)}. A missing weight means the effect is not available. grant_soul_hearts costs 8 per heart, so one soul heart when a room is cleared needs quality 1 or higher. Negative stats refund weight and stop at their floors: speed -0.15, damage -1, tears -1, shot_speed -0.3, range -5, luck -1. Never deal damage to Isaac. spawn_friendly uses friendly_type attack_fly, spider, or pooter and amount 1. Extra pickups are pill, card, battery, trinket, chest, and sack. Path tear flags are continuum, boomerang, grow, shrink, sticky, wiggle, and slowing_creep. slowing_creep slows; it has no damage parameter.\nPedestal prompt: one centered object, transparent/plain background, no text.`;
 }
 
 function readOption(name) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; }
