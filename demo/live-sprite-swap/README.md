@@ -15,8 +15,8 @@ All generated behavior remains validated JSON applied through fixed Lua handlers
 5. Enable only the product mod; leave native probe mods disabled.
 6. Start a fresh run when upgrading from v1.5.0 or from a familiar saved before
    v1.13.0. Press top-row or keypad
-   `8`, enter a prompt, or click **Randomize**. Randomize asks the text model
-   for one sentence and fills the prompt with it. Review or
+   `8`, enter a prompt, or click **Randomize**. Randomize fills the prompt
+   with one local sentence from the bridge word lists. Review or
    edit it, then click Generate Item. Do not use `agent generate`.
 
 The terminal fallback is `npm run ipc:generate -- --prompt "..."` with a run open.

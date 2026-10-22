@@ -1,6 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {requestTextModel} from './network.mjs';
+import {chatCompletionPayload, requestTextModel} from './network.mjs';
+
+test('chat completions disable Nemotron thinking so structured answers keep the token budget', () => {
+  const payload = chatCompletionPayload(
+    {NEBIUS_TEXT_MODEL:'nvidia/Nemotron-3_5-Lightning'},
+    {temperature:0.7,max_tokens:128,chat_template_kwargs:{enable_thinking:true}},
+  );
+  assert.equal(payload.model,'nvidia/Nemotron-3_5-Lightning');
+  assert.equal(payload.temperature,0.7);
+  assert.equal(payload.max_tokens,128);
+  assert.deepEqual(payload.chat_template_kwargs,{enable_thinking:false});
+});
+
+test('planner calls can use a shorter timeout than item generation', async () => {
+  let signal;
+  await requestTextModel('https://example.test/v1/chat/completions',
+    { method: 'POST', body: 'plan', timeoutMs: 15000 }, async (_, options) => {
+      signal = options.signal;
+      assert.equal(options.body, 'plan');
+      assert.equal(options.timeoutMs, undefined);
+      return { status: 200 };
+    });
+  assert.equal(signal.aborted, false);
+});
 
 test('text connection timeout retries once without losing request options', async () => {
   let calls=0;

@@ -1,0 +1,8 @@
+inside
+beside
+behind
+near
+under
+above
+beneath
+against

@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { watchFile } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -11,6 +11,7 @@ import { SlotLedger } from '../native/ipc/slot-ledger.mjs';
 import { assertRuntimeCompatible } from './compatibility.mjs';
 import { syncMod } from './sync-mod.mjs';
 import { requestRandomSentence } from './sentence.mjs';
+import { createGenerationTimer, noteGeneratorLine } from './timing.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
@@ -24,12 +25,15 @@ const isaacLog = env.ISAAC_LOG_FILE || path.join(
   process.env.USERPROFILE || "", "Documents", "My Games", "Binding of Isaac Repentance+", "log.txt",
 );
 const jobs = new Map();
+const jobTimers = new WeakMap();
 let activeJob = null;
 let finishingJob = false;
 const slotLedger = new SlotLedger(path.join(modDirectory, 'art-reservations.json'));
 let gameContext = null;
 let gameContextAt = 0;
 let statusWrites = Promise.resolve();
+let errorWrites = Promise.resolve();
+let timingWrites = Promise.resolve();
 const nativePipe = new NativePipeServer({ seedHello: true });
 const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY
   ? path.resolve(root, env.NEBIUS_OUTPUT_DIRECTORY)
@@ -37,6 +41,45 @@ const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY
 // Isaac caches failed include() calls. One fresh module name is consumed each
 // second, so this covers the bridge's 370-second in-game timeout with margin.
 const GAME_MODULE_SLOT_COUNT = 400;
+
+function errorCategory(detail) {
+  if (/timed out|timeout/i.test(detail)) return 'timeout';
+  if (/ComfyUI|artwork|image|checkpoint/i.test(detail)) return 'art';
+  if (/schema|profile|invalid|parse|JSON/i.test(detail)) return 'validation';
+  if (/another request|limit|slot|reservation/i.test(detail)) return 'capacity';
+  if (/connect|unavailable|bridge|pipe|network/i.test(detail)) return 'connection';
+  return 'generation';
+}
+
+function logError({ id, phase, category, detail, source = 'bridge' }) {
+  const entry = { time: new Date().toISOString(), id, phase, category,
+    detail: String(detail).slice(0, 1000), source };
+  errorWrites = errorWrites.then(async () => {
+    await mkdir(outputDirectory, { recursive: true });
+    await appendFile(path.join(outputDirectory, 'generation-errors.jsonl'), JSON.stringify(entry) + '\n');
+  }).catch(error => console.error('Error log write failed:', error.message));
+}
+
+function logTiming(job, error) {
+  const timer = jobTimers.get(job);
+  if (!timer) return;
+  const timing = timer.finish();
+  const entry = {
+    time: new Date().toISOString(), id: job.id, kind: job.kind || 'item',
+    outcome: error ? 'error' : 'ready', duration_ms: timing.duration_ms,
+    stages: timing.stages, totals_ms: timing.totals_ms,
+  };
+  if (Number.isInteger(job.quality)) entry.quality = job.quality;
+  if (Number.isInteger(job.promptChars)) entry.prompt_chars = job.promptChars;
+  if (job.stage) entry.last_stage = job.stage;
+  if (error) entry.error = String(error).slice(0, 500);
+  const stages = Object.entries(timing.totals_ms).map(([name, ms]) => `${name}=${ms}`).join(' ');
+  console.log(`Job ${job.id}: ${timing.duration_ms}ms ${stages}`);
+  timingWrites = timingWrites.then(async () => {
+    await mkdir(outputDirectory, { recursive: true });
+    await appendFile(path.join(outputDirectory, 'generation-timings.jsonl'), JSON.stringify(entry) + '\n');
+  }).catch(writeError => console.error('Timing log write failed:', writeError.message));
+}
 
 function send(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -58,7 +101,7 @@ function readBody(request) {
 
 const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
-    return send(response, 200, { status: "ok" });
+    return send(response, 200, { status: "ok", service: "nebius-isaac-bridge" });
   }
 
   const jobMatch = request.url?.match(/^\/jobs\/([a-zA-Z0-9_-]+)$/);
@@ -76,7 +119,8 @@ const server = createServer(async (request, response) => {
     const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
     if (!prompt || prompt.length > 2000) return send(response, 400, { error: "prompt must contain 1–2000 characters" });
 
-    const job = startJob(prompt);
+    const quality = Number.isInteger(input.quality) && input.quality >= 1 && input.quality <= 4 ? input.quality : 3;
+    const job = startJob(prompt, randomUUID(), false, quality);
     send(response, 202, job);
   } catch (error) {
     return send(response, 400, { error: error.message || "Invalid request" });
@@ -89,6 +133,7 @@ function startSentence(id) {
   assertRuntimeCompatible(gameContext);
   if (!id.startsWith(gameContext.run + '_')) throw Error('Sentence request is from another run.');
   const job = { id, status: 'generating', kind: 'sentence', createdAt: new Date().toISOString() };
+  jobTimers.set(job, createGenerationTimer(Date.now(), 'sentence'));
   activeJob = job;
   jobs.set(id, job);
   publishStatus(id, 'generating', 'Writing a random sentence...');
@@ -110,26 +155,28 @@ function finishSentence(job, error, sentence, timeout) {
     job.error = error;
     publishStatus(job.id, 'error', error.slice(0, 500));
     console.log(`Job ${job.id}: error - ${error}`);
-    return;
+  } else {
+    job.status = 'ready';
+    job.sentence = sentence;
+    publishStatus(job.id, 'sentence', sentence);
+    console.log(`Job ${job.id}: sentence`);
   }
-  job.status = 'ready';
-  job.sentence = sentence;
-  publishStatus(job.id, 'sentence', sentence);
-  console.log(`Job ${job.id}: sentence`);
+  logTiming(job, error);
 }
 
-function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
+function startJob(prompt, id = randomUUID(), writeGameStatus = false, quality = 3) {
   if(activeJob) throw Error('Another request is running. Wait until it finishes.');
   if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
   assertRuntimeCompatible(gameContext);
   if (!id.startsWith(gameContext.run + '_')) id = gameContext.run + '_' + id;
   const artSlot = slotLedger.reserve(gameContext);
-  const job = { id, status: "generating", createdAt: new Date().toISOString() };
+  const job = { id, status: "generating", quality, promptChars: prompt.length, createdAt: new Date().toISOString() };
+  jobTimers.set(job, createGenerationTimer());
   activeJob = job;
   jobs.set(id, job);
   publishStatus(id, 'generating', 'Bridge received the prompt. Designing the passive item...');
   if (writeGameStatus) writeGameBridgeStatus(job);
-  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--request-id", id, "--art-slot", String(artSlot)], {
+  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--quality", String(quality), "--request-id", id, "--art-slot", String(artSlot)], {
     cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
   let output = "";
@@ -138,8 +185,10 @@ function startJob(prompt, id = randomUUID(), writeGameStatus = false) {
     output = (output + chunk).slice(-8000);
     pending += chunk;
     const lines = pending.split('\n'); pending = lines.pop();
-    for(const line of lines) if(line.startsWith('@stage ')) {
-      job.stage = line.slice(7).trim();
+    for(const line of lines) {
+      const stage = noteGeneratorLine(jobTimers.get(job), line);
+      if (!stage) continue;
+      job.stage = stage;
       publishStatus(id, 'generating', 'Generating passive item: ' + job.stage);
       if(writeGameStatus) writeGameBridgeStatus(job);
       console.log(`Job ${id}: ${job.stage}`);
@@ -157,6 +206,7 @@ async function finishJob(job, error, writeGameStatus) {
   if (job.completedAt || finishingJob) return;
   finishingJob = true;
   if (!error) {
+    jobTimers.get(job)?.mark('deliver');
     try {
       if (!gameContext || !job.id.startsWith(gameContext.run + '_') || gameContext.blocked) throw Error('Run ended or changed before generation completed.');
       assertRuntimeCompatible(gameContext);
@@ -172,10 +222,16 @@ async function finishJob(job, error, writeGameStatus) {
   finishingJob = false;
   if (error) publishStatus(job.id, 'error', error.slice(0, 500));
   console.log(`Job ${job.id}: ${job.status}${error ? ' - ' + error : ''}`);
+  logTiming(job, error);
   if (writeGameStatus) writeGameBridgeStatus(job);
 }
 
 function publishStatus(id, status, detail) {
+  if (status === 'error') {
+    const job = jobs.get(id);
+    logError({ id, phase: job?.stage || job?.kind || 'request',
+      category: errorCategory(detail), detail });
+  }
   try { nativePipe.publish({ version: 1, type: 'status', id, status, detail }); }
   catch (error) { console.warn('Native IPC status skipped: ' + error.message); }
 }
@@ -222,6 +278,17 @@ async function watchIsaacLog() {
       const end = appended.lastIndexOf(10);
       remainder = appended.subarray(end+1);
       for (const line of appended.subarray(0,end+1).toString('utf8').split(/\r?\n/)) {
+        const uiError = line.match(/\[NebiusBridge\] error (\{.*\})/);
+        if (uiError) {
+          try {
+            const event = JSON.parse(uiError[1]);
+            logError({ id: String(event.id || 'ui').slice(0, 100),
+              phase: String(event.phase || 'ui').slice(0, 50),
+              category: String(event.category || 'ui').slice(0, 50),
+              detail: event.detail || '', source: 'game' });
+          } catch { /* Ignore malformed diagnostic lines. */ }
+          continue;
+        }
         const state = line.match(/\[NebiusBridge\] state (\{.*\})/);
         if (state) {
           try { gameContext = JSON.parse(state[1]); gameContextAt = Date.now(); } catch {}
@@ -248,10 +315,11 @@ async function watchIsaacLog() {
           const input = JSON.parse(match[1]);
           const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
           const id = typeof input.id === "string" ? input.id : "";
+          const quality = Number.isInteger(input.quality) && input.quality >= 1 && input.quality <= 4 ? input.quality : 3;
           if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && prompt && prompt.length <= 2000 && !jobs.has(id)) {
             if(activeJob) publishStatus(id, 'error', 'Another request is running. Wait until it finishes.');
             else {
-              try { startJob(prompt, id); }
+              try { startJob(prompt, id, false, quality); }
               catch (error) { publishStatus(id, 'error', error.message.slice(0,500)); }
             }
           }
@@ -285,15 +353,32 @@ try {
   console.error(`Could not update the installed mod at ${modDirectory}: ${error.message}`);
 }
 
+server.on("error", async (error) => {
+  if (error.code !== "EADDRINUSE") {
+    console.error(`Bridge could not start: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(2000) });
+    const health = await response.json();
+    if (response.ok && health.status === "ok" && health.service === "nebius-isaac-bridge") {
+      console.log(`Nebius Isaac bridge is already running at http://127.0.0.1:${port}. No second instance is needed.`);
+      return;
+    }
+  } catch { /* The occupied port does not respond like a bridge. */ }
+  console.error(`Port ${port} is already in use by another service. Set NEBIUS_BRIDGE_PORT or stop that service.`);
+  process.exitCode = 1;
+});
+
 server.listen(port, "127.0.0.1", () => {
   console.log(`Nebius Isaac bridge listening at http://127.0.0.1:${port}`);
   watchIsaacLog();
-});
-
-nativePipe.start().then(() => {
-  console.log('Native IPC pipe ready at \\.\\pipe\\nebius_isaac_bridge_v1');
-}).catch((error) => {
-  console.error(`Native IPC pipe could not start: ${error.message}`);
+  nativePipe.start().then(() => {
+    console.log('Native IPC pipe ready at \\.\\pipe\\nebius_isaac_bridge_v1');
+  }).catch((error) => {
+    console.error(`Native IPC pipe could not start: ${error.message}`);
+  });
 });
 
 nativePipe.on('ack', (id) => console.log(`Native IPC acknowledgement: ${id}`));

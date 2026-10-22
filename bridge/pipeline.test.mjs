@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtemp, readFile, mkdir, writeFile} from 'node:fs/promises';
+import {mkdtemp, readFile, mkdir, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -54,9 +54,55 @@ test('JSON retry, transparent icon, and image failure preserving the published p
    const nextPublished=await readFile(path.join(directory,'generated_profile.lua'),'utf8');
    assert.match(nextPublished,/generated_slot_01\.png/);
    imageFails=true;const failed=await run('2');assert.equal(failed.code,1);assert.equal(await readFile(path.join(directory,'generated_profile.lua'),'utf8'),nextPublished);
- } finally {server.close();server.closeAllConnections();}
+ } finally {server.close();server.closeAllConnections();await rm(directory,{recursive:true,force:true});}
 });
 
 test('Lua serialization escapes control characters without injecting code',()=>{
  assert.equal(toLua('a\n"\\'), '"a\\010\\034\\092"');
+});
+
+test('empty reasoning-only item response retries and accepts a valid second profile', async () => {
+ const directory=await mkdtemp(path.join(tmpdir(),'isaac-empty-profile-'));
+ const artDirectory=path.join(directory,'resources','gfx','items','collectibles');
+ await mkdir(artDirectory,{recursive:true});
+ await sharp({create:{width:32,height:32,channels:4,background:'white'}})
+  .png().toFile(path.join(artDirectory,'ember_orb.png'));
+ await prepareArtSlots(directory);
+ const profile={
+  region:'passive',systems:['stats'],affects_stats:true,
+  metadata:{display_name:'Lucky Nail',description:'A little extra luck',quality:1,theme:'none',balance_note:''},
+  stats:{damage:0,tears:0,shot_speed:0,range:0,speed:0,luck:1,soul_hearts:0},
+  visuals:{pedestal_prompt:'a small bent nail'},rules:[],
+ };
+ let attempts=0, bodies=[];
+ const server=createServer(async(req,res)=>{
+  let raw='';
+  for await(const chunk of req) raw+=chunk;
+  if(req.url.endsWith('chat/completions')) bodies.push(JSON.parse(raw));
+  res.setHeader('Content-Type','application/json');
+  attempts++;
+  res.end(JSON.stringify(attempts===1
+   ? {choices:[{finish_reason:'length',message:{content:null,reasoning_content:'I am still thinking'}}]}
+   : {choices:[{finish_reason:'stop',message:{content:JSON.stringify(profile)}}]}));
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try {
+  const result=await new Promise(resolve=>{
+   const child=spawn(process.execPath,['bridge/generate.mjs','--prompt','one luck stat','--request-id','retry','--art-slot','0','--no-image'],{
+    env:{...process.env,ISAAC_MOD_DIRECTORY:directory,NEBIUS_OUTPUT_DIRECTORY:path.join(directory,'diagnostics'),
+     NEBIUS_BASE_URL:`http://127.0.0.1:${server.address().port}/v1/`,NEBIUS_API_KEY:'test',NEBIUS_TEXT_MODEL:'test'},
+    stdio:['ignore','pipe','pipe'],
+   });
+   let output=''; child.stdout.on('data',chunk=>output+=chunk);
+   child.stderr.on('data',chunk=>output+=chunk);
+   child.on('close',code=>resolve({code,output}));
+  });
+  assert.equal(result.code,0,result.output);
+  assert.equal(attempts,2);
+  assert.match(result.output,/@stage repair/);
+  assert.ok(bodies.length >= 1);
+  assert.deepEqual(bodies[0].chat_template_kwargs,{enable_thinking:false});
+  const diagnostic=JSON.parse(await readFile(path.join(directory,'diagnostics','last-text-diagnostic.json'),'utf8'));
+  assert.equal(diagnostic.finish_reason,'stop');
+ } finally {server.close();server.closeAllConnections();await rm(directory,{recursive:true,force:true});}
 });

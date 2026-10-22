@@ -206,8 +206,10 @@ function syncRegion(profile) {
 
 // Quality 4 is the ceiling. Raise quality when the effects fit a higher tier.
 // When they do not fit any tier, drop incidental extras until they do.
-export function fitWeightBudget(profile, capabilities) {
+export function fitWeightBudget(profile, capabilities, requestedQuality) {
   if (!profile?.metadata || !Number.isInteger(profile.metadata.quality)) return profile;
+  const targetQuality = Number.isInteger(requestedQuality) ? requestedQuality : null;
+  if (targetQuality != null) profile.metadata.quality = targetQuality;
   let trimmed = false;
   for (let guard = 0; guard < 48 && overBudget(profile, capabilities); guard += 1) {
     if (!dropOneExpense(profile, capabilities)) break;
@@ -215,7 +217,7 @@ export function fitWeightBudget(profile, capabilities) {
   }
   if (trimmed) noteTrim(profile);
   syncRegion(profile);
-  return raiseQualityToFit(profile, capabilities);
+  return targetQuality == null ? raiseQualityToFit(profile, capabilities) : profile;
 }
 
 export function profileWeight(profile, capabilities) {

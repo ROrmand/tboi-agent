@@ -34,6 +34,9 @@ tested Lua handlers.
    npm run bridge
    ```
 
+   Run only one bridge at a time. If it is already running, the command
+   reports its address and exits; the existing bridge remains available.
+
    For local art generation, install and start ComfyUI at `http://127.0.0.1:8188`,
    then download `sd_xl_turbo_1.0_fp16.safetensors` into
    `ComfyUI/models/checkpoints`. Set the same filename in
@@ -41,9 +44,16 @@ tested Lua handlers.
    no image API key is required.
 
 4. Enable only the **Live Sprite Swap Demo** mod in Isaac, start a run, and
-   press top-row or keypad `8`. Enter a passive-item prompt in **Nebius Passive
-   Item Generator**, then select **Generate Item**. The prompt writes a fixed
-   JSON request to Isaac's log; the bridge delivers the validated result back
+   press top-row or keypad `8`. Enter a passive-item prompt in the fixed
+   **Nebius Item Creator**, choose quality **1** through **4**, then select **Generate Item**. While the creator is
+   open, room updates pause without opening Isaac's pause menu. The panel is
+   drawn in the game view and keeps its prompt, Randomize, Generate, Close,
+   and status controls visible together. The game HUD is hidden while it is
+   open. Use Down to select the button row, Left/Right to choose a button, and
+   Enter to activate it; Up returns focus to the prompt. Type with the keyboard, use Backspace
+   to edit, Enter for a new line, Escape to close, and click the buttons with
+   the mouse. The prompt
+   writes a fixed JSON request to Isaac's log; the bridge delivers the validated result back
    through native IPC and spawns one of 64 independent generated collectibles.
 
    Before the first native-art run, execute `npm run art:prepare`, then restart
@@ -66,10 +76,28 @@ and exit. Continue restores both owned items and uncollected pedestals by their
 collectible IDs. Artwork stays in the installed mod directory. There is no
 permanent item library.
 
-The generator window also has a **Randomize** button. It asks the text model
-for one ordinary sentence and puts that sentence in the prompt. Review or
-change it, then choose **Generate Item**. The model chooses the region and
-the systems from that sentence.
+The creator window also has a **Randomize** button. It fills the prompt
+immediately with one local sentence built from word lists in `bridge/words/`
+(adjectives, nouns, verbs, adverbs, prepositions, and places). No model call
+is made. Review or change it, then choose **Generate Item**. The item model
+chooses the region and the systems from that sentence. Sparse prompts stay
+flavor for the player. A fast
+catalog planner (`NEBIUS_PLANNER_MODEL`, default
+`nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`) chooses supported mechanics before
+`NEBIUS_TEXT_MODEL` writes the item JSON. If that planner fails, expansion
+uses a bounded local design brief instead.
+
+After submission, the creator closes and a lower-left animated indicator shows
+bridge progress while the run resumes. A failed request reopens the creator
+with the prompt preserved. Generation and UI failures are written as JSON lines
+by default to `runtime/generated/generation-errors.jsonl` with a timestamp, request ID,
+phase, category, and diagnostic detail. Each finished item or sentence request
+also appends one line to `runtime/generated/generation-timings.jsonl`: total
+duration, outcome, quality, and milliseconds spent in each stage (`startup`,
+`expand`, `text`, `repair`, `image`, `art`, `familiar_art`, `familiar_anim`,
+`publish`, `deliver`). Repeated stages stay in order and are summed, so a slow
+text call or artwork poll is visible without rerunning the request. Restart
+Isaac after updating the mod's Lua files.
 
 When `IMAGE_BACKEND=comfyui`, the bridge now checks that ComfyUI is reachable
 before asking the text model to design an item. Start ComfyUI and wait until it
@@ -283,6 +311,36 @@ rejected rather than interpreted.
 7. **Active collectibles.** Only after the passive systems stay idle when
    unused. An active needs its own charge, input, targeting, and
    `MC_USE_ITEM` contract. It is not another passive rule.
+
+## Next creator experience
+
+The next player-facing milestone is an **AI item** and the character built
+around it. Picking up this deliberately blank item opens the in-game creator
+window. Its character may replace normal game items with that blank item, so
+each pickup becomes an opportunity to generate the content for that run. The
+replacement must remain optional and bounded by the same slot, persistence,
+and safety rules as generated passives.
+
+The creator now provides fixed in-game prompt controls, a paused room while
+editing, and a lower-left progress indicator while generating. The terminal
+remains useful for local development. The next presentation pass can refine
+the visual art, stage labels, and controller interaction after an in-game review.
+
+Reliability work for that UI path includes better error classification,
+timeouts, retries only where safe, and a parser/repair layer for imperfect
+model responses before the normal schema validation and capability checks.
+Invalid or unrecoverable output must resolve to a safe fallback and an
+actionable in-game message, never a stalled prompt or broken run. The target
+is a seamless generation loop with errors minimized before they reach the
+player.
+
+The **Randomize** flow should also evolve from a fixed sentence generator into
+an inspiration generator. It can use a local model such as Nemo to produce a
+  short, varied seed - a sentence, phrase, or other compact concept - which the
+player can edit before generating an item. This keeps prompting optional while
+still giving the item designer an intelligible creative direction. The local
+model choice, prompt template, latency budget, and fallback phrase list should
+be evaluated before making it the default.
 
 ## Existing design references
 

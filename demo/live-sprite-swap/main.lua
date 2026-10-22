@@ -654,7 +654,8 @@ end
 function Demo:onGameStarted(isContinued)
   records,runtime,accepted={},{},{}
   roomStatGrants={}
-  pendingProfileEnvelope,blocked,promptUi.pending,promptUi.pendingKind,pendingBanner,pendingStatPlayer=nil,nil,nil,nil,nil,nil
+  promptUi:reset()
+  pendingProfileEnvelope,blocked,pendingBanner,pendingStatPlayer=nil,nil,nil,nil
   serial=serial+1; runToken=session.."_"..serial; running=true
   if isContinued then
     local ok,saved=pcall(function()
@@ -687,7 +688,8 @@ function Demo:onGameStarted(isContinued)
 end
 function Demo:onPreGameExit(shouldSave)
   if shouldSave and running then saveRun() end
-  running=false; pendingProfileEnvelope,promptUi.pending=nil,nil
+  running=false; pendingProfileEnvelope=nil
+  promptUi:reset()
   Isaac.DebugString("[NebiusBridge] state "..bridgeJson.encode(context()))
 end
 function Demo:onPostUpdate()
@@ -703,6 +705,10 @@ function Demo:onPostUpdate()
   end
   promptUi:updateInput(); pollNativeProfile(true); self:updatePassiveEffects()
   if running and Isaac.GetTime()-lastStateTime>1000 then publishState() end
+end
+function Demo:onPreUpdate()
+  -- REPENTOGON skips the room update while leaving rendering and ImGui alive.
+  return promptUi:shouldPause()
 end
 local function entityAlive(entity)
   if not entity then return false end
@@ -1310,6 +1316,7 @@ function Demo:onPostAddCollectible(collectibleType,_,firstTime,_,_,player)
 end
 function Demo:onPostRender()
   pollNativeProfile(false); promptUi:render()
+  local hideOverlays=promptUi:shouldHideGameOverlays()
   for _,profile in ipairs(runtime) do
     local nativePedestalSheet=profile.spriteSheet
     if not profile.image and not profile.loadFailed and Renderer and SourceQuad then
@@ -1326,7 +1333,7 @@ function Demo:onPostRender()
       if ok and image and quadOk and quad then profile.familiarImage,profile.familiarQuad=image,quad
       else profile.familiarLoadFailed=true; Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_FAMILIAR_ART_FALLBACK "..tostring(profile.familiarSpriteSheet)) end
     end
-    if profile.familiarImage and DestinationQuad then
+    if not hideOverlays and profile.familiarImage and DestinationQuad then
       for _,familiar in pairs(profile.familiarEntities or {}) do if entityAlive(familiar) then
         local data = familiar.GetData and familiar:GetData()
         if not (data and data.generatedSprite) then
@@ -1338,7 +1345,7 @@ function Demo:onPostRender()
       end end
     end
   end
-  if statusUntil>=Game():GetFrameCount() then
+  if not hideOverlays and statusUntil>=Game():GetFrameCount() then
     local lines = wrapLines(statusText, 52)
     for index, line in ipairs(lines) do
       if index > 4 then break end
@@ -1347,6 +1354,7 @@ function Demo:onPostRender()
   end
 end
 function Demo:onPickupRender(pickup)
+  if promptUi:shouldHideGameOverlays() then return end
   local index=slotById[pickup.SubType]
   local profile=index and runtime[index]
   if not profile then return end
@@ -1368,6 +1376,7 @@ function Demo:onPickupRender(pickup)
   end
 end
 function Demo:onPostHudRender()
+  if promptUi:shouldHideGameOverlays() then return end
   local player=Isaac.GetPlayer(0)
   local count=0
   for index,profile in ipairs(runtime) do
@@ -1380,7 +1389,7 @@ function Demo:onPostHudRender()
   end
 end
 local callbacks={
- MC_POST_GAME_STARTED="onGameStarted",MC_PRE_GAME_EXIT="onPreGameExit",MC_POST_UPDATE="onPostUpdate",
+ MC_POST_GAME_STARTED="onGameStarted",MC_PRE_GAME_EXIT="onPreGameExit",MC_PRE_UPDATE="onPreUpdate",MC_POST_UPDATE="onPostUpdate",
  MC_EVALUATE_CACHE="onEvaluateCache",MC_POST_FIRE_TEAR="onPostFireTear",MC_POST_NEW_ROOM="onPostNewRoom",
  MC_PRE_SPAWN_CLEAN_AWARD="onPreSpawnCleanAward",MC_ENTITY_TAKE_DMG="onEntityTakeDamage",
  MC_POST_NEW_LEVEL="onPostNewLevel",MC_POST_ADD_COLLECTIBLE="onPostAddCollectible",MC_POST_RENDER="onPostRender",

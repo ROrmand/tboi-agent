@@ -1,95 +1,77 @@
 import { randomInt } from "node:crypto";
-import { requestTextModel } from "./network.mjs";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 
-const SENTENCE_PROMPT = "Write one ordinary sentence describing a strange object someone might wish for. Do not name stats, effects, or an item title. No quotation marks. No second sentence.";
-const OBJECTS = [
-  "a moth-eaten sock",
-  "a cracked church bell",
-  "a baby's tooth in a matchbox",
-  "a grocery receipt from a store that never existed",
-  "a rubber duck with too many teeth",
-  "a motel bible with extra handwritten pages",
-  "a ball of hair and tinfoil",
-  "a melted action figure",
-  "a Polaroid of an empty hallway",
-  "a key that fits no lock",
-  "a jar of pickle brine",
-  "a single wet match",
-  "a cracked denture",
-  "a lump of pink soap",
-  "a bird skeleton in a mint tin",
-  "a funeral program with the name scratched out",
-];
-const SETTINGS = [
-  "in a flooded basement",
-  "behind a vending machine",
-  "under a church pew",
-  "in a hospital waiting room",
-  "inside a lunchbox",
-  "at the bottom of a well",
-  "in a pawn-shop drawer",
-  "taped under a school desk",
-  "in a freezer behind the peas",
-  "on a rest-stop bathroom sink",
-  "in a cardboard box marked FRAGILE",
-  "among lost-and-found umbrellas",
-];
-const DETAILS = [
-  "sticky",
-  "too warm",
-  "colder than ice",
-  "heavier than it looks",
-  "smelling like pennies",
-  "chalky",
-  "greasy",
-  "brittle",
-  "wet on one side only",
-  "dusty in a way that will not wipe off",
-  "slightly vibrating",
-  "ringing when nobody touches it",
-];
+const WORD_LISTS = ["adjectives", "nouns", "verbs", "adverbs", "prepositions", "places"];
+let words;
 
-export function pickSentenceSeed(random = randomInt) {
-  return {
-    object: OBJECTS[random(OBJECTS.length)],
-    setting: SETTINGS[random(SETTINGS.length)],
-    detail: DETAILS[random(DETAILS.length)],
-  };
+function loadWords(name) {
+  const file = path.join(import.meta.dirname, "words", `${name}.txt`);
+  const entries = readFileSync(file, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  if (!entries.length) throw Error(`Word list ${name} is empty.`);
+  return entries;
 }
 
-export function buildSentencePrompt(seed = pickSentenceSeed()) {
-  return `${SENTENCE_PROMPT} Object: ${seed.object}. Setting: ${seed.setting}. Sensory detail: ${seed.detail}. Write about that object; do not substitute a generic glowing trinket.`;
+export function wordLists() {
+  if (!words) words = Object.fromEntries(WORD_LISTS.map((name) => [name, loadWords(name)]));
+  return words;
+}
+
+export function articleFor(word) {
+  return /^[aeiou]/i.test(String(word)) ? "an" : "a";
+}
+
+export function conjugateVerb(verb) {
+  if (/(?:s|sh|ch|x|z|o)$/i.test(verb)) return `${verb}es`;
+  if (/[^aeiou]y$/i.test(verb)) return `${verb.slice(0, -1)}ies`;
+  return `${verb}s`;
+}
+
+function pick(list, random) {
+  return list[random(list.length)];
+}
+
+function capitalize(sentence) {
+  return sentence.charAt(0).toUpperCase() + sentence.slice(1);
+}
+
+export function generateSentence(random = randomInt) {
+  const lists = wordLists();
+  const adjective = pick(lists.adjectives, random);
+  const noun = pick(lists.nouns, random);
+  const verb = conjugateVerb(pick(lists.verbs, random));
+  const pattern = random(3);
+  let sentence;
+  if (pattern === 0) {
+    sentence = `${articleFor(adjective)} ${adjective} ${noun} ${verb} ${pick(lists.prepositions, random)} the ${pick(lists.places, random)}.`;
+  } else if (pattern === 1) {
+    sentence = `the ${adjective} ${noun} ${verb} ${pick(lists.adverbs, random)}.`;
+  } else {
+    let otherNoun = pick(lists.nouns, random);
+    if (otherNoun === noun) otherNoun = lists.nouns[(lists.nouns.indexOf(noun) + 1) % lists.nouns.length];
+    const otherAdjective = pick(lists.adjectives, random);
+    sentence = `${articleFor(adjective)} ${adjective} ${noun} ${verb} ${pick(lists.adverbs, random)} ${pick(lists.prepositions, random)} ${articleFor(otherAdjective)} ${otherAdjective} ${otherNoun}.`;
+  }
+  return capitalize(sentence);
 }
 
 export function cleanSentence(value) {
-  const line = String(value ?? "").split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "";
+  const answer = String(value ?? "").split(/<\/think>/i).pop();
+  const line = answer.split(/\r?\n/).map((part) => part.trim()).find(Boolean) || "";
   let sentence = line.replace(/^[-*\d.)\s]+/, "").replace(/^["']+|["']+$/g, "").replace(/\s+/g, " ").trim();
   const stop = sentence.search(/[.!?]["']?(?:\s|$)/);
   if (stop !== -1) sentence = sentence.slice(0, stop + 1).trim();
   if (sentence && !/[.!?]$/.test(sentence)) sentence += ".";
+  if (/thinking process|let me think|^here(?:'s| is) (?:a|the) (?:thinking|reasoning)|^(?:sure|certainly)\b|^i (?:will|need to|should)\b/i.test(sentence)) {
+    throw Error("The model returned reasoning instead of an item idea.");
+  }
   if (sentence.length < 12 || sentence.length > 180) throw Error("The model did not return one usable sentence.");
   return sentence;
 }
 
-export async function requestRandomSentence(env, request = requestTextModel) {
-  if (!env.NEBIUS_API_KEY) throw Error("NEBIUS_API_KEY is required in .env.");
-  if (!env.NEBIUS_TEXT_MODEL) throw Error("NEBIUS_TEXT_MODEL is required in .env.");
-  const response = await request(`${(env.NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1/").replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${env.NEBIUS_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: env.NEBIUS_TEXT_MODEL,
-      temperature: 1,
-      max_tokens: 80,
-      messages: [
-        { role: "system", content: "You write one sentence for a video-game item prompt. Use the given object, setting, and sensory detail. Return only that sentence." },
-        { role: "user", content: buildSentencePrompt() },
-      ],
-    }),
-  });
-  if (!response.ok) throw Error(`Token Factory text request failed (${response.status}).`);
-  const body = await response.json();
-  const content = body.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || !content.trim()) throw Error("Token Factory returned no sentence.");
-  return cleanSentence(content);
+export async function requestRandomSentence() {
+  return generateSentence();
 }

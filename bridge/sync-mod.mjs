@@ -12,6 +12,7 @@ export const MOD_FILES = [
   "content/items.xml",
   "content/sounds.xml",
   "content/entities2.xml",
+  "resources/gfx/nebius_creator/white.png",
 ];
 
 export async function syncMod(source, target) {

@@ -1,19 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDesignPrompt, cleanIdeaBrief, isUnderspecifiedIdea } from "./idea.mjs";
+import { buildDesignPrompt, cleanIdeaBrief, DEFAULT_PLANNER_MODEL, fallbackIdeaBrief, isUnderspecifiedIdea, normalizeCatalogPlan } from "./idea.mjs";
 
 const capabilities = {
-  systems: ["stats", "tears", "rules", "aura", "bomb"],
+  systems: ["stats", "tears", "rules", "on_hit", "aura", "bomb", "familiar"],
   tear_flags: ["poison", "explosive"],
-  actions: ["grant_soul_hearts", "spawn_pickup"],
+  triggers: ["room_clear", "player_hurt"],
+  actions: ["grant_soul_hearts", "grant_black_hearts", "spawn_pickup"],
   heart_rewards: {
-    grant_soul_hearts: { handler: "AddSoulHearts" },
-    grant_black_hearts: { handler: "AddBlackHearts" },
+    grant_black_hearts: { handler: "AddBlackHearts", label: "black heart" },
   },
   auras: ["damage", "slow"],
+  familiars: ["normal"],
   bomb_flag_effects: { poison: { handler: "AddTearFlags" } },
 };
-const env = { NEBIUS_API_KEY: "test", NEBIUS_TEXT_MODEL: "test", NEBIUS_BASE_URL: "http://127.0.0.1:9/v1/" };
+const env = {
+  NEBIUS_API_KEY: "test",
+  NEBIUS_TEXT_MODEL: "nvidia/Nemotron-3_5-Lightning",
+  NEBIUS_BASE_URL: "http://127.0.0.1:9/v1/",
+};
 
 test("sparse flavor ideas are expanded while mechanical requests pass through", () => {
   assert.equal(isUnderspecifiedIdea("poopsock"), true);
@@ -23,21 +28,73 @@ test("sparse flavor ideas are expanded while mechanical requests pass through", 
   assert.equal(isUnderspecifiedIdea("Explosive tears and a slow aura"), false);
   assert.equal(isUnderspecifiedIdea("My bombs gain poison"), false);
   assert.throws(() => cleanIdeaBrief("too short"), /usable expanded idea/);
+  assert.throws(() => cleanIdeaBrief("Here's a thinking process for this item."), /reasoning/);
+  assert.match(fallbackIdeaBrief("booble goof", capabilities), /A passive item inspired/);
 });
 
-test("expanded brief is catalog-bounded context for the profile request", async () => {
+test("reasoning-only expansion uses a bounded brief and continues to item design", async () => {
+  const result = await buildDesignPrompt("Generate me a generic item", capabilities, env,
+    async () => ({ ok: true, json: async () => ({
+      choices: [{ finish_reason: "length", message: { content: null } }],
+    }) }));
+  assert.match(result.designPrompt, /Original idea: Generate me a generic item/);
+  assert.match(result.designPrompt, /Expanded design brief: A passive item inspired/);
+});
+
+test("expanded brief is a Nano catalog plan and leaves item JSON to Lightning", async () => {
   let body;
+  let timeout;
   const result = await buildDesignPrompt("poopsock", capabilities, env, async (_url, options) => {
     body = JSON.parse(options.body);
-    return { ok: true, json: async () => ({ choices: [{ message: { content: "A filthy lucky sock that grants black hearts after room clears and gives poison tears." } }] }) };
+    timeout = options.timeoutMs;
+    return { ok: true, json: async () => ({ choices: [{ message: { content: JSON.stringify({
+      systems: ["tears", "rules"],
+      tear_flags: ["poison", "freeze"],
+      trigger: "room_clear",
+      action: "grant_black_hearts",
+    }) } }] }) };
   });
-  assert.equal(body.temperature, 0.9);
-  assert.match(body.messages[0].content, /tear flags: poison, explosive/);
-  assert.match(body.messages[0].content, /heart rewards: grant_soul_hearts, grant_black_hearts/);
-  assert.match(body.messages[0].content, /bomb effects: poison/);
+  assert.equal(body.model, DEFAULT_PLANNER_MODEL);
+  assert.notEqual(body.model, env.NEBIUS_TEXT_MODEL);
+  assert.equal(body.temperature, 0.2);
+  assert.equal(body.max_tokens, 256);
+  assert.equal(timeout, 15000);
+  assert.deepEqual(body.response_format, { type: "json_object" });
+  assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
+  assert.match(body.messages[0].content, /tear_flags: poison, explosive/);
   assert.match(result.designPrompt, /Original idea: poopsock/);
-  assert.match(result.designPrompt, /black hearts/);
-  assert.equal(result.ideaBrief.startsWith("A filthy lucky sock"), true);
+  assert.match(result.ideaBrief, /gives tears poison/);
+  assert.match(result.ideaBrief, /black heart/);
+  assert.doesNotMatch(result.ideaBrief, /freeze/);
+});
+
+test("an unsupported catalog plan falls back without blocking item design", async () => {
+  const result = await buildDesignPrompt("poopsock", capabilities, env, async () => ({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: '{"systems":["teleport"],"tear_flags":["freeze"]}' } }] }),
+  }));
+  assert.match(result.ideaBrief, /A passive item inspired by "poopsock"/);
+});
+
+test("catalog plans keep supported effects and attach the system that implements them", () => {
+  const plan = normalizeCatalogPlan({
+    systems: ["bomb"],
+    tear_flags: ["poison", "poison", "not-a-flag"],
+    trigger: "player_hurt",
+    action: "spawn_pickup",
+    pickup_type: "coin",
+    aura: "slow",
+    familiar: "normal",
+    stat: "luck",
+  }, capabilities);
+  assert.deepEqual(plan.systems, ["on_hit", "tears", "aura"]);
+  assert.deepEqual(plan.tear_flags, ["poison"]);
+  assert.equal(plan.trigger, "player_hurt");
+  assert.equal(plan.action, "spawn_pickup");
+  assert.equal(plan.pickup_type, "coin");
+  assert.equal(plan.aura, "slow");
+  assert.equal(plan.familiar, null);
+  assert.equal(plan.stat, null);
 });
 
 test("a specific prompt never needs an expansion request", async () => {

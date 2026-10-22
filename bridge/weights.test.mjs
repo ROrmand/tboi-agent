@@ -112,6 +112,12 @@ test("a profile spends flag, stat, pickup, and friendly weight", () => {
   }, catalog);
   assert.equal(affordable.stats.speed, 0.1);
   assert.equal(affordable.metadata.balance_note, "kept");
+  const requested = fitWeightBudget({
+    metadata: { quality: 4, balance_note: "" },
+    region: "passive", systems: ["tears"], tear_profile: { flags: ["glow"] }, rules: [],
+  }, catalog, 1);
+  assert.equal(requested.metadata.quality, 1);
+  assert.ok(profileWeight(requested, catalog) <= catalog.quality_budgets[1]);
 });
 
 test("requested balance charges flat stats, multiplier, health, effects, and flight", () => {

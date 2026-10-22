@@ -1,114 +1,370 @@
 local Prompt = {}
 Prompt.__index = Prompt
 
-local windowId = "nebius_passive_generator_v2"
-local statusId = "nebius_passive_status_v2"
-local inputId = "nebius_passive_input_v2"
-local randomizeId = "nebius_passive_randomize_v2"
-
-function Prompt.new(json)
-  return setmetatable({ json = json, ready = false, failed = false, requested = false, held = false, sequence = 0, pending = nil, status = "Describe a passive item. Keep the local bridge running.", text = "" }, Prompt)
+local labels = { editing="READY", randomizing="FINDING AN IDEA", generating="GENERATING ITEM",
+  success="ITEM READY", error="NEEDS ATTENTION" }
+local sounds = { open="SOUND_PAPER_IN", close="SOUND_PAPER_OUT", submit="SOUND_BUTTON_PRESS",
+  success="SOUND_POWERUP1", error="SOUND_THUMBS_DOWN" }
+local function play(cue)
+  local id = SoundEffect and SoundEffect[sounds[cue]]
+  if id then pcall(function() SFXManager():Play(id, 0.6) end) end
 end
 
-function Prompt:call(name, ...)
-  Isaac.DebugString("[NebiusPrompt] UI_CALL_BEGIN " .. name)
-  local result = ImGui[name](...)
-  Isaac.DebugString("[NebiusPrompt] UI_CALL_OK " .. name)
-  return result
+function Prompt.new(json)
+  return setmetatable({ json=json, failed=false, requested=false, held=false,
+    open=false, sequence=0, phase="editing", status="Describe a passive item, or choose Randomize.",
+    text="", quality=3, keyHeld={}, focus=1, hudHidden=false }, Prompt)
+end
+
+function Prompt:logError(category, detail)
+  local event = { id=self.pending or "ui", phase=self.phase, category=category,
+    detail=tostring(detail):sub(1,500) }
+  if self.json and self.json.encode then
+    local ok, encoded = pcall(self.json.encode, event)
+    if ok then Isaac.DebugString("[NebiusBridge] error " .. encoded); return end
+  end
+  Isaac.DebugString("[NebiusPrompt] ERROR " .. category .. " " .. event.detail)
+end
+
+function Prompt:fail(category, message, detail)
+  self:logError(category, detail or message)
+  self.pending, self.pendingKind = nil, nil
+  self.phase, self.status = "error", message
+  play("error")
+end
+
+function Prompt:send(kind, data)
+  if self.pending then return end
+  local context = self.getContext and self.getContext()
+  if context and context.blocked then self:fail("capacity", context.blocked); return end
+  if not self.json or type(self.json.encode)~="function" then self:fail("ui","JSON support is unavailable."); return end
+  self.sequence = self.sequence + 1
+  local id = (context and context.run or "ui") .. "_" .. tostring(Random()) .. "_" .. tostring(self.sequence)
+  data.id = id
+  local ok, encoded = pcall(self.json.encode, data)
+  if not ok then self:fail("ui","Could not prepare the request.",encoded); return end
+  self.pending, self.started, self.pendingKind = id, Isaac.GetTime(), kind
+  self.phase = kind=="sentence" and "randomizing" or "generating"
+  self.status = kind=="sentence" and "Finding an idea..." or "Waiting for the bridge..."
+  if context then Isaac.DebugString("[NebiusBridge] state " .. self.json.encode(context)) end
+  Isaac.DebugString("[NebiusBridge] " .. kind .. " " .. encoded)
+  play("submit")
+  if kind=="generate" then self:close() end
 end
 
 function Prompt:submit()
   if self.pending then return end
-  local context = self.getContext and self.getContext()
-  if context and context.blocked then self.status = context.blocked; return end
   local trimmed = self.text:match("^%s*(.-)%s*$")
-  if #trimmed == 0 or #trimmed > 2000 then self.status = "Enter a prompt between 1 and 2000 characters."; return end
-  if not self.json or type(self.json.encode) ~= "function" then self.status = "JSON support is unavailable."; return end
-  self.sequence = self.sequence + 1
-  local requestId = (context and context.run or "ui") .. "_" .. tostring(Random()) .. "_" .. tostring(self.sequence)
-  local encodedOk, encoded = pcall(self.json.encode, { id = requestId, prompt = trimmed })
-  if not encodedOk then self.status = "Could not encode the prompt."; return end
-  self.pending, self.started, self.pendingKind = requestId, Isaac.GetTime(), nil
-  self.status = "Submitted. Waiting for the bridge..."
-  if context then Isaac.DebugString("[NebiusBridge] state " .. self.json.encode(context)) end
-  Isaac.DebugString("[NebiusBridge] generate " .. encoded)
-  self:close()
+  if #trimmed==0 or #trimmed>2000 then
+    self:fail("input","Enter a prompt between 1 and 2000 characters."); return
+  end
+  self:send("generate",{prompt=trimmed,quality=self.quality})
 end
 
 function Prompt:randomize()
-  if self.pending then return end
-  local context = self.getContext and self.getContext()
-  if context and context.blocked then self.status = context.blocked; return end
-  if not self.json or type(self.json.encode) ~= "function" then self.status = "JSON support is unavailable."; return end
-  self.sequence = self.sequence + 1
-  local requestId = (context and context.run or "ui") .. "_" .. tostring(Random()) .. "_" .. tostring(self.sequence)
-  local encodedOk, encoded = pcall(self.json.encode, { id = requestId })
-  if not encodedOk then self.status = "Could not encode the sentence request."; return end
-  self.pending, self.started, self.pendingKind = requestId, Isaac.GetTime(), "sentence"
-  self.status = "Asking for a random sentence..."
-  if context then Isaac.DebugString("[NebiusBridge] state " .. self.json.encode(context)) end
-  Isaac.DebugString("[NebiusBridge] sentence " .. encoded)
+  self:send("sentence",{})
 end
 
 function Prompt:applySentence(sentence)
-  local trimmed = type(sentence) == "string" and sentence:match("^%s*(.-)%s*$") or ""
-  if #trimmed < 12 or #trimmed > 180 or trimmed:find("\n", 1, true) then
-    self.pending, self.pendingKind = nil, nil
-    self.status = "The random sentence was unusable. Try again."
-    return
+  local trimmed = type(sentence)=="string" and sentence:match("^%s*(.-)%s*$") or ""
+  if #trimmed<12 or #trimmed>180 or trimmed:find("\n",1,true) then
+    self:fail("sentence","The random idea was unusable. Try again."); return
   end
-  self.text, self.lastRandomSentence = trimmed, trimmed
-  self.pending, self.pendingKind = nil, nil
-  -- ImGuiData.Value is 1. Keeping the numeric form avoids relying on the
-  -- enum table being exported by older REPENTOGON builds.
-  local updated = pcall(function() self:call("UpdateData", inputId, 1, self.text) end)
-  if updated then self.status = "Random sentence ready. Edit it or generate it."
-  else self.status = "Random sentence ready. Generate it or type to replace it." end
+  self.text=trimmed
+  self.pending,self.pendingKind=nil,nil
+  self.phase,self.status="editing","Idea ready. Edit it or generate the item."
 end
 
 function Prompt:close()
-  ImGui.SetVisible(windowId, false)
-  ImGui.Hide()
+  local wasOpen=self.open
+  self.open=false
+  self.keyHeld={}
+  self:setHudHidden(false)
+  if wasOpen then play("close") end
 end
 
-function Prompt:receive(id, status, detail)
-  if id ~= self.pending then return end
-  if status == "sentence" and self.pendingKind == "sentence" then self:applySentence(detail); return end
-  self.status = detail
-  if status == "error" or status == "accepted" then self.pending, self.pendingKind = nil, nil end
+function Prompt:setHudHidden(hidden)
+  if self.hudHidden==hidden then return end
+  local ok,hud=pcall(function() return Game():GetHUD() end)
+  if ok and hud and hud.SetVisible then
+    local changed=pcall(hud.SetVisible,hud,not hidden)
+    if changed then self.hudHidden=hidden end
+  end
+end
+
+function Prompt:receive(id,status,detail)
+  if id~=self.pending then return end
+  if status=="sentence" and self.pendingKind=="sentence" then self:applySentence(detail); return end
+  if status=="error" then
+    local message="Generation failed. Edit your idea and retry."
+    if type(detail)=="string" then
+      if detail:find("ComfyUI",1,true) or detail:lower():find("image service",1,true) then
+        message="Art service unavailable. Start ComfyUI and retry."
+      elseif detail:lower():find("another request",1,true) then
+        message="Another request is running. Wait, then retry."
+      elseif detail:lower():find("timed out",1,true) then
+        message="Generation timed out. Try a shorter idea."
+      end
+    end
+    self:fail("bridge",message,detail)
+    self.requested=true
+    return
+  end
+  if status=="accepted" then
+    if self.pendingKind=="generate" then self.text="" end
+    self.pending,self.pendingKind=nil,nil
+    self.phase,self.status="success",detail
+    play("success")
+  elseif status=="generating" then
+    self.phase="generating"
+    self.status=type(detail)=="string" and detail:sub(1,120) or "Generating item..."
+  end
 end
 
 function Prompt:updateInput()
-  local pressed = Input.IsButtonPressed(Keyboard.KEY_8, 0) or Input.IsButtonPressed(Keyboard.KEY_KP_8, 0)
-  if pressed and not self.held then self.requested = true end
-  self.held = pressed
+  local pressed=Input.IsButtonPressed(Keyboard.KEY_8,0) or Input.IsButtonPressed(Keyboard.KEY_KP_8,0)
+  if pressed and not self.held and not self.open then
+    self.requested=true
+    Isaac.DebugString("[NebiusPrompt] OPEN_REQUEST")
+  end
+  self.held=pressed
+end
+
+function Prompt:shouldPause()
+  return self.open and not self.failed
+end
+
+function Prompt:shouldHideGameOverlays()
+  return self.open and not self.failed
+end
+
+function Prompt:reset()
+  self:close()
+  self.pending,self.pendingKind=nil,nil
+  self.requested=false
+  self.phase,self.status="editing","Describe a passive item, or choose Randomize."
+end
+
+function Prompt:renderIndicator()
+  if not self.pending then return end
+  local tick=math.floor(Isaac.GetTime()/150)%8
+  local x,y=37,Isaac.GetScreenHeight()-38
+  local points={{0,-11},{8,-8},{11,0},{8,8},{0,11},{-8,8},{-11,0},{-8,-8}}
+  for index,point in ipairs(points) do
+    local shade=0.25+(7-(index-tick-1)%8)*0.1
+    Isaac.RenderText(".",x+point[1],y+point[2],shade,shade,1,1)
+  end
+  local label=self.pendingKind=="sentence" and "Finding an idea..." or self.status
+  Isaac.RenderText(tostring(label):sub(1,55),58,y,0.8,0.9,1,1)
+end
+
+local keyCharacters = {
+  { "KEY_SPACE", " ", " " }, { "KEY_MINUS", "-", "_" }, { "KEY_EQUAL", "=", "+" },
+  { "KEY_COMMA", ",", "<" }, { "KEY_PERIOD", ".", ">" }, { "KEY_SLASH", "/", "?" },
+  { "KEY_SEMICOLON", ";", ":" }, { "KEY_APOSTROPHE", "'", '"' },
+  { "KEY_LEFT_BRACKET", "[", "{" }, { "KEY_RIGHT_BRACKET", "]", "}" },
+  { "KEY_BACKSLASH", "\\", "|" }, { "KEY_GRAVE_ACCENT", "`", "~" },
+}
+local shiftedNumbers = { ")", "!", "@", "#", "$", "%", "^", "&", "*", "(" }
+for code=string.byte("A"),string.byte("Z") do
+  local letter=string.char(code)
+  keyCharacters[#keyCharacters+1]={"KEY_"..letter,letter:lower(),letter}
+end
+for number=0,9 do
+  keyCharacters[#keyCharacters+1]={"KEY_"..number,tostring(number),shiftedNumbers[number+1]}
+  keyCharacters[#keyCharacters+1]={"KEY_KP_"..number,tostring(number),tostring(number)}
+end
+
+function Prompt:keyPressed(name,repeatable)
+  local code=Keyboard[name]
+  if not code then return false end
+  local down=Input.IsButtonPressed(code,0)
+  local previous=self.keyHeld[name]
+  if not down then self.keyHeld[name]=nil; return false end
+  local now=Isaac.GetTime()
+  if not previous then self.keyHeld[name]=now+400; return true end
+  if repeatable and now>=previous then self.keyHeld[name]=now+65; return true end
+  return false
+end
+
+function Prompt:editInput()
+  if Isaac.GetTime()-(self.openedAt or 0)<150 then return end
+  local shift=(Keyboard.KEY_LEFT_SHIFT and Input.IsButtonPressed(Keyboard.KEY_LEFT_SHIFT,0)) or
+    (Keyboard.KEY_RIGHT_SHIFT and Input.IsButtonPressed(Keyboard.KEY_RIGHT_SHIFT,0))
+  if self:keyPressed("KEY_ESCAPE",false) then self:close(); return end
+  if self.focus==1 then
+    if self:keyPressed("KEY_RIGHT",false) then self.focus=4+self.quality; return end
+    if self:keyPressed("KEY_DOWN",false) then self.focus=2; return end
+  end
+  if self.focus>1 then
+    if self.focus>=5 then
+      if self:keyPressed("KEY_LEFT",false) then self.focus=1; return end
+      if self:keyPressed("KEY_RIGHT",false) then self.focus=3; return end
+      if self:keyPressed("KEY_UP",false) then self.focus=self.focus==5 and 2 or self.focus-1; return end
+      if self:keyPressed("KEY_DOWN",false) then self.focus=self.focus==8 and 2 or self.focus+1; return end
+      if self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false) then
+        self.quality=self.focus-4
+        return
+      end
+      return
+    end
+    if self:keyPressed("KEY_LEFT",false) then self.focus=self.focus==2 and 4 or self.focus-1; return end
+    if self:keyPressed("KEY_RIGHT",false) then self.focus=self.focus==4 and 2 or self.focus+1; return end
+    if self:keyPressed("KEY_UP",false) then self.focus=1; return end
+    if self:keyPressed("KEY_DOWN",false) then self.focus=4+self.quality; return end
+    if self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false) then
+      if self.focus==2 then self:randomize()
+      elseif self.focus==3 then self:submit()
+      else self:close() end
+      return
+    end
+    return
+  end
+  if self:keyPressed("KEY_BACKSPACE",true) then self.text=self.text:sub(1,-2) end
+  if self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false) then
+    if #self.text<2000 then self.text=self.text.."\n" end
+  end
+  for _,entry in ipairs(keyCharacters) do
+    if self:keyPressed(entry[1],true) and #self.text<2000 then
+      self.text=self.text..(shift and entry[3] or entry[2])
+    end
+  end
+end
+
+function Prompt:layout()
+  local screenW,screenH=Isaac.GetScreenWidth(),Isaac.GetScreenHeight()
+  local w,h=math.min(500,screenW-24),math.min(260,screenH-18)
+  return {x=math.floor((screenW-w)/2),y=math.floor((screenH-h)/2),w=w,h=h}
+end
+
+function Prompt:box(x,y,w,h,r,g,b,a)
+  local destination=DestinationQuad.NewFromRectangle(Vector(x,y),w,h)
+  self.pixel:Render(self.pixelQuad,destination,KColor(r,g,b,a or 1))
+end
+
+local function linesFor(text,maxChars)
+  local lines={}
+  for part in (text.."\n"):gmatch("(.-)\n") do
+    if #part==0 then lines[#lines+1]=" "
+    else
+      for start=1,#part,maxChars do lines[#lines+1]=part:sub(start,start+maxChars-1) end
+    end
+  end
+  return lines
+end
+
+function Prompt:button(label,x,y,w,h,hover,enabled)
+  local r,g,b=0.13,0.24,0.32
+  if hover and enabled then r,g,b=0.22,0.43,0.51 end
+  if not enabled then r,g,b=0.1,0.13,0.16 end
+  self:box(x,y,w,h,r,g,b,1)
+  self:box(x,y,w,1,0.35,0.67,0.72,1)
+  Isaac.RenderText(label,x+8,y+6,enabled and 0.95 or 0.45,enabled and 0.95 or 0.5,1,1)
+end
+
+function Prompt:draw()
+  local layout=self:layout()
+  local x,y,w,h=layout.x,layout.y,layout.w,layout.h
+  self:box(x-2,y-2,w+4,h+4,0.38,0.7,0.75,1)
+  self:box(x,y,w,h,0.045,0.075,0.12,0.98)
+  self:box(x,y,w,28,0.09,0.2,0.27,1)
+  Isaac.RenderText("NEBIUS // ITEM CREATOR",x+14,y+9,0.9,1,1,1)
+  Isaac.RenderText("Describe a passive item for this run.",x+14,y+37,0.75,0.85,0.92,1)
+  local inputY,inputH=y+54,h-132
+  local qualityX,qualityW=x+w-86,73
+  local inputW=qualityX-(x+13)-10
+  local inputFocused=self.focus==1
+  self:box(x+13,inputY,inputW,inputH,inputFocused and 0.14 or 0.1,inputFocused and 0.26 or 0.16,inputFocused and 0.34 or 0.22,1)
+  self:box(x+13,inputY,inputW,inputFocused and 2 or 1,inputFocused and 0.48 or 0.35,inputFocused and 0.82 or 0.56,inputFocused and 0.9 or 0.62,1)
+  local maxChars=math.max(12,math.floor((inputW-20)/6))
+  local lines=linesFor(self.text,maxChars)
+  local visible=math.max(1,math.floor((inputH-14)/12))
+  local first=math.max(1,#lines-visible+1)
+  for index=first,#lines do
+    local line=lines[index]
+    if index==#lines and math.floor(Isaac.GetTime()/500)%2==0 then line=line.."_" end
+    Isaac.RenderText(line,x+22,inputY+8+(index-first)*12,0.96,0.98,1,1)
+  end
+  Isaac.RenderText("QUALITY",qualityX,y+38,0.5,0.83,0.88,1)
+  self:box(qualityX,inputY,qualityW,1,0.35,0.67,0.72,1)
+  local qualityButtons={}
+  for quality=1,4 do
+    local qualityY=inputY+7+(quality-1)*25
+    qualityButtons[#qualityButtons+1]={quality=quality,x=qualityX,y=qualityY,w=qualityW,h=20}
+  end
+  local buttonY=y+h-64
+  local gap=8
+  local buttonW=math.floor((w-26-2*gap)/3)
+  local buttons={
+    {label="RANDOMIZE",x=x+13,enabled=not self.pending,action=function() self:randomize() end},
+    {label="GENERATE",x=x+13+buttonW+gap,enabled=not self.pending,action=function() self:submit() end},
+    {label="CLOSE",x=x+13+2*(buttonW+gap),enabled=true,action=function() self:close() end},
+  }
+  local mouse=Input.GetMousePosition(false)
+  local pressed=Input.IsMouseBtnPressed(MouseButton.LEFT)
+  local clicked=pressed and not self.mouseHeld
+  self.mouseHeld=pressed
+  local inputHovered=mouse and mouse.X>=x+13 and mouse.X<x+13+inputW and mouse.Y>=inputY and mouse.Y<inputY+inputH
+  if clicked and inputHovered then self.focus=1 end
+  for _,button in ipairs(qualityButtons) do
+    local hovered=mouse and mouse.X>=button.x and mouse.X<button.x+button.w and mouse.Y>=button.y and mouse.Y<button.y+button.h
+    if hovered then self.focus=4+button.quality end
+    local selected=self.quality==button.quality
+    self:box(button.x,button.y,button.w,button.h,selected and 0.22 or 0.1,selected and 0.43 or 0.16,selected and 0.51 or 0.22,1)
+    self:box(button.x,button.y,button.w,(hovered or self.focus==4+button.quality) and 2 or 1,0.35,0.67,0.72,1)
+    Isaac.RenderText(tostring(button.quality),button.x+31,button.y+4,0.95,0.95,1,1)
+    if clicked and hovered then self.quality=button.quality; break end
+  end
+  for _,button in ipairs(buttons) do
+    local hoveredByMouse=mouse and mouse.X>=button.x and mouse.X<button.x+buttonW and
+      mouse.Y>=buttonY and mouse.Y<buttonY+27
+    if hoveredByMouse then self.focus=({RANDOMIZE=2,GENERATE=3,CLOSE=4})[button.label] end
+    local hover=hoveredByMouse or self.focus==({RANDOMIZE=2,GENERATE=3,CLOSE=4})[button.label]
+    self:button(button.label,button.x,buttonY,buttonW,27,hover,button.enabled)
+    if clicked and hover and button.enabled then button.action(); break end
+  end
+  local phase=labels[self.phase] or "READY"
+  Isaac.RenderText(phase,x+14,y+h-27,0.5,0.83,0.88,1)
+  Isaac.RenderText(tostring(self.status):sub(1,maxChars-16),x+102,y+h-27,0.88,0.9,0.95,1)
+  if mouse and mouse.X>=x and mouse.X<x+w and mouse.Y>=y and mouse.Y<y+h then
+    Isaac.RenderText("+",mouse.X-3,mouse.Y-6,0.85,0.95,1,1)
+  end
 end
 
 function Prompt:render()
+  self:updateInput()
+  if self.pending and Isaac.GetTime()-self.started>370000 then
+    self:fail("timeout","Request timed out. Check the bridge, then retry.")
+    self.requested=true
+  end
+  self:renderIndicator()
   if self.failed then return end
-  if self.pending and Isaac.GetTime() - self.started > 370000 then self.pending, self.pendingKind = nil, nil; self.status = "Bridge timed out. Check its terminal before submitting again." end
-  if not self.requested and not self.ready then return end
-  if type(ImGui) ~= "table" then self.failed = true; Isaac.DebugString("[NebiusPrompt] UI_UNAVAILABLE"); return end
-  local renderOk, failure = pcall(function()
-    if not self.ready then
-      self:call("CreateWindow", windowId, "Nebius Passive Item Generator")
-      self:call("AddText", windowId, "Passive items only. Generated JSON is validated before use.", true, "nebius_passive_help_v2")
-      self:call("AddInputTextMultiline", windowId, inputId, "Item prompt", function(value) self.text = value end, "", 6)
-      self:call("AddButton", windowId, randomizeId, "Randomize", function() self:randomize() end)
-      self:call("AddButton", windowId, "nebius_passive_submit_v2", "Generate Item", function() self:submit() end)
-      self:call("AddButton", windowId, "nebius_passive_close_v2", "Close", function() self:close() end)
-      self:call("AddText", windowId, self.status, true, statusId)
-      self:call("SetSize", windowId, 540, 300)
-      self:call("SetVisible", windowId, false)
-      self.ready = true
+  if self.requested then
+    self.requested=false
+    if not self.open then
+      self.open=true
+      self.focus=1
+      self.openedAt=Isaac.GetTime()
+      self:setHudHidden(true)
+      Isaac.DebugString("[NebiusPrompt] WINDOW_VISIBLE")
+      play("open")
     end
-    if self.requested then
-      self.requested = false
-      if not ImGui.GetVisible(windowId) then self:call("SetVisible", windowId, true); self:call("Show") end
+  end
+  if not self.open then return end
+  local ok,failure=pcall(function()
+    if not self.pixel then
+      self.pixel=Renderer.LoadImage("gfx/nebius_creator/white.png")
+      self.pixelQuad=SourceQuad.NewFromRectangle(Vector(0,0),1,1,false)
     end
-    if self.lastStatus ~= self.status then ImGui.UpdateText(statusId, self.status); self.lastStatus = self.status end
+    self:editInput()
+    if self.open then self:draw() end
   end)
-  if not renderOk then self.failed = true; Isaac.DebugString("[NebiusPrompt] UI_ERROR " .. tostring(failure)) end
+  if not ok then
+    self.failed,self.open=true,false
+    self:setHudHidden(false)
+    self:logError("ui",failure)
+    Isaac.DebugString("[NebiusPrompt] UI_ERROR "..tostring(failure))
+  end
 end
 
 return Prompt

@@ -3,7 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { atomicWrite, makeIcon, makeSpriteSheet, validateSchema, toLua } from './runtime.mjs';
 import { assertComfyUiReady, generateComfyImage } from "./comfyui.mjs";
-import { requestTextModel } from "./network.mjs";
+import { chatCompletionPayload, requestTextModel } from "./network.mjs";
 import { buildDesignPrompt, isUnderspecifiedIdea } from "./idea.mjs";
 import { artSlotName, familiarArtSlotName, familiarAnimationResource, familiarSheetResource } from '../native/ipc/art-slots.mjs';
 import { applyRegion, applySystems, repairNote, repairProfile } from './prompt-features.mjs';
@@ -28,12 +28,16 @@ const noImage = args.includes("--no-image");
 const prompt = readOption("--prompt") || args.filter((value) => !value.startsWith("--")).join(" ");
 const requestId = readOption("--request-id");
 const requestedArtSlot = readOption("--art-slot");
+const requestedQuality = Number(readOption("--quality") || 3);
 
 if (!prompt && !dryRun) {
   fail('Usage: npm run generate -- --prompt "A cursed nail that poisons enemies"');
 }
 if (!dryRun && requestedArtSlot === '') {
   fail('Use npm run ipc:generate -- --prompt "..." with the bridge and a run open, so artwork is safely reserved.');
+}
+if (!Number.isInteger(requestedQuality) || requestedQuality < 1 || requestedQuality > 4) {
+  fail('Quality must be an integer from 1 through 4.');
 }
 
 const HIT_TRIGGERS = new Set(["player_hurt", "enemy_hit"]);
@@ -264,7 +268,8 @@ async function generateProfile(playerPrompt) {
   requireSetting("NEBIUS_TEXT_MODEL");
   const expandingIdea = isUnderspecifiedIdea(playerPrompt);
   if (expandingIdea) progress('expand');
-  const { designPrompt, ideaBrief } = await buildDesignPrompt(playerPrompt, capabilities, env);
+  const { designPrompt, ideaBrief } = await buildDesignPrompt(playerPrompt, capabilities, env, undefined, requestId || String(Date.now()));
+  const qualityPrompt = `\nRequested quality: ${requestedQuality}. This is an exact target, not a maximum. Keep the item within quality ${requestedQuality}'s budget of ${capabilities.quality_budgets[requestedQuality]}.`;
   if (ideaBrief) {
     await mkdir(outputDirectory, { recursive: true });
     await writeFile(path.join(outputDirectory, "last-idea-brief.txt"), `${ideaBrief}\n`);
@@ -275,27 +280,34 @@ async function generateProfile(playerPrompt) {
   const response = await requestTextModel(`${(env.NEBIUS_BASE_URL || "https://api.tokenfactory.nebius.com/v1/").replace(/\/$/, '')}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.NEBIUS_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: env.NEBIUS_TEXT_MODEL,
+    body: JSON.stringify(chatCompletionPayload(env, {
       temperature: attempt ? 0 : 0.7,
-      max_tokens: 4096,
+      max_tokens: Number(env.NEBIUS_TEXT_MAX_TOKENS || 6144),
       response_format: { type: "json_schema", json_schema: { name: "passive_item_profile", strict: true, schema: ITEM_SCHEMA } },
       messages: [
         { role: "system", content: systemPrompt() + '\n' + updatedBalanceGuidance + '\nRequired schema: ' + JSON.stringify(ITEM_SCHEMA) },
-        { role: "user", content: designPrompt + correction },
+        { role: "user", content: designPrompt + qualityPrompt + correction },
       ],
-    }),
+    })),
   });
   if (!response.ok) fail(`Token Factory text request failed (${response.status}): ${await response.text()}`);
   const body = await response.json();
-  const content = body.choices?.[0]?.message?.content;
-  if (!content) fail("Token Factory returned no item profile.");
+  const choice = body.choices?.[0];
+  const content = choice?.message?.content;
   await mkdir(outputDirectory, { recursive: true });
-  await writeFile(path.join(outputDirectory, "last-text-response.txt"), `${typeof content === "string" ? content : JSON.stringify(content, null, 2)}\n`);
+  const reasoning = choice?.message?.reasoning_content || choice?.message?.reasoning || "";
+  await writeFile(path.join(outputDirectory, "last-text-diagnostic.json"), JSON.stringify({
+    finish_reason: choice?.finish_reason || null,
+    content_length: typeof content === "string" ? content.length : 0,
+    reasoning_length: typeof reasoning === "string" ? reasoning.length : 0,
+    usage: body.usage || null,
+  }, null, 2));
+  if (content) await writeFile(path.join(outputDirectory, "last-text-response.txt"), `${typeof content === "string" ? content : JSON.stringify(content, null, 2)}\n`);
   try {
-    if(body.choices?.[0]?.finish_reason === 'length') throw Error('Response was truncated');
+    if(choice?.finish_reason === 'length') throw Error('Response was truncated before the item profile was complete');
+    if (!content) throw Error("Token Factory returned no item profile");
     const profile = parseModelJson(content);
-    repairGeneratedProfile(profile, designPrompt);
+    repairGeneratedProfile(profile, designPrompt, requestedQuality);
     validateProfile(profile);
     return profile;
   } catch(error) {
@@ -447,14 +459,14 @@ async function preflightImageBackend() {
   await assertComfyUiReady(env.COMFYUI_URL || "http://127.0.0.1:8188");
 }
 
-function repairGeneratedProfile(profile, playerPrompt) {
+function repairGeneratedProfile(profile, playerPrompt, quality) {
   // Permanent-stat phrase repair must not turn a room-only request into a passive bonus.
   const permanentPrompt = playerPrompt.split(/(?<=[.!?;])\s+/)
     .filter(sentence => !/\b(?:for (?:this|the current|one|the rest of (?:this|the)) room|until (?:the )?next room|room[- ]long)\b/i.test(sentence)).join(" ");
   repairProfile(profile, permanentPrompt);
   applyRegion(profile);
   applySystems(profile);
-  fitWeightBudget(profile, capabilities);
+  fitWeightBudget(profile, capabilities, quality);
   applyRegion(profile);
   applySystems(profile);
   return profile;

@@ -31,8 +31,13 @@ Vector = setmetatable({ Zero = { X = 0, Y = 0 } }, { __call = function(_, horizo
 TearFlags = setmetatable({ TEAR_SLOW=2, TEAR_CHARM=4, TEAR_HOMING=8, TEAR_SPECTRAL=16, TEAR_BURN=64, TEAR_PIERCING=128, TEAR_GLOW=256, TEAR_FEAR=512, TEAR_BOUNCE=1024, TEAR_SPLIT=2048, TEAR_EXPLOSIVE=4096, TEAR_CONFUSION=16384, TEAR_KNOCKBACK=16777216 }, { __index = function() return 1 end })
 CacheFlag = { CACHE_DAMAGE=1, CACHE_FIREDELAY=2, CACHE_RANGE=4, CACHE_LUCK=8, CACHE_SHOTSPEED=16, CACHE_SPEED=32, CACHE_FLYING=64 }
 ModCallbacks = setmetatable({}, { __index = function(_, key) return key end })
-Keyboard = { KEY_8=8, KEY_KP_8=108, KEY_BACKSLASH=92 }
-Input = { IsButtonPressed = function() return held end }
+Keyboard = { KEY_8=8, KEY_KP_8=108, KEY_A=65, KEY_B=66, KEY_SPACE=32,
+ KEY_BACKSPACE=259, KEY_ENTER=257, KEY_ESCAPE=256, KEY_LEFT_SHIFT=340,
+ KEY_UP=265, KEY_DOWN=264, KEY_LEFT=263, KEY_RIGHT=262 }
+MouseButton = { LEFT=0 }
+keyDown,mouseDown,mousePosition={},false,Vector(-1,-1)
+Input = { IsButtonPressed = function(key) return ((key==8 or key==108) and held) or keyDown[key] or false end,
+ GetMousePosition=function() return mousePosition end, IsMouseBtnPressed=function() return mouseDown end }
 EntityType = { ENTITY_TEAR=2, ENTITY_PICKUP=5, ENTITY_FAMILIAR=3, ENTITY_PROJECTILE=9, ENTITY_ATTACKFLY=18, ENTITY_SPIDER=85, ENTITY_POOTER=14 }
 PickupVariant = { PICKUP_COLLECTIBLE=100, PICKUP_COIN=20, PICKUP_KEY=30, PICKUP_BOMB=40, PICKUP_HEART=10, PICKUP_PILL=70, PICKUP_TAROTCARD=300, PICKUP_LIL_BATTERY=90, PICKUP_TRINKET=350, PICKUP_CHEST=50, PICKUP_GRAB_BAG=69 }
 FamiliarVariant = { PUNCHING_BAG=67 }
@@ -49,8 +54,11 @@ function SFXManager() return { Play=function() end } end
 player = { InitSeed=11, Position=Vector(0,0), Damage=3.5, MaxFireDelay=10, TearRange=100, Luck=0, ShotSpeed=1, MoveSpeed=1, hearts=0, CanFly=false, ToPlayer=function(self) return self end,
  HasCollectible=function() return owns end, AddCacheFlags=function() end, EvaluateItems=function() end,
  AddSoulHearts=function(self, amount) self.hearts=self.hearts+amount end }
+hudVisible=true
+hud = { ShowItemText=function(_, title, subtitle) itemBanners[#itemBanners+1]={title, subtitle} end,
+ SetVisible=function(_, visible) hudVisible=visible end }
 function Game() return { GetFrameCount=function() return frame end, GetNumPlayers=function() return 1 end,
- GetHUD=function() return { ShowItemText=function(_, title, subtitle) itemBanners[#itemBanners+1]={title, subtitle} end } end,
+ GetHUD=function() return hud end,
  GetRoom=function() return { FindFreePickupSpawnPosition=function(_, position) return position end } end,
  GetLevel=function() return { GetCurrentRoomIndex=function() return roomIndex end, GetAbsoluteStage=function() return stage end } end } end
 Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) return 733+tonumber(name:match("(%d+)$")) end,
@@ -64,6 +72,7 @@ Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByNa
   end
   return entities
  end, WorldToScreen=function(position) return position end, RenderText=function() end,
+ GetScreenWidth=function() return 800 end, GetScreenHeight=function() return 600 end,
  Spawn=function(entityType, variant, subtype, position, velocity)
   if entityType==EntityType.ENTITY_FAMILIAR then
    local data={}; local familiar={Position=position,PositionOffset=Vector(0,0),Visible=true,GetData=function() return data end,Exists=function() return true end}
@@ -116,22 +125,28 @@ package.preload.json = function() return { decode=function(raw) if raw=='bad' th
   encodedValues[#encodedValues+1]=deepCopy(value); encodedValues[key]=deepCopy(value)
   return key
  end } end
-function include(name) assert(name=='nebius_prompt'); return assert(load(promptSource))() end
+function include(name)
+ assert(name=='nebius_prompt')
+ local module=assert(load(promptSource))()
+ local original=module.new
+ module.new=function(...)
+  local prompt=original(...)
+  uiPrompt=prompt
+  uiCallbacks.input=function(value) prompt.text=value end
+  uiCallbacks.submit=function() prompt:submit() end
+  uiCallbacks.randomize=function() prompt:randomize() end
+  uiCallbacks.close=function() prompt:close() end
+  return prompt
+ end
+ return module
+end
 NebiusBridge = { Poll=function() local result=nextRaw; nextRaw=nil; return result end,
  Ack=function(id) events[#events+1]='ack:'..id; return true end }
-uiVisible, uiShown, windows = false, false, 0
-ImGui = { CreateWindow=function() windows=windows+1 end, AddText=function() end,
- AddInputTextMultiline=function(_, id, _, callback) uiCallbacks.input=callback end,
- AddButton=function(_, id, _, callback)
-  if id=='nebius_passive_submit_v2' then uiCallbacks.submit=callback
-  elseif id=='nebius_passive_randomize_v2' then uiCallbacks.randomize=callback
-  else uiCallbacks.close=callback end
- end,
- SetSize=function() end, SetVisible=function(_, value) uiVisible=value end,
- GetVisible=function() return uiVisible end, Show=function() uiShown=true end, Hide=function() uiShown=false end,
- UpdateData=function(_, dataType, value) uiInputDataType=dataType; uiInputValue=value end,
- UpdateText=function(_, value) uiStatus=value end }
-Renderer = { LoadImage=function() return { Render=function() events[#events+1]='render' end } end }
+windows,uiShown=0,false
+Renderer = { LoadImage=function(path)
+ if path=='gfx/nebius_creator/white.png' then return { Render=function() end } end
+ return { Render=function() events[#events+1]='render' end }
+end }
 SourceQuad = { NewFromRectangle=function() return {} end }
 DestinationQuad = { NewFromRectangle=function(position, width, height) lastDestination={x=position.X,y=position.Y,width=width,height=height}; return {} end }
 `;
@@ -149,16 +164,17 @@ async function run(body, customProfile = profile) {
   } finally { engine.global.close(); }
 }
 
-test('8 opens one fixed window; hold, typing 8, and double submit do not duplicate requests', async () => {
+test('8 opens one in-game panel; hold and double submit do not duplicate requests', async () => {
   await run(`
-    held=true; Demo:onPostUpdate(); assert(windows==0)
-    Demo:onPostRender(); assert(windows==1 and uiVisible and uiShown)
-    frame=1; Demo:onPostUpdate(); Demo:onPostRender(); assert(windows==1)
+    held=true; Demo:onPostUpdate(); assert(not uiPrompt.open)
+    Demo:onPostRender(); assert(uiPrompt.open and windows==0 and not uiShown)
+    local layout=uiPrompt:layout(); assert(layout.x==150 and layout.y==170 and layout.w==500 and layout.h==260)
+    frame=1; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiPrompt.open)
     held=false; frame=2; Demo:onPostUpdate()
-    held=true; frame=3; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiVisible and windows==1)
+    held=true; frame=3; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiPrompt.open)
     uiCallbacks.input('  poison eye  '); uiCallbacks.submit(); uiCallbacks.submit()
     assert(lastRequest.id=='123_0_1_123_1' and lastRequest.prompt=='poison eye')
-    assert(not uiVisible and not uiShown)
+    assert(not uiPrompt.open and not uiShown)
     local requests=0
     for _, line in ipairs(logs) do if line:find('[NebiusBridge] generate',1,true) then requests=requests+1 end end
     assert(requests==1)
@@ -171,15 +187,15 @@ test('Randomize fills the prompt and leaves the user in control of generation', 
     assert(uiCallbacks.randomize~=nil)
     uiCallbacks.randomize()
     Demo:onPostRender()
-    assert(uiStatus=='Asking for a random sentence...' and lastRequest==nil)
+    assert(uiPrompt.status=='Finding an idea...' and lastRequest==nil)
     local asked=false
     for _, line in ipairs(logs) do if line:find('[NebiusBridge] sentence',1,true) then asked=true end end
     assert(asked)
     envelope={version=1,type='status',id='123_0_1_123_1',status='sentence',detail='A glass eye that blinks when the room is dark.'}
     frame=1; nextRaw='status'; Demo:onPostUpdate(); Demo:onPostRender()
-    assert(uiInputDataType==1 and uiInputValue=='A glass eye that blinks when the room is dark.' and uiStatus=='Random sentence ready. Edit it or generate it.')
+    assert(uiPrompt.text=='A glass eye that blinks when the room is dark.' and uiPrompt.status=='Idea ready. Edit it or generate the item.')
     uiCallbacks.submit()
-    assert(lastRequest and lastRequest.prompt=='A glass eye that blinks when the room is dark.' and not uiVisible)
+    assert(lastRequest and lastRequest.prompt=='A glass eye that blinks when the room is dark.' and not uiPrompt.open)
   `);
 });
 
@@ -458,9 +474,10 @@ test('IPC status matches pending ID; error clears submission lock and permits re
   await run(`
     held=true; Demo:onPostUpdate(); Demo:onPostRender(); uiCallbacks.input('eye'); uiCallbacks.submit()
     envelope={version=1,type='status',id='other',status='error',detail='wrong request'}
-    frame=1; nextRaw='status'; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiStatus~='wrong request')
+    frame=1; nextRaw='status'; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiPrompt.status~='wrong request')
     envelope.id='123_0_1_123_1'; envelope.detail='Image service unavailable'
-    frame=2; nextRaw='status'; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiStatus=='Image service unavailable')
+    frame=2; nextRaw='status'; Demo:onPostUpdate(); Demo:onPostRender(); assert(uiPrompt.status=='Art service unavailable. Start ComfyUI and retry.' and uiPrompt.open)
+    assert(uiPrompt.text=='eye')
     uiCallbacks.submit(); assert(lastRequest.id=='123_0_1_123_2')
   `);
 });
@@ -478,22 +495,25 @@ test('empty/oversized prompts do not submit; timeout unlocks a pending request',
     uiCallbacks.input(string.rep('x',2001)); uiCallbacks.submit(); assert(lastRequest==nil)
     uiCallbacks.input('eye'); uiCallbacks.submit(); assert(lastRequest.id=='123_0_1_123_1')
     now=370001; Demo:onPostRender(); uiCallbacks.submit(); assert(lastRequest.id=='123_0_1_123_2')
+    assert(uiPrompt.text=='eye')
   `);
 });
 
-test('missing ImGui or a Lua binding error leaves the native product path usable', async () => {
+test('missing UI rendering binding leaves the native product path usable', async () => {
   await run(`ImGui=nil; held=true; Demo:onPostUpdate(); Demo:onPostRender(); frame=1; nextRaw='profile'; Demo:onPostUpdate(); assert(#events==2)`);
-  await run(`ImGui.CreateWindow=function() error('test UI binding failure') end; held=true; Demo:onPostUpdate(); Demo:onPostRender(); frame=1; nextRaw='profile'; Demo:onPostUpdate(); assert(#events==2)`);
+  await run(`Renderer.LoadImage=function() error('test UI binding failure') end; held=true; Demo:onPostUpdate(); Demo:onPostRender(); frame=1; nextRaw='profile'; Demo:onPostUpdate(); assert(#events==2)`);
 });
 
 test('paused render receives progress but defers profile application until update', async () => {
   await run(`
     held=true; Demo:onPostUpdate(); Demo:onPostRender(); uiCallbacks.input('eye'); uiCallbacks.submit()
     frame=1; envelope={version=1,type='status',id='123_0_1_123_1',status='generating',detail='Preparing artwork'}
-    nextRaw='status'; Demo:onPostRender(); assert(uiStatus=='Preparing artwork' and #events==0)
+    nextRaw='status'; Demo:onPostRender(); assert(uiPrompt.status=='Preparing artwork' and #events==0)
+    assert(uiPrompt.text=='eye')
     envelope=${toLua({ version: 1, type: 'profile', id: profile.bridge_request_id, profile })}
     frame=2; nextRaw='profile'; Demo:onPostRender(); assert(#events==0)
     Demo:onPostUpdate(); assert(events[1]=='spawn:100' and events[2]=='ack:123_0_1_123_1')
+    assert(uiPrompt.text=='' and uiPrompt.phase=='success')
   `);
 });
 
@@ -538,12 +558,12 @@ test('64 items accepted; 65th blocked in native receiver and prompt without repl
     frame=64; nextRaw='profile'; Demo:onPostUpdate(); assert(#entities==64 and #events==128)
     held=true; frame=65; Demo:onPostUpdate(); Demo:onPostRender()
     uiCallbacks.input('one more'); uiCallbacks.submit(); Demo:onPostRender()
-    assert(lastRequest==nil and uiStatus:find('Item limit reached: 64/64',1,true))
+    assert(lastRequest==nil and uiPrompt.status:find('Item limit reached: 64/64',1,true))
     Demo:onPreGameExit(true); Demo:onGameStarted(true)
-    uiCallbacks.submit(); Demo:onPostRender(); assert(lastRequest==nil and uiStatus:find('Item limit reached: 64/64',1,true))
+    uiCallbacks.submit(); Demo:onPostRender(); assert(lastRequest==nil and uiPrompt.status:find('Item limit reached: 64/64',1,true))
     Demo:onGameStarted(false)
     uiCallbacks.submit(); Demo:onPostRender()
-    assert(lastRequest==nil and uiStatus:find('Artwork limit reached: 64/64',1,true))
+    assert(lastRequest==nil and uiPrompt.status:find('Artwork limit reached: 64/64',1,true))
   `);
 });
 
@@ -849,7 +869,7 @@ test('explosive, confusion, and knockback compose as three flags; a fourth is re
 import { applyRegion, applySystems, repairProfile } from '../../bridge/prompt-features.mjs';
 const validateDesign = vm.runInNewContext(
   generator.slice(generator.indexOf('const HIT_TRIGGERS ='), generator.indexOf('const fixture =')) + '\n' +
-  generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt)')) + '\nvalidateProfile',
+  generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt, quality)')) + '\nvalidateProfile',
   { capabilities:catalog, validateSchema, applyRegion, applySystems, repairProfile, Buffer, profileWeight },
 );
 function designFor(fixture) {
@@ -1052,7 +1072,7 @@ for(const [flag,constant] of Object.entries(allTearFlags)) test(`flag audit: ${f
 });
 
 const repairDesign = vm.runInNewContext(
-  generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt)'),generator.indexOf('function validateProfile(profile)')) + '\nrepairGeneratedProfile',
+  generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt, quality)'),generator.indexOf('function validateProfile(profile)')) + '\nrepairGeneratedProfile',
   { repairProfile, applyRegion, applySystems, raiseQualityToFit, fitWeightBudget, capabilities: catalog },
 );
 test('room-only stat wording does not acquire an unintended permanent stat during repair',()=>{
@@ -1117,6 +1137,120 @@ test('weight budget rejects an overspent quality and a speed drop below -0.15', 
   validateDesign(designFor(priced));
   assert.equal(profileWeight(designFor(priced), catalog), 6);
 });
+
+test('in-game creator accepts keyboard text and clicks its visible Generate button', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false
+    now=200; keyDown[Keyboard.KEY_A]=true; Demo:onPostRender(); assert(uiPrompt.text=='a')
+    keyDown[Keyboard.KEY_A]=false; Demo:onPostRender()
+    keyDown[Keyboard.KEY_B]=true; Demo:onPostRender(); assert(uiPrompt.text=='ab')
+    keyDown[Keyboard.KEY_B]=false; Demo:onPostRender()
+    mousePosition=Vector(350,380); mouseDown=true; Demo:onPostRender()
+    assert(lastRequest.prompt=='ab' and lastRequest.quality==3 and not uiPrompt.open and not uiShown)
+  `);
+});
+
+test('creator keyboard focus moves between prompt and buttons, then activates the focused action', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
+    assert(uiPrompt.focus==1 and hudVisible==false)
+    keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==2)
+    keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
+    keyDown[Keyboard.KEY_RIGHT]=true; Demo:onPostRender(); assert(uiPrompt.focus==3)
+    keyDown[Keyboard.KEY_RIGHT]=false; Demo:onPostRender()
+    uiPrompt.text='a quiet black candle'
+    keyDown[Keyboard.KEY_ENTER]=true; Demo:onPostRender()
+    assert(lastRequest.prompt=='a quiet black candle' and not uiPrompt.open and hudVisible==true)
+  `);
+});
+
+test('creator mouse click returns focus to the prompt and buttons remain clickable', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
+    keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==2)
+    keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
+    mousePosition=Vector(250,280); mouseDown=true; Demo:onPostRender(); assert(uiPrompt.focus==1)
+    mouseDown=false; Demo:onPostRender()
+    keyDown[Keyboard.KEY_A]=true; Demo:onPostRender(); assert(uiPrompt.text=='a')
+    keyDown[Keyboard.KEY_A]=false; Demo:onPostRender()
+    mousePosition=Vector(350,380); mouseDown=true; Demo:onPostRender()
+    assert(lastRequest.prompt=='a' and not uiPrompt.open)
+  `);
+});
+
+test('creator sends the selected quality with its item request', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
+    mousePosition=Vector(580,240); mouseDown=true; Demo:onPostRender(); assert(uiPrompt.quality==1)
+    mouseDown=false; Demo:onPostRender()
+    uiCallbacks.input('a small candle'); mousePosition=Vector(350,380); mouseDown=true; Demo:onPostRender()
+    assert(lastRequest.quality==1 and lastRequest.prompt=='a small candle')
+  `);
+});
+
+test('creator reaches the quality selector from prompt and every main button', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
+    keyDown[Keyboard.KEY_RIGHT]=true; Demo:onPostRender(); assert(uiPrompt.focus==7)
+    keyDown[Keyboard.KEY_RIGHT]=false; Demo:onPostRender()
+    for focus=2,4 do
+      uiPrompt.focus=focus; keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==7)
+      keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
+    end
+    keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==8)
+    keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
+    keyDown[Keyboard.KEY_ENTER]=true; Demo:onPostRender(); assert(uiPrompt.quality==4)
+  `);
+});
+
+test('creator restores the game HUD when closed with keyboard navigation', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
+    assert(hudVisible==false)
+    keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender()
+    keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
+    keyDown[Keyboard.KEY_LEFT]=true; Demo:onPostRender(); assert(uiPrompt.focus==4)
+    keyDown[Keyboard.KEY_LEFT]=false; Demo:onPostRender()
+    keyDown[Keyboard.KEY_ENTER]=true; Demo:onPostRender()
+    assert(not uiPrompt.open and hudVisible==true)
+  `);
+});
+
+test('creator hides generated pedestal, status, and collected-item overlays while open', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); Demo:onPostRender(); events={}
+    statusText='Generated item ready'; statusUntil=100
+    held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false
+    Demo:onPickupRender(entities[1]); Demo:onPostHudRender()
+    assert(#events==0)
+    uiCallbacks.close(); Demo:onPickupRender(entities[1])
+    assert(events[1]=='render')
+  `);
+});
+
+test('creator panel stays centered and fully inside a small game viewport', async () => {
+  await run(`
+    Isaac.GetScreenWidth=function() return 480 end
+    Isaac.GetScreenHeight=function() return 270 end
+    local panel=uiPrompt:layout()
+    assert(panel.x==12 and panel.y==9 and panel.w==456 and panel.h==252)
+    held=true; Demo:onPostUpdate(); Demo:onPostRender()
+    assert(uiPrompt.open and not uiPrompt.failed and not uiShown)
+  `);
+});
+
+test('creator pauses room updates while open and releases them on close and submit', async () => {
+  await run(`
+    held=true; Demo:onPostUpdate(); Demo:onPostRender()
+    assert(Demo:onPreUpdate()==true)
+    uiCallbacks.close(); assert(Demo:onPreUpdate()==false)
+    held=false; Demo:onPostUpdate(); held=true; Demo:onPostUpdate(); Demo:onPostRender()
+    assert(Demo:onPreUpdate()==true)
+    uiCallbacks.input('an icy coin'); uiCallbacks.submit()
+    assert(Demo:onPreUpdate()==false)
+  `);
+});
+
 
 test('signed health and damage multipliers agree across bridge and game', async () => {
   const fixture = structuredClone(profile);
