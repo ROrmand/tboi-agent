@@ -24,8 +24,8 @@ isolation. Protocol, weights, generation, sentence, and creator UI suites cover
 their respective contracts. Run `npm test` and `npm run validate` for integrated
 verification; these do not replace live completion checks.
 
-Compatibility: capability catalog 3, generated profile 1, saved run state 3
-(with explicit version-2 read migration), bridge/runtime contract 11. Optional
+Compatibility: capability catalog 4, generated profile 1, saved run state 3
+(with explicit version-2 read migration), bridge/runtime contract 12. Optional
 fields preserve old action semantics and existing passive IDs. Profiles share a
 64-item run limit and 64-artwork global bank, with at most eight active profiles.
 
@@ -295,6 +295,9 @@ the accepted profile; art and sounds fall back cleanly.
 
 ## Milestone 8: Active collectibles
 
+Vaulted from product generation on October 22, 2026. The shells, handler, and
+tests remain. The creator and bridge accept passive requests only.
+
 Begin after passive lifecycle, delivery, and idle-work checks pass.
 
 - [x] Predeclare a separate small bank of active shells and state its capacity.
@@ -332,3 +335,19 @@ For each milestone:
 Node/Lua mock tests do not prove engine behavior. Unperformed game checks leave
 a milestone awaiting live acceptance. Automatic REPENTOGON binary replacement
 is outside this plan.
+
+## Catalog expansion
+
+Implemented in the capability catalog, both validators, weights, repair, and
+the fixed Lua handlers. Quality budgets stay 4, 8, 12, 18, and 24. Profile
+version stays 1 and saved run state stays 3. Runtime contract is 12.
+
+- [x] Repair missing grant stats, strip fields that belong to another action,
+  and keep legal combat pairings on their triggers.
+- [x] Add luck, heart, room, flight, and once-per-run/target conditions.
+- [x] Add pickup subtypes, gold/rotten/container hearts, and dip/Minisaac.
+- [x] Add poison, charm, confusion, and freeze, plus creep and charge refill.
+- [x] Add bomb, active, pill, card, boss-kill, and player-death triggers.
+- [x] Add charm, poison, and confusion auras, bomb burn/fear, spiral and
+  accelerate tears, and an orbiting contact familiar.
+- [ ] Sync, restart Isaac, and record live checks for the new handlers.

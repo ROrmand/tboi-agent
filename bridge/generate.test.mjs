@@ -16,7 +16,7 @@ function retaliationProfile(action, trigger = "player_hurt") {
 
 test("retaliation preserves attacker defaults and exposes optional catalog-bounded nearby targeting", async () => {
   const catalog = JSON.parse(await readFile(new URL("../content-contract/capabilities.json", import.meta.url)));
-  assert.equal(catalog.version, 3);
+  assert.equal(catalog.version, 4);
   assert.equal(catalog.profile_version, 1);
   const spec = catalog.combat_effects.retaliate;
   assert.equal(spec.default_target_mode, "attacker");
@@ -25,7 +25,8 @@ test("retaliation preserves attacker defaults and exposes optional catalog-bound
   const schema = ITEM_SCHEMA.properties.rules.items.properties.actions.items;
   assert.deepEqual(schema.properties.target_mode.enum, spec.target_modes);
   assert.ok(!schema.required.includes("target_mode"));
-  assert.equal(schema.properties.radius.minimum, spec.radius_bounds[0]);
+  assert.equal(schema.properties.radius.minimum, 20);
+  assert.equal(spec.radius_bounds[0], 40);
   assert.equal(schema.properties.radius.maximum, spec.radius_bounds[1]);
   for (const trigger of ["player_hurt", "collision"]) {
     for (const action of [{ type: "retaliate", amount: 2 }, { type: "retaliate", amount: 2, target_mode: "attacker" }]) {
@@ -46,7 +47,8 @@ test("retaliation rejects unsupported modes, contexts, radius combinations and c
     { target_mode: "nearby", radius: 121 }, { target_mode: "nearby", radius: Infinity },
     { target_mode: "nearby", radius: 80, max_targets: 9 },
   ]) assert.throws(() => validateProfile(retaliationProfile({ type: "retaliate", amount: 2, ...patch })));
-  for (const trigger of ["collision", "enemy_hit", "on_kill", "tear_impact", "room_clear", "tear_fire"]) {
+  validateProfile(retaliationProfile({ type: "retaliate", amount: 2, target_mode: "nearby", radius: 80 }, "collision"));
+  for (const trigger of ["enemy_hit", "on_kill", "tear_impact", "room_clear", "tear_fire"]) {
     assert.throws(() => validateProfile(retaliationProfile({ type: "retaliate", amount: 2, target_mode: "nearby", radius: 80 }, trigger)));
   }
   for (const action of [
@@ -168,16 +170,16 @@ test("flavor briefs repair into damage and combat instead of room-clear loot", (
 
 test("capability catalog exposes only bounded passive and active effect families", async () => {
   const catalog = JSON.parse(await readFile(new URL("../content-contract/capabilities.json", import.meta.url)));
-  assert.deepEqual(catalog.actions, ["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_half_red_hearts", "grant_full_red_hearts", "grant_black_hearts", "grant_eternal_hearts", "grant_bone_hearts", "grant_stat", "damage_burst", "apply_status", "retaliate", "convert_resource", "activate_aura"]);
+  assert.deepEqual(catalog.actions, ["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_half_red_hearts", "grant_full_red_hearts", "grant_black_hearts", "grant_eternal_hearts", "grant_bone_hearts", "grant_gold_hearts", "grant_rotten_hearts", "grant_heart_containers", "grant_stat", "damage_burst", "apply_status", "retaliate", "convert_resource", "activate_aura", "spawn_creep", "refill_charge"]);
   assert.deepEqual(catalog.quality_budgets, [4, 8, 12, 18, 24]);
-  assert.deepEqual(catalog.friendlies, ["attack_fly", "spider", "pooter"]);
+  assert.deepEqual(catalog.friendlies, ["attack_fly", "spider", "pooter", "dip", "minisaac"]);
   assert.deepEqual(catalog.stat_bounds.speed, [-0.15, 0.5]);
   assert.deepEqual(catalog.regions, ["passive", "familiar", "aura", "familiar_aura"]);
   assert.deepEqual(catalog.systems, ["stats", "tears", "rules", "familiar", "aura", "on_hit", "on_kill", "tear_impact", "collision", "tear_update", "bomb", "laser", "knife", "active"]);
-  assert.deepEqual(catalog.tear_update_behaviors, ["home", "pulse", "shrink"]);
-  assert.deepEqual(catalog.familiars, ["sentry", "melee", "normal", "shield"]);
+  assert.deepEqual(catalog.tear_update_behaviors, ["home", "pulse", "shrink", "spiral", "accelerate"]);
+  assert.deepEqual(catalog.familiars, ["sentry", "melee", "normal", "shield", "orbit_contact"]);
   assert.deepEqual(catalog.familiar_patterns, ["single", "fan", "lob", "varied"]);
-  assert.deepEqual(catalog.auras, ["damage", "slow", "burn", "fear"]);
+  assert.deepEqual(catalog.auras, ["damage", "slow", "burn", "fear", "charm", "poison", "confusion"]);
   assert.deepEqual(catalog.item_limits, { max_systems: 6, max_total_flags: 3 });
   assert.equal(catalog.entity_type, "passive_item");
   assert.deepEqual(catalog.active.effects,["radial_burst"]);

@@ -1,3 +1,5 @@
+import capabilities from "../content-contract/capabilities.json" with { type: "json" };
+
 // The model chooses the region and the systems. These helpers only make the
 // optional blocks match that choice, so a passive item cannot keep a familiar
 // the schema happened to fill, and an unmarked system cannot keep its block.
@@ -18,6 +20,79 @@ const BLOCK_BY_SYSTEM = {
 };
 
 const HIT_TRIGGERS = new Set(["player_hurt", "enemy_hit"]);
+const GRANT_STATS = new Set(capabilities.room_stat_reward.stats);
+const STATUSES = new Set(capabilities.combat_effects.apply_status.statuses);
+const DAMAGE_BURST_TRIGGERS = new Set(capabilities.combat_effects.damage_burst.triggers);
+const APPLY_STATUS_TRIGGERS = new Set(capabilities.combat_effects.apply_status.triggers);
+const RETALIATE_TRIGGERS = new Set(capabilities.combat_effects.retaliate.triggers);
+
+function statFromBrief(prompt) {
+  const text = String(prompt || "").toLowerCase();
+  const patterns = [
+    ["shot_speed", /shot\s*speed/],
+    ["damage", /\bdamage\b/],
+    ["tears", /\btears?\b/],
+    ["luck", /\bluck\b/],
+    ["speed", /\bspeed\b/],
+    ["range", /\brange\b/],
+  ];
+  let best = null;
+  for (const [stat, pattern] of patterns) {
+    const match = pattern.exec(text);
+    if (match && (best === null || match.index < best.index)) best = { stat, index: match.index };
+  }
+  return best?.stat || "damage";
+}
+
+function sanitizeCondition(condition) {
+  if (!condition || typeof condition !== "object") return;
+  const params = new Set(capabilities.condition_params[condition.type] || []);
+  if (!params.has("chance")) delete condition.chance;
+  if (!params.has("luck_scale")) delete condition.luck_scale;
+  if (!params.has("amount")) delete condition.amount;
+  if (!params.has("room")) delete condition.room;
+}
+
+function sanitizeAction(action, fallbackStat) {
+  if (!action || typeof action !== "object") return;
+  if (action.type !== "convert_resource") {
+    delete action.input_resource;
+    delete action.output_resource;
+    delete action.cost;
+  }
+  if (action.type !== "retaliate") delete action.target_mode;
+  if (action.type === "grant_stat") {
+    if (!GRANT_STATS.has(action.stat)) action.stat = fallbackStat;
+  } else delete action.stat;
+  if (!["grant_stat", "apply_status", "activate_aura", "spawn_creep"].includes(action.type)) delete action.duration;
+  if (action.type !== "apply_status") delete action.status;
+  if (action.type !== "spawn_creep") delete action.creep;
+  if (action.type !== "damage_burst" && action.type !== "spawn_creep" && !(action.type === "retaliate" && action.target_mode === "nearby")) delete action.radius;
+  if (action.type !== "spawn_pickup") {
+    delete action.pickup_type;
+    delete action.pickup_subtype;
+  }
+  if (action.type !== "spawn_friendly") delete action.friendly_type;
+  if (action.type !== "grant_stat") delete action.stack_limit;
+}
+
+function sanitizeEntry(entry, fallbackStat) {
+  if (!entry || typeof entry !== "object") return;
+  for (const condition of entry.conditions || []) sanitizeCondition(condition);
+  for (const action of entry.actions || []) sanitizeAction(action, fallbackStat);
+}
+
+export function sanitizeProfile(profile, prompt = "") {
+  if (!profile || typeof profile !== "object") return profile;
+  if (profile.active !== undefined || profile.systems?.includes("active")) return profile;
+  const fallbackStat = statFromBrief(prompt);
+  for (const rule of profile.rules || []) sanitizeEntry(rule, fallbackStat);
+  for (const name of ["on_kill", "tear_impact", "collision"]) sanitizeEntry(profile[name], fallbackStat);
+  if (profile.systems?.includes("tear_update") && (profile.tear_update == null || typeof profile.tear_update !== "object")) {
+    profile.tear_update = { behavior: "pulse", strength: 1 };
+  }
+  return profile;
+}
 
 export function applyRegion(profile) {
   if (!profile || typeof profile !== "object") return profile;
@@ -142,6 +217,75 @@ function clampBytes(value, maximum) {
   return atWord || clipped.trim();
 }
 
+export function repairActiveShell(profile) {
+  const bursts = (profile.rules || []).filter(rule => rule.trigger === "active_use")
+    .flatMap(rule => rule.actions || []).filter(action => action.type === "damage_burst");
+  if (!profile.active) {
+    const burst = bursts.at(-1);
+    profile.active = {
+      effect: "radial_burst", charges: capabilities.active.charges[0], targeting: "self",
+      damage: burst ? Math.max(capabilities.active.damage_bounds[0], Math.min(capabilities.active.damage_bounds[1], burst.amount)) : 4,
+      radius: burst ? Math.max(capabilities.active.radius_bounds[0], Math.min(capabilities.active.radius_bounds[1], burst.radius ?? 80)) : 100,
+    };
+    if (profile.metadata) profile.metadata.description = "A radial burst of damage";
+  }
+  profile.region = "passive";
+  profile.systems = ["active"];
+  profile.affects_stats = false;
+  profile.rules = [];
+  for (const [system, key] of Object.entries(BLOCK_BY_SYSTEM)) {
+    if (system !== "active") delete profile[key];
+  }
+  if (profile.metadata) {
+    profile.metadata.display_name = clampBytes(profile.metadata.display_name, 64);
+    profile.metadata.description = clampBytes(profile.metadata.description, 64);
+  }
+  return profile;
+}
+
+function repairExplicitIntents(profile, prompt) {
+  if (/\btouching an enemy damages it\b|\bwhen (?:i|isaac) touch(?:es)? an enemy,? (?:deal damage|damage it)\b/i.test(prompt)) {
+    ensureSystem(profile, "collision");
+    profile.collision = {
+      conditions: profile.collision?.conditions || [], cooldown: 30,
+      actions: [{ type: "retaliate", amount: 1 }],
+    };
+  }
+  if (/\bwhen (?:hurt|i (?:am|get) (?:hurt|hit)|isaac is hit),? damage nearby enemies\b/i.test(prompt)) {
+    ensureSystem(profile, "on_hit");
+    const existing = (profile.rules || []).find(rule => rule.trigger === "player_hurt");
+    const rule = {
+      trigger: "player_hurt", conditions: existing?.conditions || [], cooldown: 30,
+      actions: [{ type: "retaliate", target_mode: "nearby", amount: 1, radius: 80 }],
+    };
+    profile.rules = (profile.rules || []).filter(entry => entry.trigger !== "player_hurt");
+    profile.rules.push(rule);
+  }
+  if (/\bmom['\u2019]s knife deals extra (?:generated )?damage\b/i.test(prompt)) {
+    ensureSystem(profile, "knife");
+    if (!profile.knife) profile.knife = { damage: 1 };
+    if (/^mom['\u2019]s knife deals extra (?:generated )?damage[.!]?$/i.test(prompt.trim())) {
+      dropSystem(profile, "stats");
+      delete profile.stats;
+    }
+  }
+  const conversion = prompt.match(/\bon room clear,? spend ([1-4]) (coins?|keys?|bombs?) and grant (?:a|one|([1-4])) (coins?|keys?|bombs?)\b/i);
+  if (conversion) {
+    const input = conversion[2].toLowerCase().replace(/s$/, "");
+    const output = conversion[4].toLowerCase().replace(/s$/, "");
+    if (input !== output) {
+      ensureSystem(profile, "rules");
+      const existing = (profile.rules || []).find(rule => rule.trigger === "room_clear");
+      profile.rules = (profile.rules || []).filter(rule => rule.trigger !== "room_clear");
+      profile.rules.push({
+        trigger: "room_clear", conditions: existing?.conditions || [], cooldown: 30,
+        actions: [{ type: "convert_resource", input_resource: input, output_resource: output,
+          cost: Number(conversion[1]), amount: Number(conversion[3] || 1) }],
+      });
+    }
+  }
+}
+
 function rewardParts(sentence, match) {
   const action = sentence.soul
     ? { type: "grant_soul_hearts", amount: 1 }
@@ -205,13 +349,13 @@ function relocateMisplacedCombat(profile) {
     const rest = [];
     for (const action of rule.actions) {
       const cooldown = Math.max(30, Number.isInteger(rule.cooldown) ? rule.cooldown : 30);
-      if (action?.type === "damage_burst") {
+      if (action?.type === "damage_burst" && !DAMAGE_BURST_TRIGGERS.has(rule.trigger)) {
         ensureSystem(profile, "on_kill");
         if (procMissing(profile.on_kill)) profile.on_kill = { conditions: rule.conditions || [], cooldown, actions: [action] };
-      } else if (action?.type === "apply_status") {
+      } else if (action?.type === "apply_status" && !APPLY_STATUS_TRIGGERS.has(rule.trigger)) {
         ensureSystem(profile, "tear_impact");
         if (procMissing(profile.tear_impact)) profile.tear_impact = { conditions: rule.conditions || [], cooldown, actions: [action] };
-      } else if (action?.type === "retaliate" && !HIT_TRIGGERS.has(rule.trigger)) {
+      } else if (action?.type === "retaliate" && !RETALIATE_TRIGGERS.has(rule.trigger)) {
         ensureSystem(profile, "collision");
         if (procMissing(profile.collision)) profile.collision = { conditions: rule.conditions || [], cooldown, actions: [action] };
       } else {
@@ -231,7 +375,7 @@ function ensureCombatFields(entry) {
   for (const action of combat) {
     if (action.type === "damage_burst" && !(action.radius >= 40 && action.radius <= 120)) action.radius = 80;
     if (action.type === "apply_status") {
-      if (!["slow", "burn", "fear"].includes(action.status)) action.status = "slow";
+      if (!STATUSES.has(action.status)) action.status = "slow";
       if (!Number.isInteger(action.duration) || action.duration < 15 || action.duration > 120) action.duration = 30;
     }
   }
@@ -261,6 +405,8 @@ export function repairProfile(profile, prompt = "") {
     profile.metadata.description = clampBytes(profile.metadata.description, 64);
   }
   if (typeof prompt !== "string" || !prompt.trim()) return profile;
+
+  repairExplicitIntents(profile, prompt);
 
   const statPatch = {};
   for (const [pattern, patch] of STAT_PHRASES) {
@@ -349,7 +495,7 @@ export function repairNote(message) {
     return `${base} Shorten display_name and description so each is under 60 characters.`;
   }
   if (message.includes("Combat effects") || message.includes("at least 30 frames cooldown")) {
-    return `${base} Keep the combat action. damage_burst belongs on on_kill with cooldown 30, amount 1-3, and radius 40-120. apply_status belongs on tear_impact with cooldown 30, status slow|burn|fear, and duration 15-120. retaliate belongs on collision or player_hurt with cooldown 30 and amount 1-3. Do not replace a combat action with spawn_pickup or grant_soul_hearts.`;
+    return `${base} Keep the combat action. damage_burst can sit on on_kill, player_hurt, or collision with cooldown 30, amount 1-3, and radius 40-120. apply_status can sit on tear_impact, collision, on_kill, or enemy_hit with cooldown 30, an allowed status, and duration 15-120. retaliate belongs on collision or player_hurt with cooldown 30 and amount 1-3. Nearby retaliate also needs radius. Do not replace a combat action with spawn_pickup or grant_soul_hearts.`;
   }
   if (message.includes("on_hit")) {
     return `${base} Keep on_hit in systems and add one rules entry. trigger player_hurt means Isaac gets hit. "When I get hit, hurt the attacker" is action retaliate, amount 1, cooldown 30. trigger enemy_hit means Isaac's tear hits an enemy. "I sometimes find a coin" is action spawn_pickup, pickup_type coin, amount 1, with a chance condition. Do not leave rules empty.`;
@@ -381,7 +527,7 @@ export function repairNote(message) {
     return `${base} Stay inside the quality weight budget. ${budgetLine} Shrink combat radius, active damage, and amounts before dropping distinctive effects. Remove pickup or soul-heart padding first. Keep damage, combat procs, auras, and tear effects when they fit. Speed cannot go below -0.15. Do not deal damage to Isaac.`;
   }
   if (message.includes("tear_update") || message.includes("bomb") || message.includes("laser") || message.includes("knife")) {
-    return `${base} Keep that system and include its object. tear_update needs behavior home, pulse, or shrink and strength from 0.5 to 2. bomb needs damage and radius. laser and knife need damage.`;
+    return `${base} Keep that system and include its object. tear_update needs behavior home, pulse, shrink, spiral, or accelerate and strength from 0.5 to 2. bomb needs damage and radius. laser and knife need damage.`;
   }
   return `${base} Include the parameter block for every system you keep. Omit a system when the wish does not need it.`;
 }

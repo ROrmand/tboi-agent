@@ -1,5 +1,7 @@
 local Prompt = {}
 Prompt.__index = Prompt
+-- Active shells and handlers remain in the mod. The creator does not offer them.
+local ACTIVES_ENABLED = false
 
 local labels = { editing="READY", randomizing="FINDING AN IDEA", generating="GENERATING ITEM",
   success="ITEM READY", error="NEEDS ATTENTION" }
@@ -17,7 +19,7 @@ end
 function Prompt.new(json)
   return setmetatable({ json=json, failed=false, requested=false, held=false,
     open=false, sequence=0, phase="editing", status="Describe a passive item, or choose Randomize.",
-    text="", quality=3, itemType="passive", keyHeld={}, focus=1, hudHidden=false }, Prompt)
+    text="", quality=3, itemType="passive", activesEnabled=ACTIVES_ENABLED, keyHeld={}, focus=1, hudHidden=false }, Prompt)
 end
 
 function Prompt:logError(category, detail)
@@ -69,6 +71,7 @@ function Prompt:submit()
   if #trimmed==0 or #trimmed>2000 then
     self:fail("input","Enter a prompt between 1 and 2000 characters."); return
   end
+  if not self.activesEnabled then self.itemType="passive" end
   local context=self.getContext and self.getContext() or {}
   if self.itemType=="active" and (context.active_available~=true or (context.active_count or 0)>=8) then self:fail("capacity","Active shell limit reached or unavailable (8)."); return end
   self:send("generate",{prompt=trimmed,quality=self.quality,item_type=self.itemType})
@@ -206,11 +209,42 @@ for number=0,9 do
   keyCharacters[#keyCharacters+1]={"KEY_KP_"..number,tostring(number),tostring(number)}
 end
 
-function Prompt:keyPressed(name,repeatable)
+-- Kept for later controller text entry. Space/Confirm currently map to menu
+-- confirm in Isaac, so the on-screen keyboard stays unhooked from this panel.
+local CONTROLLER_KEYBOARD=false
+
+function Prompt:controlDown()
+  return (Keyboard.KEY_LEFT_CONTROL and Input.IsButtonPressed(Keyboard.KEY_LEFT_CONTROL,0))
+    or (Keyboard.KEY_RIGHT_CONTROL and Input.IsButtonPressed(Keyboard.KEY_RIGHT_CONTROL,0))
+    or false
+end
+
+function Prompt:appendText(text)
+  if type(text)~="string" or text=="" then return end
+  text=text:gsub("\r\n","\n"):gsub("\r","\n"):gsub("%z","")
+  local remaining=2000-#self.text
+  if remaining<=0 then return end
+  self.text=self.text..text:sub(1,remaining)
+end
+
+function Prompt:pasteClipboard()
+  if type(Isaac.GetClipboard)~="function" then return end
+  local ok,clip=pcall(Isaac.GetClipboard)
+  if ok then self:appendText(clip) end
+end
+
+function Prompt:copyToClipboard()
+  if type(Isaac.SetClipboard)~="function" then return end
+  pcall(Isaac.SetClipboard,self.text or "")
+end
+
+function Prompt:keyPressed(name,repeatable,useMenu)
   local code=Keyboard[name]
   local down=code and Input.IsButtonPressed(code,0) or false
-  local action=({KEY_LEFT="ACTION_MENULEFT",KEY_RIGHT="ACTION_MENURIGHT",KEY_UP="ACTION_MENUUP",KEY_DOWN="ACTION_MENUDOWN",KEY_ENTER="ACTION_MENUCONFIRM",KEY_ESCAPE="ACTION_MENUBACK",KEY_TAB="ACTION_MAP"})[name]
-  if action and Input.IsActionPressed and ButtonAction and ButtonAction[action] then down=down or Input.IsActionPressed(ButtonAction[action],self.controller or 0) end
+  if useMenu~=false then
+    local action=({KEY_LEFT="ACTION_MENULEFT",KEY_RIGHT="ACTION_MENURIGHT",KEY_UP="ACTION_MENUUP",KEY_DOWN="ACTION_MENUDOWN",KEY_ENTER="ACTION_MENUCONFIRM",KEY_ESCAPE="ACTION_MENUBACK",KEY_TAB="ACTION_MAP"})[name]
+    if action and Input.IsActionPressed and ButtonAction and ButtonAction[action] then down=down or Input.IsActionPressed(ButtonAction[action],self.controller or 0) end
+  end
   local previous=self.keyHeld[name]
   if not down then self.keyHeld[name]=nil; return false end
   local now=Isaac.GetTime()
@@ -219,15 +253,31 @@ function Prompt:keyPressed(name,repeatable)
   return false
 end
 
+function Prompt:confirmPressed()
+  if Keyboard.KEY_SPACE and Input.IsButtonPressed(Keyboard.KEY_SPACE,0) then return false end
+  return self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false)
+end
+
 function Prompt:editInput()
   if Isaac.GetTime()-(self.openedAt or 0)<150 then return end
-  if self:keyPressed("KEY_TAB",false) then self.itemType=self.itemType=="active" and "passive" or "active"; return end
+  if self:keyPressed("KEY_TAB",false) then
+    if self.activesEnabled then self.itemType=self.itemType=="active" and "passive" or "active" end
+    return
+  end
   local shift=(Keyboard.KEY_LEFT_SHIFT and Input.IsButtonPressed(Keyboard.KEY_LEFT_SHIFT,0)) or
     (Keyboard.KEY_RIGHT_SHIFT and Input.IsButtonPressed(Keyboard.KEY_RIGHT_SHIFT,0))
-  if self:keyPressed("KEY_ESCAPE",false) then if self.virtualKeyboard then self.virtualKeyboard=false else self:close() end; return end
-  if self.virtualKeyboard then self:editVirtualKeyboard(); return end
+  local ctrl=self:controlDown()
+  if self:keyPressed("KEY_ESCAPE",false) then
+    if CONTROLLER_KEYBOARD and self.virtualKeyboard then self.virtualKeyboard=false else self:close() end
+    return
+  end
+  if CONTROLLER_KEYBOARD and self.virtualKeyboard then self:editVirtualKeyboard(); return end
+  if ctrl then
+    if self:keyPressed("KEY_V",false,false) then self:pasteClipboard(); return end
+    if self:keyPressed("KEY_C",false,false) then self:copyToClipboard(); return end
+  end
   if self.focus==1 then
-    if self:keyPressed("KEY_ENTER",false) then self.virtualKeyboard=true; self.letter=1; return end
+    if CONTROLLER_KEYBOARD and self:confirmPressed() then self.virtualKeyboard=true; self.letter=1; return end
     if self:keyPressed("KEY_RIGHT",false) then self.focus=5+self.quality; return end
     if self:keyPressed("KEY_DOWN",false) then self.focus=2; return end
   end
@@ -237,7 +287,7 @@ function Prompt:editInput()
       if self:keyPressed("KEY_RIGHT",false) then self.focus=3; return end
       if self:keyPressed("KEY_UP",false) then self.focus=self.focus==5 and 2 or self.focus-1; return end
       if self:keyPressed("KEY_DOWN",false) then self.focus=self.focus==9 and 2 or self.focus+1; return end
-      if self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false) then
+      if self:confirmPressed() then
         self.quality=self.focus-5
         return
       end
@@ -247,7 +297,7 @@ function Prompt:editInput()
     if self:keyPressed("KEY_RIGHT",false) then self.focus=self.focus==4 and 2 or self.focus+1; return end
     if self:keyPressed("KEY_UP",false) then self.focus=1; return end
     if self:keyPressed("KEY_DOWN",false) then self.focus=5+self.quality; return end
-    if self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false) then
+    if self:confirmPressed() then
       if self.focus==2 then self:randomize()
       elseif self.focus==3 then self:submit()
       else self:close() end
@@ -255,12 +305,13 @@ function Prompt:editInput()
     end
     return
   end
-  if self:keyPressed("KEY_BACKSPACE",true) then self.text=self.text:sub(1,-2) end
-  if self:keyPressed("KEY_ENTER",false) or self:keyPressed("KEY_KP_ENTER",false) then
+  if self:keyPressed("KEY_BACKSPACE",true,false) then self.text=self.text:sub(1,-2) end
+  if self:keyPressed("KEY_ENTER",false,false) or self:keyPressed("KEY_KP_ENTER",false,false) then
     if #self.text<2000 then self.text=self.text.."\n" end
   end
+  if ctrl then return end
   for _,entry in ipairs(keyCharacters) do
-    if self:keyPressed(entry[1],true) and #self.text<2000 then
+    if self:keyPressed(entry[1],true,false) and #self.text<2000 then
       self.text=self.text..(shift and entry[3] or entry[2])
     end
   end
@@ -327,9 +378,9 @@ function Prompt:draw()
   self:box(x,y,w,h,0.045,0.075,0.12,0.98)
   self:box(x,y,w,28,0.09,0.2,0.27,1)
   Isaac.RenderText("NEBIUS // ITEM CREATOR",x+14,y+9,0.9,1,1,1)
-  Isaac.RenderText(self.itemType:upper().." [TAB/MAP]",x+w-130,y+9,0.65,0.95,1,1)
+  if self.activesEnabled then Isaac.RenderText(self.itemType:upper().." [TAB/MAP]",x+w-130,y+9,0.65,0.95,1,1) end
   local context=self.getContext and self.getContext() or {}
-  local heading="Items "..tostring(context.count or 0).."/64 | Art "..tostring(context.art_count or "?").."/64 | AI "..tostring(context.blanks or 0).." | Enter: keys"
+  local heading="Items "..tostring(context.count or 0).."/64 | Art "..tostring(context.art_count or "?").."/64 | AI "..tostring(context.blanks or 0).." | Ctrl+C/V"
   Isaac.RenderText(heading,x+14,y+37,0.75,0.85,0.92,1)
   local inputY,inputH=y+54,h-132
   local qualityX,qualityW=x+w-86,73
@@ -341,12 +392,13 @@ function Prompt:draw()
   local lines=linesFor(self.text~="" and self.text or (self.details or "Describe your item."),maxChars)
   local visible=math.max(1,math.floor((inputH-14)/12))
   local first=math.max(1,#lines-visible+1)
-  for index=first,(self.virtualKeyboard and 0 or #lines) do
+  local hidePrompt=CONTROLLER_KEYBOARD and self.virtualKeyboard
+  for index=first,(hidePrompt and 0 or #lines) do
     local line=lines[index]
     if index==#lines and math.floor(Isaac.GetTime()/500)%2==0 then line=line.."_" end
     Isaac.RenderText(line,x+22,inputY+8+(index-first)*12,0.96,0.98,1,1)
   end
-  if self.virtualKeyboard then self:drawVirtualKeyboard(x+20,inputY+7,inputW-14) end
+  if hidePrompt then self:drawVirtualKeyboard(x+20,inputY+7,inputW-14) end
   Isaac.RenderText("QUALITY",qualityX,y+38,0.5,0.83,0.88,1)
   self:box(qualityX,inputY,qualityW,1,0.35,0.67,0.72,1)
   local qualityButtons={}

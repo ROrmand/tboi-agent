@@ -8,7 +8,8 @@ for slot = 0, 63 do
 end
 local records, runtime, usedArt, accepted = {}, {}, {}, {}
 local roomStatGrants = {}
-local combat = {depth=0,effects={damage_burst={on_kill=true},apply_status={tear_impact=true},retaliate={collision=true,player_hurt=true}}}
+local playerDeathSeen = {}
+local combat = {depth=0,effects={damage_burst={on_kill=true,player_hurt=true,collision=true},apply_status={tear_impact=true,collision=true,on_kill=true,enemy_hit=true},retaliate={collision=true,player_hurt=true}}}
 local function roomStamp()
   local level = Game():GetLevel()
   return tostring(level:GetAbsoluteStage()) .. ":" .. tostring(level:GetCurrentRoomIndex())
@@ -105,7 +106,7 @@ function creator.restore(saved,run)
   creator.cancelled,creator.deliveries,creator.noticed=saved.cancelled or {},saved.deliveries or {},saved.noticed or {}
   if saved.idleOpen and saved.owner and not saved.pending then creator.noticed[saved.owner]=0 end
   if saved.itemType~=nil and saved.itemType~="active" and saved.itemType~="passive" then return false end
-  promptUi.itemType=saved.itemType or "passive"
+  promptUi.itemType=(promptUi.activesEnabled and saved.itemType) or "passive"
   promptUi.text,promptUi.quality,promptUi.sequence=saved.text,saved.quality,saved.sequence
   if saved.pending and saved.pendingKind=="generate" then promptUi.pending,promptUi.pendingKind,promptUi.started=saved.pending,"generate",Isaac.GetTime(); promptUi.phase,promptUi.status="generating","Recovering pending generation..." end
   return true
@@ -191,12 +192,14 @@ end
 
 -- The native bridge delivers JSON data only. This fixed validator deliberately
 -- mirrors the Stage 2B contract; no model-provided Lua or paths are executed.
-local triggers = { room_enter = true, room_clear = true, enemy_hit = true, player_hurt = true, pickup = true, new_floor = true, tear_fire = true }
-local ruleTriggers = { room_enter = true, room_clear = true, pickup = true, new_floor = true, tear_fire = true }
+local triggers = { room_enter = true, room_clear = true, enemy_hit = true, player_hurt = true, pickup = true, new_floor = true, tear_fire = true, bomb_explode = true, active_use = true, pill_use = true, card_use = true, boss_kill = true, player_death = true }
+local ruleTriggers = { room_enter = true, room_clear = true, pickup = true, new_floor = true, tear_fire = true, bomb_explode = true, active_use = true, pill_use = true, card_use = true, boss_kill = true, player_death = true }
 local hitTriggers = { enemy_hit = true, player_hurt = true }
 local systemNames = { active=true, stats = true, tears = true, rules = true, familiar = true, aura = true, on_hit = true, on_kill = true, tear_impact = true, collision = true, tear_update = true, bomb = true, laser = true, knife = true }
-local tearUpdateBehaviors = { home = true, pulse = true, shrink = true }
-local conditions = { chance = true, once_per_room = true, once_per_floor = true }
+local tearUpdateBehaviors = { home = true, pulse = true, shrink = true, spiral = true, accelerate = true }
+local conditions = { chance = true, once_per_room = true, once_per_floor = true, once_per_run = true, once_per_target = true, luck_chance = true, hearts_at_most = true, hearts_at_least = true, room_kind = true, while_flying = true }
+local conditionParams = { chance = { chance = true }, luck_chance = { chance = true, luck_scale = true }, hearts_at_most = { amount = true }, hearts_at_least = { amount = true }, room_kind = { room = true }, once_per_room = {}, once_per_floor = {}, once_per_run = {}, once_per_target = {}, while_flying = {} }
+local roomKinds = { boss = 5, secret = 7, super_secret = 8, shop = 2, devil = 14, angel = 15, planetarium = 24, library = 12, curse = 10 }
 -- Fixed heart reward catalog: amount is an integer from 1 to 4.
 local heartRewards = {
   grant_half_red_hearts = { handler = "AddHearts", units = 1, label = "half red heart" },
@@ -204,12 +207,16 @@ local heartRewards = {
   grant_black_hearts = { handler = "AddBlackHearts", units = 2, label = "black heart" },
   grant_eternal_hearts = { handler = "AddEternalHearts", units = 1, label = "eternal heart" },
   grant_bone_hearts = { handler = "AddBoneHearts", units = 1, label = "bone heart" },
+  grant_gold_hearts = { handler = "AddGoldenHearts", units = 1, label = "gold heart" },
+  grant_rotten_hearts = { handler = "AddRottenHearts", units = 1, label = "rotten heart" },
+  grant_heart_containers = { handler = "AddMaxHearts", units = 2, label = "heart container" },
 }
-local actions = { spawn_pickup = true, spawn_friendly = true, grant_soul_hearts = true, grant_stat = true,convert_resource=true,activate_aura=true }
+local actions = { spawn_pickup = true, spawn_friendly = true, grant_soul_hearts = true, grant_stat = true,convert_resource=true,activate_aura=true,spawn_creep=true,refill_charge=true }
+local deathActions = { grant_stat = true, spawn_pickup = true, refill_charge = true, grant_soul_hearts = true }
 combat.resources={coin={read="GetNumCoins",write="AddCoins"},key={read="GetNumKeys",write="AddKeys"},bomb={read="GetNumBombs",write="AddBombs"}}
 combat.childProfiles,combat.childCount={},0
 for name in pairs(combat.effects) do actions[name]=true end
-for name in pairs(heartRewards) do actions[name] = true end
+for name in pairs(heartRewards) do actions[name] = true; deathActions[name] = true end
 local function grantHeartReward(player, action)
   if action.type == "grant_soul_hearts" then
     player:AddSoulHearts(action.amount)
@@ -221,11 +228,13 @@ local function grantHeartReward(player, action)
   return true
 end
 local pickups = { coin = true, key = true, bomb = true, heart = true, pill = true, card = true, battery = true, trinket = true, chest = true, sack = true }
-local pickupSubtypes = {coin={penny=1,nickel=2,dime=3},key={normal=1},bomb={normal=1},heart={full=1,half=2,soul=3}}
-local subtypeWeights = {penny=1,nickel=5,dime=10,normal=2,full=2,half=2,soul=8}
-local friendlies = { attack_fly = true, spider = true, pooter = true }
+local pickupSubtypes = {coin={penny=1,nickel=2,dime=3,sticky=5,lucky=6,golden=7},key={normal=1,golden=2,charged=4},bomb={normal=1,double=2,troll=3,golden=4,mega=7},heart={full=1,half=2,soul=3,eternal=4,double=5,black=6,gold=7,half_soul=8,blended=10,bone=11,rotten=12}}
+local subtypeWeights = {penny=1,nickel=5,dime=10,normal=2,full=2,half=2,soul=8,sticky=1,lucky=4,golden=6,charged=4,double=3,troll=1,mega=6,eternal=5,black=4,gold=3,half_soul=4,blended=4,bone=4,rotten=2}
+local friendlies = { attack_fly = true, spider = true, pooter = true, dip = true, minisaac = true }
+local friendlySpawn = { attack_fly = { kind = "npc", type = 18 }, spider = { kind = "npc", type = 85 }, pooter = { kind = "npc", type = 14 }, dip = { kind = "npc", type = 217 }, minisaac = { kind = "familiar", type = 3, variant = 228 } }
+local creepVariants = { red = 22, green = 23, yellow = 24, black = 26 }
 local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true, explosive = true, confusion = true, knockback = true, continuum = true, boomerang = true, grow = true, shrink = true, sticky = true, wiggle = true, slowing_creep = true }
-local familiarTypes = { sentry = true, melee = true, normal = true, shield = true }
+local familiarTypes = { sentry = true, melee = true, normal = true, shield = true, orbit_contact = true }
 local rangedFamiliars = { sentry = true, normal = true }
 local familiarPatterns = { single = true, fan = true, lob = true, varied = true }
 local statBounds = {
@@ -240,8 +249,9 @@ local flagWeights = {
   piercing = 6, orbit = 6, continuum = 6, boomerang = 6, homing = 6, explosive = 6,
 }
 local pickupWeights = { coin = 1, heart = 2, key = 2, bomb = 2, pill = 2, card = 2, battery = 2, sack = 2, trinket = 3, chest = 3 }
-local heartWeights = { grant_half_red_hearts = 2, grant_full_red_hearts = 3, grant_soul_hearts = 8, grant_black_hearts = 4, grant_bone_hearts = 4, grant_eternal_hearts = 5 }
-local friendlyWeights = { attack_fly = 2, spider = 2, pooter = 3 }
+local heartWeights = { grant_half_red_hearts = 2, grant_full_red_hearts = 3, grant_soul_hearts = 8, grant_black_hearts = 4, grant_bone_hearts = 4, grant_eternal_hearts = 5, grant_gold_hearts = 3, grant_rotten_hearts = 2, grant_heart_containers = 8 }
+local friendlyWeights = { attack_fly = 2, spider = 2, pooter = 3, dip = 1, minisaac = 4 }
+local grantScale = { damage = 1, tears = 1, luck = 1, range = 1, speed = 4, shot_speed = 3 }
 local statWeights = {
   damage = { step = 1, weight = 1 }, damage_multiplier = { base = 1, step = 0.1, weight = 1, activation_weight = 1 }, tears = { step = 1, weight = 1 }, shot_speed = { step = 0.1, weight = 3 },
   range = { step = 1, weight = 1 }, speed = { step = 0.1, weight = 4 }, luck = { step = 1, weight = 1 }, soul_hearts = { step = 1, weight = 2 },
@@ -297,11 +307,13 @@ local function totalFlagEffects(profile)
   return (type(tear) == "table" and #tear or 0) + (type(attack) == "table" and #attack or 0) + (type(bomb) == "table" and #bomb or 0)
 end
 
-local roomStatNames = { damage = true, tears = true, luck = true }
+local roomStatNames = { damage = true, tears = true, luck = true, speed = true, range = true, shot_speed = true }
 local function validAction(action,trigger,cooldown)
-  if not allowedKeys(action, { type = true, amount = true, pickup_type = true, stat = true, friendly_type = true, duration=true, stack_limit=true, pickup_subtype=true,status=true,radius=true,target_mode=true,input_resource=true,output_resource=true,cost=true }) or not actions[action.type] or not number(action.amount, 1, 4, true) then return false end
+  local amountMax = action.type=="refill_charge" and 6 or 4
+  if not allowedKeys(action, { type = true, amount = true, pickup_type = true, stat = true, friendly_type = true, duration=true, stack_limit=true, pickup_subtype=true,status=true,radius=true,target_mode=true,input_resource=true,output_resource=true,cost=true,creep=true }) or not actions[action.type] or not number(action.amount, 1, amountMax, true) then return false end
+  if trigger=="player_death" and not deathActions[action.type] then return false end
   if action.target_mode~=nil and (action.type~="retaliate" or (action.target_mode~="attacker" and action.target_mode~="nearby")) then return false end
-  if action.duration~=nil and ((action.type~="grant_stat" and action.type~="apply_status" and action.type~="activate_aura") or not number(action.duration,15,1800,true)) then return false end
+  if action.duration~=nil and ((action.type~="grant_stat" and action.type~="apply_status" and action.type~="activate_aura" and action.type~="spawn_creep") or not number(action.duration,15,1800,true)) then return false end
   if action.stack_limit~=nil and (action.type~="grant_stat" or not number(action.stack_limit,1,4,true)) then return false end
   if action.pickup_subtype~=nil and (action.type~="spawn_pickup" or not (pickupSubtypes[action.pickup_type] or {})[action.pickup_subtype]) then return false end
   if action.type=="convert_resource" then
@@ -311,14 +323,16 @@ local function validAction(action,trigger,cooldown)
   if combat.effects[action.type] then
     if not combat.effects[action.type][trigger] or not number(cooldown,30,1800,true) or not number(action.amount,1,action.type=="apply_status" and 2 or 3,true) then return false end
     if action.stat~=nil or action.pickup_type~=nil or action.friendly_type~=nil then return false end
-    if action.type=="apply_status" then return ({slow=true,burn=true,fear=true})[action.status]==true and number(action.duration,15,120,true) and action.radius==nil end
-    if action.status~=nil or action.duration~=nil then return false end
+    if action.type=="apply_status" then return ({slow=true,burn=true,fear=true,poison=true,charm=true,confusion=true,freeze=true})[action.status]==true and number(action.duration,15,120,true) and action.radius==nil and action.creep==nil end
+    if action.status~=nil or action.duration~=nil or action.creep~=nil then return false end
     if action.type=="retaliate" then
-      if action.target_mode=="nearby" then return trigger=="player_hurt" and number(action.radius,40,120,false) end
+      if action.target_mode=="nearby" then return (trigger=="player_hurt" or trigger=="collision") and number(action.radius,40,120,false) end
       return action.radius==nil
     end
     return action.type=="damage_burst" and number(action.radius,40,120,false)
-  elseif action.status~=nil or action.radius~=nil then return false end
+  elseif action.type=="spawn_creep" then
+    return creepVariants[action.creep]~=nil and number(action.radius,20,80,false) and number(action.duration,15,180,true) and action.status==nil and action.stat==nil and action.pickup_type==nil and action.friendly_type==nil
+  elseif action.status~=nil or action.radius~=nil or action.creep~=nil then return false end
   if action.type == "grant_stat" then return roomStatNames[action.stat] == true and action.pickup_type == nil and action.friendly_type == nil end
   if action.type == "spawn_friendly" then return action.amount == 1 and friendlies[action.friendly_type] == true and action.pickup_type == nil and action.stat == nil end
   if action.type == "spawn_pickup" then return pickups[action.pickup_type] == true and action.stat == nil and action.friendly_type == nil end
@@ -375,8 +389,11 @@ local function profileWeight(profile)
     elseif combat.effects[action.type] then total=total+6+action.amount+math.ceil((action.radius or 0)/60)+math.ceil((action.duration or 0)/60)+(action.type=="retaliate" and action.target_mode=="nearby" and 6 or 0)
     elseif action.type=="convert_resource" then total=total+2+(pickupWeights[action.output_resource] or 0)*action.amount
     elseif action.type=="activate_aura" then total=total+2+math.ceil(action.duration/60)
+    elseif action.type=="spawn_creep" then total=total+3+action.amount
+    elseif action.type=="refill_charge" then total=total+2+action.amount
     elseif action.type == "grant_stat" then
-      if action.duration~=nil or action.stack_limit~=nil then total=total+action.amount*(action.stack_limit or 1)
+      local scale = grantScale[action.stat] or 1
+      if action.duration~=nil or action.stack_limit~=nil then total=total+action.amount*(action.stack_limit or 1)*scale
       else roomStats[action.stat] = math.max(roomStats[action.stat] or 0, action.amount or 0) end
     end
   end
@@ -385,21 +402,29 @@ local function profileWeight(profile)
     local proc = profile[name]
     if type(proc) == "table" then for _, action in ipairs(proc.actions or {}) do spend(action) end end
   end
-  for _, amount in pairs(roomStats) do total = total + amount end
+  for stat, amount in pairs(roomStats) do total = total + amount * (grantScale[stat] or 1) end
   return total
 end
 local function validAura(aura)
   if not allowedKeys(aura, { type=true, damage=true, radius=true, cooldown=true, duration=true,triggered=true }) or not number(aura.radius,50,180,false) or not number(aura.cooldown,15,90,true) then return false end
   if aura.triggered~=nil and type(aura.triggered)~="boolean" then return false end
   if aura.type == "damage" then return number(aura.damage,0.25,2,false) and aura.duration == nil end
-  if not ({ slow=true, burn=true, fear=true })[aura.type] or not number(aura.duration,15,120,true) then return false end
-  if aura.type == "burn" then return number(aura.damage,0.25,2,false) end
+  if not ({ slow=true, burn=true, fear=true, charm=true, poison=true, confusion=true })[aura.type] or not number(aura.duration,15,120,true) then return false end
+  if aura.type == "burn" or aura.type == "poison" then return number(aura.damage,0.25,2,false) end
   return aura.damage == nil
 end
 local function validCondition(condition)
-  if not allowedKeys(condition, { type = true, chance = true }) or not conditions[condition.type] then return false end
-  if condition.type=="chance" then return number(condition.chance,0,1,false) end
-  return condition.chance==nil
+  local params = conditionParams[condition.type]
+  if not allowedKeys(condition, { type = true, chance = true, luck_scale = true, amount = true, room = true }) or not params then return false end
+  if condition.chance ~= nil and not params.chance then return false end
+  if condition.luck_scale ~= nil and not params.luck_scale then return false end
+  if condition.amount ~= nil and not params.amount then return false end
+  if condition.room ~= nil and not params.room then return false end
+  if params.chance and not number(condition.chance, 0, 1, false) then return false end
+  if params.luck_scale and not number(condition.luck_scale, 0, 0.25, false) then return false end
+  if params.amount and not number(condition.amount, 1, 12, true) then return false end
+  if params.room and not roomKinds[condition.room] then return false end
+  return true
 end
 local function validProc(proc,name)
   if not allowedKeys(proc, { conditions = true, actions = true, cooldown=true }) or not array(proc.conditions, 0, 2) or not array(proc.actions, 1, 2) then return false end
@@ -481,8 +506,12 @@ local function validateProfile(profile, id)
     local bomb = profile.bomb
     if not allowedKeys(bomb, { damage = true, radius = true, flags = true }) or not number(bomb.damage, 0.5, 3, false) or not number(bomb.radius, 40, 120, false) then return false, "bomb" end
     if bomb.flags ~= nil then
-      if not array(bomb.flags,0,1) then return false, "bomb flags" end
-      for _, flag in ipairs(bomb.flags) do if flag ~= "poison" then return false, "bomb flag" end end
+      if not array(bomb.flags,0,2) then return false, "bomb flags" end
+      local seen = {}
+      for _, flag in ipairs(bomb.flags) do
+        if not ({ poison = true, burn = true, fear = true })[flag] or seen[flag] then return false, "bomb flag" end
+        seen[flag] = true
+      end
     end
   elseif profile.bomb ~= nil then return false, "bomb" end
   for _, name in ipairs({ "laser", "knife" }) do
@@ -531,6 +560,9 @@ local whenText = {
   player_hurt = "when you get hit", enemy_hit = "when a tear hits an enemy",
   on_kill = "when an enemy dies", tear_impact = "when a tear hits an enemy",
   collision = "when you touch an enemy",
+  bomb_explode = "when a bomb explodes", active_use = "when you use an active",
+  pill_use = "when you use a pill", card_use = "when you use a card",
+  boss_kill = "when you kill a boss", player_death = "when you die",
 }
 local function clauseList(parts)
   local cleaned = {}
@@ -558,7 +590,9 @@ local function actionPhrase(action, chance)
   local amount = action.amount or 1
   local lead = chance and "sometimes " or ""
   if action.type=="damage_burst" then return lead.."deals "..amount.." damage in a "..action.radius.." radius (max 8 enemies)" end
-  if action.type=="apply_status" then return lead.."applies "..action.status.." for "..action.duration.." frames"..(action.status=="burn" and (" at "..amount.." burn damage") or "") end
+  if action.type=="apply_status" then return lead.."applies "..action.status.." for "..action.duration.." frames"..((action.status=="burn" or action.status=="poison") and (" at "..amount.." damage") or "") end
+  if action.type=="spawn_creep" then return lead.."spawns "..(action.creep or "red").." creep" end
+  if action.type=="refill_charge" then return lead.."refills "..amount.." charge"..(amount==1 and "" or "s") end
   if action.type=="retaliate" then return lead.."retaliates for "..amount.." damage"..(action.target_mode=="nearby" and " within "..action.radius.." radius, max 8 enemies" or " against the attacker") end
   if action.type=="convert_resource" then return lead.."trades "..action.cost.." "..action.input_resource.." for "..amount.." "..action.output_resource end
   if action.type=="activate_aura" then return lead.."activates its aura for "..action.duration.." frames" end
@@ -571,7 +605,7 @@ local function actionPhrase(action, chance)
     return lead .. "grants +" .. amount .. " " .. action.stat .. duration .. stacks
   end
   if action.type == "spawn_friendly" then
-    local names = { attack_fly = "attack fly", spider = "spider", pooter = "pooter" }
+    local names = { attack_fly = "attack fly", spider = "spider", pooter = "pooter", dip = "dip", minisaac = "minisaac" }
     return lead .. "spawns a friendly " .. (names[action.friendly_type] or "enemy")
   end
   local reward = heartRewards[action.type]
@@ -584,7 +618,7 @@ local function timedClause(entry, trigger)
   if not entry then return nil end
   local chance = false
   for _, condition in ipairs(entry.conditions or {}) do
-    if condition.type == "chance" and (condition.chance or 1) < 1 then chance = true end
+    if (condition.type == "chance" or condition.type == "luck_chance") and (condition.chance or 1) < 1 then chance = true end
   end
   local actions = {}
   for _, action in ipairs(entry.actions or {}) do actions[#actions + 1] = actionPhrase(action, chance) end
@@ -630,6 +664,7 @@ local function effectSummary(generated)
   if familiar then
     if familiar.type == "shield" then parts[#parts + 1] = "a shield familiar blocks a hit"
     elseif familiar.type == "melee" then parts[#parts + 1] = "a melee familiar strikes nearby enemies"
+    elseif familiar.type == "orbit_contact" then parts[#parts + 1] = "an orbiting familiar strikes nearby enemies"
     else
       local lead = familiar.type == "sentry" and "an orbiting familiar fires" or "a familiar behind you fires"
       local flags = familiar.attack and familiar.attack.flags or {}
@@ -640,19 +675,19 @@ local function effectSummary(generated)
     parts[#parts]=parts[#parts].." (1 per owner; "..familiar.damage.." base damage; "..familiar.cooldown.." frame cooldown; "..targeting..")"
   end
   if generated.aura then
-    local auraText = { damage="nearby enemies take damage", slow="nearby enemies are slowed", burn="nearby enemies burn", fear="nearby enemies flee" }
+    local auraText = { damage="nearby enemies take damage", slow="nearby enemies are slowed", burn="nearby enemies burn", fear="nearby enemies flee", charm="nearby enemies are charmed", poison="nearby enemies are poisoned", confusion="nearby enemies are confused" }
     local aura=generated.aura
     local damage=aura.damage and ("; "..aura.damage.." damage") or ""
     local duration=aura.duration and ("; "..aura.duration.." status frames") or ""
     parts[#parts + 1] = auraText[aura.type].." ("..aura.radius.." radius; "..aura.cooldown.." frame cooldown"..damage..duration..(aura.triggered and "; only while activated" or "")..")"
   end
-  local updateText = { home = "tears drift toward enemies", pulse = "tears pulse in size", shrink = "tears shrink as they fly" }
+  local updateText = { home = "tears drift toward enemies", pulse = "tears pulse in size", shrink = "tears shrink as they fly", spiral = "tears spiral as they fly", accelerate = "tears speed up as they fly" }
   if generated.tear_update then
     local update=generated.tear_update
     local limits=update.behavior=="home" and "; max 1 target within 240" or "; scale bounded to 0.5-2"
     parts[#parts + 1] = updateText[update.behavior].." (strength "..update.strength.."; combined cap 2"..limits..")"
   end
-  if generated.bomb then parts[#parts + 1] = generated.bomb.flags and #generated.bomb.flags > 0 and "stronger poison bombs" or "stronger bombs" end
+  if generated.bomb then parts[#parts + 1] = generated.bomb.flags and #generated.bomb.flags > 0 and "stronger bombs" or "stronger bombs" end
   if generated.laser then parts[#parts + 1] = "stronger lasers" end
   if generated.knife then parts[#parts + 1] = "stronger knives" end
   return effectSentence(parts, generated.metadata and generated.metadata.description)
@@ -844,7 +879,7 @@ local function context()
   for _,id in ipairs(creator.activeIds) do if id<=0 then activeAvailable=false end end
   if promptUi.pendingKind=="generate" then pending[#pending+1]=promptUi.pending end
   for id in pairs(creator.requests) do if id~=promptUi.pending then pending[#pending+1]=id end end
-  return {session=session,run=runToken,used=slots,run_used=runSlots,count=#records,blocked=capacity(),runtime_contract=11,save_slot=selectedSaveSlot,fresh_run=freshRun,ended_run=endedRun,pending=pending,blanks=creator.count(creator.player(creator.owner)),active_count=activeCount,active_available=activeAvailable,art_count=creator.globalArtUsed}
+  return {session=session,run=runToken,used=slots,run_used=runSlots,count=#records,blocked=capacity(),runtime_contract=12,save_slot=selectedSaveSlot,fresh_run=freshRun,ended_run=endedRun,pending=pending,blanks=creator.count(creator.player(creator.owner)),active_count=activeCount,active_available=activeAvailable,art_count=creator.globalArtUsed}
 end
 promptUi.getContext=context
 local function publishState()
@@ -1188,6 +1223,17 @@ function combat.attacker(entity)
     entity=entity.SpawnerEntity or entity.Parent
   end
 end
+local function applyStatus(enemy, player, status, duration, amount)
+  if not enemy then return end
+  local ref = EntityRef(player)
+  if status=="slow" and enemy.AddSlowing then enemy:AddSlowing(ref, duration, 0.5, Color(0.5,0.7,1,1))
+  elseif status=="burn" and enemy.AddBurn then enemy:AddBurn(ref, duration, amount)
+  elseif status=="poison" and enemy.AddPoison then enemy:AddPoison(ref, duration, amount)
+  elseif status=="fear" and enemy.AddFear then enemy:AddFear(ref, duration)
+  elseif status=="charm" and enemy.AddCharmed then enemy:AddCharmed(ref, duration)
+  elseif status=="confusion" and enemy.AddConfusion then enemy:AddConfusion(ref, duration, false)
+  elseif status=="freeze" and enemy.AddFreeze then enemy:AddFreeze(ref, duration) end
+end
 function combat.apply(action,player,event)
   if not event or event.owner~=player or combat.depth>0 then return end
   local enemy=combat.enemy(event.target)
@@ -1204,7 +1250,7 @@ function combat.apply(action,player,event)
     end
   elseif action.type=="retaliate" then
     if action.target_mode=="nearby" then
-      if event.trigger~="player_hurt" or not event.confirmed or not player.Position or not number(action.radius,40,120,false) or not Isaac.FindInRadius or not EntityPartition then return end
+      if not ((event.trigger=="player_hurt" and event.confirmed) or event.trigger=="collision") or not player.Position or not number(action.radius,40,120,false) or not Isaac.FindInRadius or not EntityPartition then return end
       local targets=Isaac.FindInRadius(player.Position,action.radius,EntityPartition.ENEMY)
       local count,seen=0,{}
       for _,target in ipairs(targets or {}) do
@@ -1222,9 +1268,7 @@ function combat.apply(action,player,event)
     elseif event.trigger=="collision" then combat.damage(event.target,action.amount,player)
     else combat.damage(combat.attacker(event.target),action.amount,player) end
   elseif action.type=="apply_status" and enemy then
-    if action.status=="slow" then enemy:AddSlowing(EntityRef(player),action.duration,0.5,Color(0.5,0.7,1,1))
-    elseif action.status=="burn" then enemy:AddBurn(EntityRef(player),action.duration,action.amount)
-    elseif action.status=="fear" then enemy:AddFear(EntityRef(player),action.duration) end
+    applyStatus(enemy, player, action.status, action.duration, action.amount)
   end
 end
 function combat.convert(player,action)
@@ -1256,7 +1300,7 @@ local function namedVariant(name)
   if ok and type(variant) == "number" and variant > 0 then return variant end
 end
 local function bodyVariant(kind)
-  local customName = { normal = "Generated Follower", sentry = "Generated Orbital", melee = "Generated Chaser", shield = "Generated Shield" }
+  local customName = { normal = "Generated Follower", sentry = "Generated Orbital", melee = "Generated Chaser", shield = "Generated Shield", orbit_contact = "Generated Orbital" }
   local custom = namedVariant(customName[kind])
   if custom then return custom end
   local vanilla = {
@@ -1264,6 +1308,7 @@ local function bodyVariant(kind)
     sentry = FamiliarVariant and (FamiliarVariant.SACRIFICIAL_DAGGER or FamiliarVariant.CUBE_OF_MEAT),
     melee = FamiliarVariant and FamiliarVariant.LEECH,
     shield = FamiliarVariant and FamiliarVariant.DRY_BABY,
+    orbit_contact = FamiliarVariant and (FamiliarVariant.SACRIFICIAL_DAGGER or FamiliarVariant.CUBE_OF_MEAT),
   }
   return vanilla[kind] or (FamiliarVariant and FamiliarVariant.PUNCHING_BAG) or 0
 end
@@ -1423,6 +1468,7 @@ local familiarPlace = {
     moveFollower(familiar, player)
   end,
 }
+familiarPlace.orbit_contact = familiarPlace.sentry
 local familiarAct = {
   sentry = function(familiar, profile, player)
     local target=nearestEnemy(familiar.Position,profile.familiar.range)
@@ -1430,6 +1476,7 @@ local familiarAct = {
   end,
   melee = function(familiar, profile, player) contactStrike(familiar,profile,player) end,
   shield = function(familiar, profile, player) contactStrike(familiar,profile,player) end,
+  orbit_contact = function(familiar, profile, player) contactStrike(familiar,profile,player) end,
 }
 familiarAct.normal = familiarAct.sentry
 local function tickFamiliar(familiar, profile, player, index, frame, key)
@@ -1520,9 +1567,9 @@ function Demo:updatePassiveEffects()
                 hurtEnemy(enemy,aura.damage,player)
                 if enemy.SetColor and Color then pcall(enemy.SetColor, enemy, Color(1, 0.45, 0.2, 1, 0.5, 0.1, 0), 10, 1, true, false) end
               elseif (not enemy.IsVulnerableEnemy or enemy:IsVulnerableEnemy()) and (not enemy.IsDead or not enemy:IsDead()) then
-                if aura.type=="slow" then enemy:AddSlowing(EntityRef(player),aura.duration,0.5,Color(0.5,0.7,1,1))
-                elseif aura.type=="burn" then enemy:AddBurn(EntityRef(player),aura.duration,aura.damage)
-                elseif aura.type=="fear" then enemy:AddFear(EntityRef(player),aura.duration) end
+                if aura.type=="slow" or aura.type=="burn" or aura.type=="fear" or aura.type=="charm" or aura.type=="poison" or aura.type=="confusion" then
+                  applyStatus(enemy, player, aura.type, aura.duration, aura.damage)
+                end
               end
             end
           end
@@ -1561,6 +1608,9 @@ function Demo:onEvaluateCache(player,cacheFlag)
   for _, grant in ipairs(roomStatGrants) do
     if grant.player==tostring(player.InitSeed) and owned(player,grant.index) and (not grant.expires or Game():GetFrameCount()<grant.expires) then
       if grant.stat=="tears" then total.fireDelay=total.fireDelay-grant.amount
+      elseif grant.stat=="speed" then total.speed=total.speed+grant.amount*0.1
+      elseif grant.stat=="shot_speed" then total.shotSpeed=total.shotSpeed+grant.amount*0.1
+      elseif grant.stat=="range" then total.range=total.range+grant.amount
       else total[grant.stat]=total[grant.stat]+grant.amount end
     end
   end
@@ -1586,7 +1636,7 @@ local function grantRoomStat(profile, player, action, effectKey)
   refreshStats(player)
   return true
 end
-local function ruleMayRun(profile, rule, ruleIndex, player, cooldownIdentity)
+local function ruleMayRun(profile, rule, ruleIndex, player, cooldownIdentity, event)
   local needs={}
   for _,action in ipairs(rule.actions or {}) do
     if action.type=="convert_resource" then needs[action.input_resource]=(needs[action.input_resource] or 0)+action.cost end
@@ -1620,6 +1670,30 @@ local function ruleMayRun(profile, rule, ruleIndex, player, cooldownIdentity)
       local key = prefix .. "floor"
       if profile.ruleState[key] then return false end
       pendingKeys[#pendingKeys + 1] = key
+    elseif condition.type == "once_per_run" then
+      local key = tostring(player.InitSeed) .. ":" .. tostring(ruleIndex) .. ":run"
+      if profile.ruleState[key] then return false end
+      pendingKeys[#pendingKeys + 1] = key
+    elseif condition.type == "once_per_target" then
+      local target = event and event.target
+      if not target or target.InitSeed == nil then return false end
+      local key = tostring(player.InitSeed) .. ":" .. tostring(ruleIndex) .. ":target:" .. tostring(target.InitSeed)
+      if profile.ruleState[key] then return false end
+      pendingKeys[#pendingKeys + 1] = key
+    elseif condition.type == "luck_chance" then
+      local luck = player.Luck or 0
+      local chance = math.max(0, math.min(1, (condition.chance or 0) + (condition.luck_scale or 0) * luck))
+      if math.random() > chance then return false end
+    elseif condition.type == "hearts_at_most" or condition.type == "hearts_at_least" then
+      local hearts = (player.GetHearts and player:GetHearts() or 0) + (player.GetSoulHearts and player:GetSoulHearts() or 0)
+      if condition.type == "hearts_at_most" and hearts > condition.amount then return false end
+      if condition.type == "hearts_at_least" and hearts < condition.amount then return false end
+    elseif condition.type == "room_kind" then
+      local room = Game():GetRoom()
+      if not room or not room.GetType or room:GetType() ~= roomKinds[condition.room] then return false end
+    elseif condition.type == "while_flying" then
+      local flying = player.CanFly == true or (player.IsFlying and player:IsFlying())
+      if not flying then return false end
     end
   end
   if #pendingKeys>0 then
@@ -1651,9 +1725,46 @@ local function friendlyAlive(token, entityType)
   return false
 end
 local function runAction(profile, player, action, effectKey, event)
+  if event and event.trigger=="player_death" and not deathActions[action.type] then return end
   if action.type=="convert_resource" then combat.convert(player,action); return end
   if action.type=="activate_aura" then local key=tostring(player.InitSeed); profile.cooldowns["aura:"..key]=Game():GetFrameCount()+action.duration; profile.auraOwners[key]=true; return end
   if combat.effects[action.type] then combat.apply(action,player,event); return end
+  if action.type=="refill_charge" then
+    if not player.GetActiveItem or not player.SetActiveCharge then return end
+    local slot = ActiveSlot and ActiveSlot.SLOT_PRIMARY or 0
+    if player:GetActiveItem(slot)==0 then return end
+    local current = player.GetActiveCharge and player:GetActiveCharge(slot) or 0
+    player:SetActiveCharge(current + action.amount, slot)
+    return
+  end
+  if action.type=="spawn_creep" then
+    local variant = creepVariants[action.creep]
+    if not variant then return end
+    local effectType = EntityType.ENTITY_EFFECT or 1000
+    local token = (profile.friendlyToken or "creep")..":"..tostring(player.InitSeed)..":creep"
+    local live = 0
+    local found = Isaac.FindByType(effectType, variant)
+    if type(found)=="table" then
+      for _, entity in ipairs(found) do
+        local data = entity.GetData and entity:GetData()
+        if data and data.nebiusCreep==token and (not entity.Exists or entity:Exists()) then live=live+1 end
+      end
+    end
+    local room = Game():GetRoom()
+    for _ = 1, action.amount or 1 do
+      if live>=4 then break end
+      local position = room and room.FindFreePickupSpawnPosition and room:FindFreePickupSpawnPosition(player.Position, 0, true) or player.Position
+      local creep = Isaac.Spawn(effectType, variant, 0, position, Vector.Zero, player)
+      if creep then
+        if creep.GetData then creep:GetData().nebiusCreep=token end
+        if creep.SetTimeout then pcall(creep.SetTimeout, creep, action.duration) end
+        if creep.SpriteScale and Vector then creep.SpriteScale=Vector(action.radius/40, action.radius/40)
+        elseif creep.Scale then creep.Scale=action.radius/40 end
+        live=live+1
+      end
+    end
+    return
+  end
   if grantRoomStat(profile, player, action, effectKey) or grantHeartReward(player, action) then return end
   if action.type == "spawn_pickup" then
     local variant = pickupVariants[action.pickup_type]
@@ -1664,18 +1775,26 @@ local function runAction(profile, player, action, effectKey, event)
       Isaac.Spawn(EntityType.ENTITY_PICKUP, variant, subtype, position, Vector.Zero, player)
     end
   elseif action.type == "spawn_friendly" then
-    local entityType = friendlyTypes[action.friendly_type]
+    local spec = friendlySpawn[action.friendly_type]
+    local named = ({ attack_fly = EntityType.ENTITY_ATTACKFLY, spider = EntityType.ENTITY_SPIDER, pooter = EntityType.ENTITY_POOTER, dip = EntityType.ENTITY_DIP })[action.friendly_type]
+    local entityType = (type(named)=="number" and named>0) and named or (spec and spec.type) or friendlyTypes[action.friendly_type]
+    local variant = spec and spec.variant or 0
     local owner=tostring(player.InitSeed)
     local token=profile.friendlyToken..":"..owner
-    if not entityType or friendlyAlive(token, entityType) or combat.childCount>=256 then return end
+    local childKey=owner..":"..tostring(entityType)..":"..tostring(variant)
+    if spec and spec.kind=="familiar" then
+      local existing=profile.ownedChildren[childKey] and profile.ownedChildren[childKey].entity
+      if existing and (not existing.Exists or existing:Exists()) then return end
+    elseif not entityType or friendlyAlive(token, entityType) then return end
+    if not entityType or combat.childCount>=256 then return end
     local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 40, true)
-    local npc = Isaac.Spawn(entityType, 0, 0, position, Vector.Zero, player)
+    local npc = Isaac.Spawn(entityType, variant, 0, position, Vector.Zero, player)
     if not npc then return end
     if npc.GetData then npc:GetData().nebiusFriendlyItem=token; npc:GetData().nebiusFriendlyOwner=player end
-    profile.ownedChildren[owner..":"..entityType]={entity=npc,owner=owner}
+    profile.ownedChildren[childKey]={entity=npc,owner=owner}
     combat.childProfiles[profile.index]=true
     combat.childCount=combat.childCount+1
-    if npc.AddCharmed then npc:AddCharmed(EntityRef(player), -1) end
+    if (not spec or spec.kind=="npc") and npc.AddCharmed then npc:AddCharmed(EntityRef(player), -1) end
   end
 end
 local function runOneRuleSet(triggerName, player, profile, event)
@@ -1686,7 +1805,7 @@ local function runOneRuleSet(triggerName, player, profile, event)
       for _,action in ipairs(rule.actions or {}) do if combat.effects[action.type] then hasCombat=true end end
       eligible=hasCombat==(event and event.confirmed==true or false)
     end
-    if eligible and rule.trigger == triggerName and ruleMayRun(profile, rule, ruleIndex, player) then
+    if eligible and rule.trigger == triggerName and ruleMayRun(profile, rule, ruleIndex, player, nil, event) then
       for actionIndex, action in ipairs(rule.actions or {}) do runAction(profile, player, action,"rule:"..ruleIndex..":"..actionIndex,event) end
       playProfileSound(profile, 0.45)
     end
@@ -1731,7 +1850,7 @@ local function runSystemProc(systemName, player, latchKey, event, onlyIndex)
     end
     local cooldownIdentity=systemName
     if systemName=="collision" and hasCombat and event and event.target then cooldownIdentity="contact:"..roomStamp()..":"..tostring(event.target.InitSeed or 0) end
-    if ruleMayRun(profile, proc, systemName, player,cooldownIdentity) then
+    if ruleMayRun(profile, proc, systemName, player, cooldownIdentity, event) then
       runActions(profile, player, proc.actions, systemName, event)
     end
   end)
@@ -1776,6 +1895,7 @@ function Demo:onPostNewRoom()
   for _,profile in ipairs(runtime) do for key in pairs(profile.cooldowns) do if key:sub(1,5)=="aura:" then profile.cooldowns[key]=nil end end end
   local hadGrants=#roomStatGrants>0
   roomStatGrants={}
+  playerDeathSeen={}
   if hadGrants then for p=0,Game():GetNumPlayers()-1 do refreshStats(Isaac.GetPlayer(p)) end end
   forPlayers("room_enter")
   if running then saveRun() end
@@ -1808,8 +1928,22 @@ function Demo:onPostEntityTakeDamage(entity,_,_,source)
   local player=entity and entity.ToPlayer and entity:ToPlayer()
   if player then runProfileRules("player_hurt",player,{owner=player,target=source and source.Entity,position=player.Position,confirmed=true}) end
 end
+local function runPlayerDeath(player)
+  if not player then return end
+  local key=tostring(player.InitSeed)
+  if playerDeathSeen[key] then return end
+  playerDeathSeen[key]=true
+  runProfileRules("player_death", player, {owner=player, target=player, position=player.Position})
+end
+function Demo:onPostPlayerDeath(player)
+  runPlayerDeath(player and player.ToPlayer and player:ToPlayer() or player)
+end
 function Demo:onPostEntityKill(entity,killSource)
-  if #members.on_kill == 0 or not isEnemy(entity) then return end
+  local player=entity and entity.ToPlayer and entity:ToPlayer()
+  if player then runPlayerDeath(player); return end
+  if not isEnemy(entity) then return end
+  local boss=entity.IsBoss and entity:IsBoss()
+  if #members.on_kill==0 and not (boss and byTrigger.boss_kill) then return end
   local latch="on_kill:" .. tostring(Game():GetLevel():GetCurrentRoomIndex()) .. ":" .. tostring(entity.InitSeed or 0)
   local data=entity.GetData and entity:GetData()
   local owner=data and data.generatedDamageOwner
@@ -1818,7 +1952,8 @@ function Demo:onPostEntityKill(entity,killSource)
   if combat.depth>0 then owner=nil end
   if data then data.generatedProcLatches=data.generatedProcLatches or {} end
   local event={owner=owner,target=entity,position=entity.Position,latches=data and data.generatedProcLatches}
-  for p=0,Game():GetNumPlayers()-1 do runSystemProc("on_kill", Isaac.GetPlayer(p), latch,event) end
+  if #members.on_kill>0 then for p=0,Game():GetNumPlayers()-1 do runSystemProc("on_kill", Isaac.GetPlayer(p), latch,event) end end
+  if boss and owner then runProfileRules("boss_kill", owner, {owner=owner, target=entity, position=entity.Position}) end
 end
 function Demo:onPreTearCollision(tear, collider)
   if #members.tear_impact == 0 or not isEnemy(collider) then return end
@@ -1853,9 +1988,12 @@ function Demo:onPostTearUpdate(tear)
     end)
   end
   if not data.generatedTearSources or not next(data.generatedTearSources) or not owner then return end
-  local strengths={home=0,pulse=0,shrink=0}
+  local strengths={home=0,pulse=0,shrink=0,spiral=0,accelerate=0}
   for index,spec in pairs(data.generatedTearSources) do
-    if owned(owner,index) then strengths[spec.behavior]=math.min(2,strengths[spec.behavior]+spec.strength) end
+    if owned(owner,index) then
+      strengths[spec.behavior]=(strengths[spec.behavior] or 0)+spec.strength
+      strengths[spec.behavior]=math.min(2,strengths[spec.behavior])
+    end
   end
   if strengths.home>0 then
     local enemy = nearestEnemy(tear.Position or Vector(0, 0), 240)
@@ -1868,16 +2006,27 @@ function Demo:onPostTearUpdate(tear)
       end
     end
   end
-  if strengths.pulse==0 and strengths.shrink==0 then
-    if data.generatedScaleModified then tear.Scale=data.generatedBaseScale; data.generatedScaleModified=nil end
-    return
+  if strengths.pulse>0 or strengths.shrink>0 then
+    data.generatedScaleModified=true
+    local age=math.max(1,Game():GetFrameCount()-(data.generatedTearStart or 0)+1)
+    local base=data.generatedBaseScale or 1
+    local scale=math.max(0.5,base-0.02*strengths.shrink*age)
+    if strengths.pulse>0 then scale=scale*(1+0.08*strengths.pulse*math.sin(Game():GetFrameCount()*0.3)) end
+    tear.Scale=math.max(0.5,math.min(2,scale))
+  elseif data.generatedScaleModified then tear.Scale=data.generatedBaseScale; data.generatedScaleModified=nil end
+  if strengths.spiral>0 and tear.Velocity then
+    local angle=0.08*strengths.spiral
+    local cosine,sine=math.cos(angle),math.sin(angle)
+    local vx,vy=tear.Velocity.X,tear.Velocity.Y
+    tear.Velocity=Vector(vx*cosine-vy*sine, vx*sine+vy*cosine)
   end
-  data.generatedScaleModified=true
-  local age=math.max(1,Game():GetFrameCount()-(data.generatedTearStart or 0)+1)
-  local base=data.generatedBaseScale or 1
-  local scale=math.max(0.5,base-0.02*strengths.shrink*age)
-  if strengths.pulse>0 then scale=scale*(1+0.08*strengths.pulse*math.sin(Game():GetFrameCount()*0.3)) end
-  tear.Scale=math.max(0.5,math.min(2,scale))
+  if strengths.accelerate>0 and tear.Velocity then
+    local factor=1+0.02*strengths.accelerate
+    local vx,vy=tear.Velocity.X*factor,tear.Velocity.Y*factor
+    local speed=math.sqrt(vx*vx+vy*vy)
+    if speed>20 then vx,vy=vx/speed*20,vy/speed*20 end
+    tear.Velocity=Vector(vx,vy)
+  end
 end
 function Demo:onPostFireBomb(bomb)
   if #members.bomb == 0 or not bomb then return end
@@ -1892,7 +2041,8 @@ function Demo:onPostFireBomb(bomb)
     radius=math.max(radius,profile.bomb.radius)
     applied=true
     for _, flag in ipairs(profile.bomb.flags or {}) do
-      if flag == "poison" then bomb:AddTearFlags(TearFlags.TEAR_POISON) end
+      local bits = flagFromName(flag)
+      if bits ~= 0 and bomb.AddTearFlags then bomb:AddTearFlags(bits) end
     end
   end)
   if applied then
@@ -2002,8 +2152,27 @@ function Demo:onPreUseItem(item,_,player,flags,slot)
   if not creator.activeIdSet[item] then return end
   if not creator.activeReady(item,player,flags,slot) then return {Discharge=false,ShowAnim=false,Remove=false} end
 end
+function Demo:onPostBombUpdate(bomb)
+  if not bomb or not bomb.GetData then return end
+  local data=bomb:GetData()
+  if data.nebiusBombProc then return end
+  local exploding=(bomb.IsDead and bomb:IsDead()) or (bomb.GetExplosionCountdown and bomb:GetExplosionCountdown()==0)
+  if not exploding then return end
+  data.nebiusBombProc=true
+  local owner=combat.owner(bomb.SpawnerEntity or bomb.Parent)
+  if owner then runProfileRules("bomb_explode", owner, {owner=owner, target=bomb, position=bomb.Position}) end
+end
+function Demo:onUsePill(_, player)
+  if player then runProfileRules("pill_use", player, {owner=player, position=player.Position}) end
+end
+function Demo:onUseCard(_, player)
+  if player then runProfileRules("card_use", player, {owner=player, position=player.Position}) end
+end
 function Demo:onUseItem(item,_,player,flags,slot)
-  if not creator.activeIdSet[item] then return end
+  if not creator.activeIdSet[item] then
+    if player then runProfileRules("active_use", player, {owner=player, position=player.Position}) end
+    return
+  end
   local profile,key,targets=creator.activeReady(item,player,flags,slot)
   if not profile then return {Discharge=false,ShowAnim=false,Remove=false} end
   local hits=0
@@ -2148,6 +2317,8 @@ local callbacks={
  MC_POST_PICKUP_UPDATE="onPickupUpdate",MC_EXECUTE_CMD="onExecuteCmd",
  MC_PRE_USE_ITEM="onPreUseItem",MC_USE_ITEM="onUseItem",
  MC_POST_ENTITY_TAKE_DMG="onPostEntityTakeDamage",
+ MC_POST_BOMB_UPDATE="onPostBombUpdate",MC_USE_PILL="onUsePill",MC_USE_CARD="onUseCard",
+ MC_POST_PLAYER_DEATH="onPostPlayerDeath",
 }
 for callback,method in pairs(callbacks) do if ModCallbacks[callback] then Demo:AddCallback(ModCallbacks[callback],Demo[method]) end end
 Demo:AddCallback(ModCallbacks.MC_POST_PICKUP_RENDER,Demo.onPickupRender,PickupVariant.PICKUP_COLLECTIBLE)

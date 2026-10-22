@@ -36,8 +36,11 @@ export function assertCatalogWeights(capabilities) {
   }
   requireWeight(weights.flying, "flying");
   requireWeight(weights.grant_stat, "grant_stat");
+  for (const stat of capabilities.room_stat_reward?.stats || []) requireWeight(weights.grant_stat_scale?.[stat], `grant_stat ${stat}`);
   requireWeight(weights.convert_resource, "convert_resource");
   requireWeight(weights.activate_aura, "activate_aura");
+  requireWeight(weights.spawn_creep, "spawn_creep");
+  requireWeight(weights.refill_charge, "refill_charge");
   requireWeight(weights.retaliate_nearby, "retaliate_nearby");
   for (const effect of Object.keys(capabilities.combat_effects || {})) requireWeight(weights.combat?.[effect], effect);
   for (const effect of capabilities.active?.effects || []) {
@@ -47,7 +50,7 @@ export function assertCatalogWeights(capabilities) {
     if (!Number.isFinite(spec.radius_step) || spec.radius_step <= 0) throw Error(`Active ${effect} has no positive radius step.`);
   }
   for (const action of capabilities.actions) {
-    if (!["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_stat", "convert_resource", "activate_aura"].includes(action)
+    if (!["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_stat", "convert_resource", "activate_aura", "spawn_creep", "refill_charge"].includes(action)
         && !Object.hasOwn(capabilities.heart_rewards, action) && !Object.hasOwn(capabilities.combat_effects || {}, action)) {
       throw Error(`Action ${action} has no weight.`);
     }
@@ -348,12 +351,15 @@ export function profileWeight(profile, capabilities) {
     else if (Object.hasOwn(capabilities.combat_effects || {}, action.type)) total += required(weights.combat?.[action.type], action.type) + action.amount + Math.ceil((action.radius || 0) / COMBAT_RANGE_STEP) + Math.ceil((action.duration || 0) / COMBAT_RANGE_STEP) + (action.type === "retaliate" && action.target_mode === "nearby" ? required(weights.retaliate_nearby, "retaliate_nearby") : 0);
     else if (action.type === "convert_resource") total += weights.convert_resource + required(weights.pickups[action.output_resource], action.output_resource) * action.amount;
     else if (action.type === "activate_aura") total += weights.activate_aura + Math.ceil(action.duration / 60);
+    else if (action.type === "spawn_creep") total += weights.spawn_creep + action.amount;
+    else if (action.type === "refill_charge") total += weights.refill_charge + action.amount;
     else if (action.type === "grant_stat") {
-      if (action.duration !== undefined || action.stack_limit !== undefined) total += action.amount * (action.stack_limit || 1) * weights.grant_stat;
+      const scale = weights.grant_stat_scale?.[action.stat] ?? 1;
+      if (action.duration !== undefined || action.stack_limit !== undefined) total += action.amount * (action.stack_limit || 1) * weights.grant_stat * scale;
       else roomStats[action.stat] = Math.max(roomStats[action.stat] || 0, action.amount);
     } else throw Error(`Action ${action.type} has no weight.`);
   }
-  for (const amount of Object.values(roomStats)) total += amount * weights.grant_stat;
+  for (const [stat, amount] of Object.entries(roomStats)) total += amount * weights.grant_stat * (weights.grant_stat_scale?.[stat] ?? 1);
   return total;
 }
 

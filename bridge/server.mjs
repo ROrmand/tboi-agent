@@ -218,11 +218,14 @@ function finishSentence(job, error, sentence, timeout) {
   trimJobs();
 }
 
+const ACTIVES_ENABLED = false;
+
 function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, itemType = "passive") {
   if(activeJob) throw Error('Another request is running. Wait until it finishes.');
   if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
   assertRuntimeCompatible(gameContext);
   if (!["passive","active"].includes(itemType)) throw Error("Invalid item type.");
+  if (!ACTIVES_ENABLED && itemType === "active") throw Error("Active generation is vaulted. Generate a passive item.");
   if (itemType === "active" && (!Number.isInteger(gameContext.active_count) || gameContext.active_count >= 8 || gameContext.active_available !== true)) throw Error("Active shell capacity unavailable or full (8/8).");
   if (id === undefined) id = gameContext.run + '_' + randomUUID().slice(0, 99 - gameContext.run.length);
   if (!id.startsWith(gameContext.run + '_')) throw Error('Generation request is from another run.');

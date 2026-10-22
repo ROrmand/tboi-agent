@@ -9,7 +9,6 @@ import { once } from 'node:events';
 import { JobStore } from './job-store.mjs';
 import { RUNTIME_CONTRACT } from './compatibility.mjs';
 import { createServer } from 'node:http';
-import sharp from 'sharp';
 import { prepareArtSlots } from '../native/ipc/art-slots.mjs';
 
 async function until(check, detail) {
@@ -97,30 +96,27 @@ test('interrupted jobs recover as errors without issuing another model or art re
 });
 
 
-test('bridge generates an active through local fake services and queues trusted blank delivery before ACK',async t=>{
-  const design={region:'passive',systems:['active'],affects_stats:false,metadata:{display_name:'Glass Pulse',description:'Radial damage burst',quality:3,theme:'tech',balance_note:''},visuals:{pedestal_prompt:'glass pulse core',sound:'click',animation:'pulse'},rules:[],active:{effect:'radial_burst',charges:6,targeting:'self',damage:4,radius:100}};
-  const image=await sharp({create:{width:64,height:64,channels:4,background:'white'}}).composite([{input:await sharp({create:{width:24,height:24,channels:4,background:'red'}}).png().toBuffer(),left:20,top:20}]).png().toBuffer();
-  let textCalls=0,imageCalls=0;
+test('bridge refuses a vaulted active before calling the model',async t=>{
+  let textCalls=0;
   const service=createServer(async(request,response)=>{
     for await(const chunk of request) {};
+    textCalls+=1;
     response.setHeader('Content-Type','application/json');
-    if(request.url.endsWith('chat/completions')) {textCalls++;response.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:JSON.stringify(design)}}]}));}
-    else {imageCalls++;response.end(JSON.stringify({data:[{b64_json:image.toString('base64')}]}));}
+    response.end(JSON.stringify({choices:[{finish_reason:'stop',message:{content:'{}'}}]}));
   });
   await new Promise(resolve=>service.listen(0,'127.0.0.1',resolve));
   t.after(()=>{service.closeAllConnections();service.close();});
   const f=await fixture(t,[],{IMAGE_BACKEND:'nebius',NEBIUS_BASE_URL:'http://127.0.0.1:'+service.address().port+'/v1/',NEBIUS_TEXT_MODEL:'test-model',NEBIUS_IMAGE_MODEL:'test-image'});
-  await f.state({active_count:0,active_available:true,pending:['test_run_generated']});
+  await f.state({active_count:0,active_available:true});
   await appendFile(f.log,'[NebiusBridge] generate '+JSON.stringify({id:'test_run_generated',prompt:'A glass damage burst',quality:3,item_type:'active',delivery:{mode:'blank',owner:'22'}})+'\n');
-  const job=await until(async()=>{const value=await f.get('test_run_generated');if(value?.state==='failed') throw Error(JSON.stringify(value));return value?.state==='queued'&&value;},'generated profile queue');
-  assert.equal(job.itemType,'active');assert.equal(textCalls,1);assert.equal(imageCalls,1);
-  const envelope=await until(async()=>{const value=await f.poll();return value?.type==='profile'&&value;},'generated delivery');
-  assert.deepEqual(envelope.profile.active,design.active);assert.deepEqual(envelope.delivery,{mode:'blank',owner:'22'});
-  assert.equal(envelope.profile.sprite_sheet,'gfx/items/collectibles/generated_slot_00.png');
-  const journal=new JobStore(path.join(f.output,'job-journal.json'));
-  assert.deepEqual(journal.recover()[0].envelope,envelope);
-  await pipeRequest(f.pipe,{version:1,type:'ack',id:envelope.id});
-  assert.equal((await f.get(envelope.id)).state,'applied');assert.equal(textCalls,1);assert.equal(imageCalls,1);
+  const message=await until(async()=>{const value=await f.poll();return value?.type==='status'&&value;},'vaulted active status');
+  assert.equal(message.status,'error');
+  assert.match(message.detail,/vaulted/);
+  assert.equal(await f.get('test_run_generated'),null);
+  assert.equal(textCalls,0);
+  const http=await f.generate({prompt:'A glass damage burst',quality:3,item_type:'active'});
+  assert.equal(http.status,400);
+  assert.match((await http.json()).error,/vaulted/);
 });
 
 test('queued cancellation is durable and drops the IPC retry without another generation',async t=>{

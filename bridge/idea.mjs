@@ -175,9 +175,12 @@ export function normalizeCatalogPlan(plan, capabilities) {
 
 function combatSystemFor(trigger, spec) {
   const triggers = spec.triggers || [];
-  if (triggers.length === 1 && triggers[0] === "on_kill") return "on_kill";
-  if (triggers.length === 1 && triggers[0] === "tear_impact") return "tear_impact";
-  if (HIT_TRIGGERS.has(trigger)) return "on_hit";
+  if (triggers.includes(trigger)) {
+    if (trigger === "enemy_hit" || trigger === "player_hurt") return "on_hit";
+    return trigger;
+  }
+  if (triggers.includes("on_kill")) return "on_kill";
+  if (triggers.includes("tear_impact")) return "tear_impact";
   if (triggers.includes("collision")) return "collision";
   if (triggers.includes("player_hurt")) return "on_hit";
   return triggers[0] || null;
@@ -248,7 +251,7 @@ export async function expandIdea(prompt, capabilities, env, request = requestTex
       max_tokens: 256,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: `Choose supported Binding of Isaac passive mechanics for a flavor idea. The player does not know the catalog, so infer one or two distinctive effects. Prefer permanent stats (especially damage or tears), combat procs, auras, familiars, or unusual tear flags over pickup or soul-heart rewards. Use spawn_pickup or grant_*_hearts only when the flavor is about loot, money, or healing. Combat pairing is mandatory when those actions are chosen: damage_burst uses system on_kill; apply_status uses tear_impact; retaliate uses collision or trigger player_hurt. grant_stat uses trigger room_clear and stat damage, tears, or luck. Return only JSON with keys systems, tear_flags, trigger, action, pickup_type, friendly_type, stat, aura, and familiar. Use catalog ids from this list or empty strings. Do not write names, flavor, parameters, Lua, or unsupported effects. Catalog: ${catalog}.` },
+        { role: "system", content: `Choose supported Binding of Isaac passive mechanics for a flavor idea. The player does not know the catalog, so infer one or two distinctive effects. Prefer permanent stats (especially damage or tears), combat procs, auras, familiars, or unusual tear flags over pickup or soul-heart rewards. Use spawn_pickup or grant_*_hearts only when the flavor is about loot, money, or healing. Combat pairing is mandatory when those actions are chosen: damage_burst uses on_kill, player_hurt, or collision; apply_status uses tear_impact, collision, on_kill, or enemy_hit; retaliate uses collision or player_hurt. grant_stat uses trigger room_clear and stat damage, tears, luck, speed, range, or shot_speed. Return only JSON with keys systems, tear_flags, trigger, action, pickup_type, friendly_type, stat, aura, and familiar. Use catalog ids from this list or empty strings. Do not write names, flavor, parameters, Lua, or unsupported effects. Catalog: ${catalog}.` },
         { role: "user", content: `Flavor idea: ${prompt}` },
       ],
     })),

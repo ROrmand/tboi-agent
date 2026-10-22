@@ -420,9 +420,13 @@ test('nearby retaliation rejects other event contexts and generated damage canno
       probe.combat.apply(action,player,{owner=player,trigger='player_hurt',confirmed=true})
     end}
     Isaac.FindInRadius=function() queries=queries+1; return {target} end
-    for _,trigger in ipairs({'collision','enemy_hit','on_kill','tear_impact','room_clear'}) do
+    for _,trigger in ipairs({'enemy_hit','on_kill','tear_impact','room_clear'}) do
       probe.combat.apply(action,player,{owner=player,target=target,trigger=trigger,confirmed=true})
     end
+    assert(hits==0 and queries==0)
+    probe.combat.apply(action,player,{owner=player,target=target,trigger='collision',confirmed=true})
+    assert(hits==1 and queries==1)
+    hits,queries=0,0
     probe.combat.apply(action,player,{owner=player,trigger='player_hurt'})
     probe.combat.apply(action,player,{owner={},trigger='player_hurt',confirmed=true})
     assert(hits==0 and queries==0)

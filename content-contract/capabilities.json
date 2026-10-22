@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "entity_type": "passive_item",
   "item_limits": {
     "max_systems": 6,
@@ -19,12 +19,48 @@
     "player_hurt",
     "pickup",
     "new_floor",
-    "tear_fire"
+    "tear_fire",
+    "bomb_explode",
+    "active_use",
+    "pill_use",
+    "card_use",
+    "boss_kill",
+    "player_death"
   ],
   "conditions": [
     "chance",
     "once_per_room",
-    "once_per_floor"
+    "once_per_floor",
+    "once_per_run",
+    "once_per_target",
+    "luck_chance",
+    "hearts_at_most",
+    "hearts_at_least",
+    "room_kind",
+    "while_flying"
+  ],
+  "condition_params": {
+    "chance": ["chance"],
+    "luck_chance": ["chance", "luck_scale"],
+    "hearts_at_most": ["amount"],
+    "hearts_at_least": ["amount"],
+    "room_kind": ["room"],
+    "once_per_room": [],
+    "once_per_floor": [],
+    "once_per_run": [],
+    "once_per_target": [],
+    "while_flying": []
+  },
+  "room_kinds": [
+    "boss",
+    "secret",
+    "super_secret",
+    "shop",
+    "devil",
+    "angel",
+    "planetarium",
+    "library",
+    "curse"
   ],
   "rule_lifecycle": {
     "cooldown_bounds": [
@@ -47,18 +83,35 @@
     "coin": {
       "penny": 1,
       "nickel": 2,
-      "dime": 3
+      "dime": 3,
+      "sticky": 5,
+      "lucky": 6,
+      "golden": 7
     },
     "key": {
-      "normal": 1
+      "normal": 1,
+      "golden": 2,
+      "charged": 4
     },
     "bomb": {
-      "normal": 1
+      "normal": 1,
+      "double": 2,
+      "troll": 3,
+      "golden": 4,
+      "mega": 7
     },
     "heart": {
       "full": 1,
       "half": 2,
-      "soul": 3
+      "soul": 3,
+      "eternal": 4,
+      "double": 5,
+      "black": 6,
+      "gold": 7,
+      "half_soul": 8,
+      "blended": 10,
+      "bone": 11,
+      "rotten": 12
     }
   },
   "actions": [
@@ -70,12 +123,17 @@
     "grant_black_hearts",
     "grant_eternal_hearts",
     "grant_bone_hearts",
+    "grant_gold_hearts",
+    "grant_rotten_hearts",
+    "grant_heart_containers",
     "grant_stat",
     "damage_burst",
     "apply_status",
     "retaliate",
     "convert_resource",
-    "activate_aura"
+    "activate_aura",
+    "spawn_creep",
+    "refill_charge"
   ],
   "resources": {
     "coin": {
@@ -103,7 +161,9 @@
   "combat_effects": {
     "damage_burst": {
       "triggers": [
-        "on_kill"
+        "on_kill",
+        "player_hurt",
+        "collision"
       ],
       "amount_bounds": [
         1,
@@ -118,12 +178,19 @@
     },
     "apply_status": {
       "triggers": [
-        "tear_impact"
+        "tear_impact",
+        "collision",
+        "on_kill",
+        "enemy_hit"
       ],
       "statuses": [
         "slow",
         "burn",
-        "fear"
+        "fear",
+        "poison",
+        "charm",
+        "confusion",
+        "freeze"
       ],
       "amount_bounds": [
         1,
@@ -147,6 +214,7 @@
       "target_modes": ["attacker", "nearby"],
       "default_target_mode": "attacker",
       "nearby_trigger": "player_hurt",
+      "nearby_triggers": ["player_hurt", "collision"],
       "radius_bounds": [40, 120],
       "max_targets": 8,
       "minimum_cooldown": 30
@@ -197,6 +265,24 @@
         4
       ],
       "label": "bone heart"
+    },
+    "grant_gold_hearts": {
+      "handler": "AddGoldenHearts",
+      "units": 1,
+      "amount_bounds": [1, 4],
+      "label": "gold heart"
+    },
+    "grant_rotten_hearts": {
+      "handler": "AddRottenHearts",
+      "units": 1,
+      "amount_bounds": [1, 4],
+      "label": "rotten heart"
+    },
+    "grant_heart_containers": {
+      "handler": "AddMaxHearts",
+      "units": 2,
+      "amount_bounds": [1, 4],
+      "label": "heart container"
     }
   },
   "regions": [
@@ -224,13 +310,16 @@
   "tear_update_behaviors": [
     "home",
     "pulse",
-    "shrink"
+    "shrink",
+    "spiral",
+    "accelerate"
   ],
   "familiars": [
     "sentry",
     "melee",
     "normal",
-    "shield"
+    "shield",
+    "orbit_contact"
   ],
   "familiar_patterns": [
     "single",
@@ -241,21 +330,44 @@
   "friendlies": [
     "attack_fly",
     "spider",
-    "pooter"
+    "pooter",
+    "dip",
+    "minisaac"
   ],
+  "friendly_spawn": {
+    "attack_fly": { "kind": "npc", "type": 18 },
+    "spider": { "kind": "npc", "type": 85 },
+    "pooter": { "kind": "npc", "type": 14 },
+    "dip": { "kind": "npc", "type": 217 },
+    "minisaac": { "kind": "familiar", "type": 3, "variant": 228 }
+  },
   "auras": [
     "damage",
     "slow",
     "burn",
-    "fear"
+    "fear",
+    "charm",
+    "poison",
+    "confusion"
   ],
   "room_stat_reward": {
     "handler": "MC_EVALUATE_CACHE",
     "stats": [
       "damage",
       "tears",
-      "luck"
+      "luck",
+      "speed",
+      "range",
+      "shot_speed"
     ],
+    "step_scale": {
+      "damage": 1,
+      "tears": 1,
+      "luck": 1,
+      "range": 1,
+      "speed": 0.1,
+      "shot_speed": 0.1
+    },
     "amount_bounds": [
       1,
       4
@@ -315,18 +427,54 @@
         15,
         90
       ]
+    },
+    "poison": {
+      "handler": "AddPoison",
+      "duration_bounds": [15, 120],
+      "damage_bounds": [0.25, 2],
+      "radius_bounds": [50, 180],
+      "cooldown_bounds": [15, 90]
+    },
+    "charm": {
+      "handler": "AddCharmed",
+      "duration_bounds": [15, 120],
+      "radius_bounds": [50, 180],
+      "cooldown_bounds": [15, 90]
+    },
+    "confusion": {
+      "handler": "AddConfusion",
+      "duration_bounds": [15, 120],
+      "radius_bounds": [50, 180],
+      "cooldown_bounds": [15, 90]
     }
   },
+  "bomb_flag_limit": 2,
   "bomb_flags": [
-    "poison"
+    "poison",
+    "burn",
+    "fear"
   ],
   "bomb_flag_effects": {
     "poison": {
       "handler": "AddTearFlags",
       "flag": "TEAR_POISON",
       "max_flags": 1
+    },
+    "burn": {
+      "handler": "AddTearFlags",
+      "flag": "TEAR_BURN",
+      "max_flags": 1
+    },
+    "fear": {
+      "handler": "AddTearFlags",
+      "flag": "TEAR_FEAR",
+      "max_flags": 1
     }
   },
+  "creeps": ["red", "green", "black", "yellow"],
+  "creep_variants": { "red": 22, "green": 23, "yellow": 24, "black": 26 },
+  "creep_bounds": { "radius": [20, 80], "duration": [15, 180], "max_live": 4 },
+  "refill_charge": { "amount_bounds": [1, 6] },
   "pickup_types": [
     "coin",
     "key",
@@ -441,7 +589,21 @@
       "normal": 2,
       "full": 2,
       "half": 2,
-      "soul": 8
+      "soul": 8,
+      "sticky": 1,
+      "lucky": 4,
+      "golden": 6,
+      "charged": 4,
+      "double": 3,
+      "troll": 1,
+      "mega": 6,
+      "eternal": 5,
+      "black": 4,
+      "gold": 3,
+      "half_soul": 4,
+      "blended": 4,
+      "bone": 4,
+      "rotten": 2
     },
     "heart_rewards": {
       "grant_half_red_hearts": 2,
@@ -449,12 +611,17 @@
       "grant_soul_hearts": 8,
       "grant_black_hearts": 4,
       "grant_bone_hearts": 4,
-      "grant_eternal_hearts": 5
+      "grant_eternal_hearts": 5,
+      "grant_gold_hearts": 3,
+      "grant_rotten_hearts": 2,
+      "grant_heart_containers": 8
     },
     "friendlies": {
       "attack_fly": 2,
       "spider": 2,
-      "pooter": 3
+      "pooter": 3,
+      "dip": 1,
+      "minisaac": 4
     },
     "stats": {
       "damage": {
@@ -510,8 +677,18 @@
       }
     },
     "grant_stat": 1,
+    "grant_stat_scale": {
+      "damage": 1,
+      "tears": 1,
+      "luck": 1,
+      "range": 1,
+      "speed": 4,
+      "shot_speed": 3
+    },
     "convert_resource": 2,
     "activate_aura": 2,
+    "spawn_creep": 3,
+    "refill_charge": 2,
     "retaliate_nearby": 6,
     "combat": {
       "damage_burst": 6,

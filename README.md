@@ -10,14 +10,15 @@ renderer notes remain in [native/README.md](native/README.md).
 
 ## Current scope
 
-This project generates **passive collectibles and bounded active collectibles** for *The Binding of Isaac:
+This project generates **passive collectibles** for *The Binding of Isaac:
 Repentance+* during a run. A player describes an item, and the local bridge
 uses Nebius Token Factory to produce a validated item profile and its visual
 assets. The mod assigns the accepted result to a pre-allocated item slot,
 without requiring a game restart.
 
-The implementation also includes the blank **AI Item**, **The Creator** character,
-and an eight-shell active bank. These additions have automated coverage but still
+The implementation also includes the blank **AI Item** and **The Creator** character.
+Active collectibles are implemented and covered by tests, but generation is vaulted:
+the creator and bridge accept passives only. These additions still
 require the live-game acceptance checks in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 A generated result is declarative data, never model-produced Lua, and is applied
 only by fixed Lua handlers.
@@ -52,9 +53,9 @@ only by fixed Lua handlers.
    drawn in the game view and keeps its prompt, Randomize, Generate, Close,
    and status controls visible together. The game HUD is hidden while it is
    open. Use Down to select the button row, Left/Right to choose a button, and
-   Enter to activate it; Up returns focus to the prompt. Type with the keyboard, use Backspace
-   to edit, Confirm/Enter on the prompt for the on-screen keyboard, Escape to close, and click the buttons with
-   the mouse. The prompt
+   Enter to activate it; Up returns focus to the prompt.    Type with the keyboard, use Backspace
+   to edit, Ctrl+C / Ctrl+V to copy or paste, Escape to close, and click the buttons with
+   the mouse. Space inserts a space. Enter in the prompt inserts a new line. The prompt
    writes a fixed JSON request to Isaac's log; the bridge delivers the validated result back
    through native IPC and spawns one of 64 independent generated collectibles.
 
@@ -173,13 +174,26 @@ The fixed rule handlers support these triggers:
 - `pickup`
 - `new_floor`
 - `tear_fire`
+- `bomb_explode`
+- `active_use`
+- `pill_use`
+- `card_use`
+- `boss_kill`
+- `player_death`
 
 The catalog also includes `on_kill`, `tear_impact`, and `collision` procs;
 familiars and auras; and bounded `tear_update`, bomb, laser, and knife systems.
 Those systems have handlers, but their effects are limited to the parameters
 in `content-contract/capabilities.json`. Distinct combat actions include a bounded
-on-kill damage burst, tear-impact slow/burn/fear, contact retaliation, and
-confirmed-player-hurt retaliation. Legacy reward actions remain supported.
+damage burst on kill, hurt, or contact; slow, burn, fear, poison, charm,
+confusion, and freeze on the catalog's status triggers; contact retaliation;
+and confirmed-player-hurt retaliation, including nearby retaliation on hurt
+and contact. Temporary stat grants cover damage, tears, luck, speed, range,
+and shot speed. Legacy reward actions remain supported, along with extra
+pickup subtypes, gold, rotten, and container hearts, dip and Minisaac
+friendlies, creep, charge refill, charm/poison/confusion auras, bomb burn and
+fear, spiral and accelerate tears, and an orbiting contact familiar. Costumes,
+weapon replacement, and model-written Lua stay out of the catalog.
 Rules and procs support bounded frame cooldowns; room-stat grants can declare
 durations and stack limits, pickup actions can select approved subtypes, and
 resource conversion atomically spends input before granting output. The model may
@@ -218,8 +232,9 @@ phrase the model is allowed to invent.
 - **Nebius Token Factory:** structured item-profile generation.
 - **ComfyUI:** local source-art generation from the item visual prompt.
 
-The live mod pre-registers 64 passive shells, the blank AI Item, and eight active
-shells. A run can accept 64 generated profiles total, at most eight of them active.
+The live mod pre-registers 64 passive shells, the blank AI Item, and eight unused
+active shells. A run can accept 64 generated passive profiles. Active generation
+is vaulted.
 The existing passive IDs stay unchanged. It does not create item definitions at runtime, and it
 does not execute generated code.
 
@@ -237,7 +252,7 @@ does not execute generated code.
   requests fail without blind replay. Saved Lua receipts prevent duplicate delivery.
 - New runs clear their gameplay state, not artwork protected by other continuable
   saves or the current process. Saved-state version 3 explicitly reads version 2;
-  the profile format remains version 1 and the runtime compatibility contract is 11.
+  the profile format remains version 1 and the runtime compatibility contract is 12.
 
 ## How an item is built
 
@@ -309,11 +324,12 @@ It does not live in an untracked global that survives a room change.
 A system ships in four places: a catalog id, schema and numeric bounds, one
 fixed handler, and tests. An unknown system is rejected.
 
-## Creator and active-item controls
+## Creator controls
 
-- Press `8` (or keypad `8`) to open the creator. A controller can use Map + Drop,
-  menu directions, Confirm, and Back; Confirm on the prompt opens the on-screen
-  keyboard. Tab / Map toggles passive versus active generation.
+- Press `8` (or keypad `8`) to open the creator. Type in the prompt like a normal
+  text field, including Ctrl+C / Ctrl+V. A controller can use Map + Drop, menu
+  directions, Confirm, and Back; on-screen keyboard entry is deferred for
+  controller support. Generation is passive only.
 - Use the console command `nebius hotkey KEY_F6` to save a different keyboard
   hotkey. `nebius replace on` / `nebius replace off` saves the optional Creator
   replacement setting outside run state.
@@ -324,12 +340,9 @@ fixed handler, and tests. An unknown system is rejected.
 - Replacement only applies while The Creator is present and the setting is on.
   Eligible passive/familiar pedestals preserve shop/choice data; actives, quest
   items, generated shells, and unsupported special pedestals are excluded.
-- Active generation currently supports only a self-centered radial burst: six
-  charges, at most eight enemies, bounded damage and radius. Refused or failed
-  uses spend no charge. Car Battery duplicate activation and recursive use are
-  refused; repeated same-frame uses are suppressed per player/item/slot. Other
-  targeting modes are not exposed. Engine interactions, alternate slots, and
-  charge-restoring items remain subject to live acceptance.
+- Active generation is vaulted. Tab no longer switches item type, and the bridge
+  refuses an active request before it calls the model. The radial-burst handler
+  remains in the mod for profiles already accepted.
 
 ## Implementation and release status
 
@@ -345,6 +358,13 @@ summaries derive from validated mechanics rather than trusting model-written
 flavor. Presentation choices are limited to approved sounds and animations with
 fallbacks. Local inspiration stays opt-in until latency and variety have been
 measured with an installed model.
+
+Before validation, known prompt phrases repair contact damage, hurt-nearby
+retaliation, extra Mom's Knife damage, and explicit room-clear resource trades.
+The active-shell repair remains for the vaulted code path. The creator does not
+request it.
+Unknown fields and catalog IDs are still rejected before these repairs. These
+repairs affect newly generated items, not profiles already held in a run.
 
 For game acceptance, deliberately sync with `npm run mod:sync`, prepare artwork
 with `npm run art:prepare`, and fully restart Isaac and the bridge. Check co-op
