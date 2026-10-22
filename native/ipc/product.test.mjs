@@ -2,7 +2,8 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { LuaFactory } from 'wasmoon';
 import { toLua } from '../../bridge/runtime.mjs';
-import { fitWeightBudget, profileWeight, raiseQualityToFit } from '../../bridge/weights.mjs';
+import { profileWeight } from '../../bridge/weights.mjs';
+import { ITEM_SCHEMA, repairGeneratedProfile as repairDesign, validateProfile as validateDesign } from '../../bridge/generate.mjs';
 
 const mainSource = await readFile(new URL('../../demo/live-sprite-swap/main.lua', import.meta.url), 'utf8');
 const promptSource = await readFile(new URL('../../demo/live-sprite-swap/nebius_prompt.lua', import.meta.url), 'utf8');
@@ -44,7 +45,7 @@ FamiliarVariant = { PUNCHING_BAG=67 }
 TearVariant = { BLUE=0 }
 EntityPartition = { ENEMY=1 }
 function EntityRef() return {} end
-function RegisterMod() return { AddCallback = function() end,
+function RegisterMod() return { AddCallback = function(self,name,callback) if name=='MC_POST_SAVESLOT_LOAD' then callback(self,1,true,1) end end,
  SaveData=function(_,value) savedData=value end, HasData=function() return savedData~=nil end,
  LoadData=function() return savedData end } end
 spritesheetReplacements, pedestalLayerVisible = 0, true
@@ -61,7 +62,7 @@ function Game() return { GetFrameCount=function() return frame end, GetNumPlayer
  GetHUD=function() return hud end,
  GetRoom=function() return { FindFreePickupSpawnPosition=function(_, position) return position end } end,
  GetLevel=function() return { GetCurrentRoomIndex=function() return roomIndex end, GetAbsoluteStage=function() return stage end } end } end
-Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) return 733+tonumber(name:match("(%d+)$")) end,
+Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) if name=="AI Item" then return 797 end; if name:match("^Generated Active") then return 798+tonumber(name:match("(%d+)$")) end; return 733+tonumber(name:match("(%d+)$")) end,
  GetSoundIdByName=function() return 1 end, GetTime=function() return now+frame*34 end, GetPlayer=function() return player end,
  FindByType=function(entityType)
   if entityType==EntityType.ENTITY_PROJECTILE then return projectiles end
@@ -369,7 +370,7 @@ test('familiar profiles are accepted and advertise the loaded runtime contract',
     nextRaw='profile'; Demo:onPostUpdate()
     assert(events[1]=='spawn:100' and events[2]=='ack:123_0_1_123_1')
     local state=encodedValues[#encodedValues]
-    assert(state.runtime_contract==8 and state.count==1)
+    assert(state.runtime_contract==11 and state.count==1)
   `, fixture);
 });
 
@@ -435,7 +436,7 @@ test('a 64-byte name is accepted and weapon callbacks apply once', async () => {
     enemies={{Position=Vector(10,0)}}
     Demo:onPostFireTear(tear)
     Demo:onPostTearUpdate(tear)
-    assert(data.generatedTearUpdate.behavior=='home' and tear.Velocity.X>1)
+    assert(data.generatedTearSources[1].behavior=='home' and tear.Velocity.X>1)
     local bomb={ExplosionDamage=10, Radius=1, SpawnerEntity={ToPlayer=function() return player end}}
     Demo:onPostFireBomb(bomb); assert(bomb.ExplosionDamage==12 and bomb.Radius==80)
     local weaponData={}
@@ -591,7 +592,6 @@ test('bad saved state and failed persistence block generation and never ACK', as
   `);
 });
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
 import { validateSchema } from '../../bridge/runtime.mjs';
 
 const heartCases = [
@@ -602,9 +602,7 @@ const heartCases = [
   ['grant_bone_hearts', 'AddBoneHearts', 1],
 ];
 const catalog = JSON.parse(await readFile(new URL('../../content-contract/capabilities.json', import.meta.url)));
-const generator = await readFile(new URL('../../bridge/generate.mjs', import.meta.url), 'utf8');
-const actionSchemaSource = generator.slice(generator.indexOf('const heartRewardGuidance ='), generator.indexOf('const procSchema ='));
-const rewardSchema = vm.runInNewContext(actionSchemaSource + '\nactionSchema', { capabilities: catalog });
+const rewardSchema = ITEM_SCHEMA.properties.rules.items.properties.actions.items;
 
 for (const [type, method, units] of heartCases) {
   test(`${type}: catalog and generator accept bounds, reject invalid amounts and invented fields`, () => {
@@ -673,10 +671,7 @@ for (const [type, method, units] of heartCases) {
   });
 }
 
-const itemSchema = vm.runInNewContext(
-  generator.slice(generator.indexOf('const HIT_TRIGGERS ='), generator.indexOf('const fixture =')) + '\nITEM_SCHEMA',
-  { capabilities: catalog },
-);
+const itemSchema = ITEM_SCHEMA;
 const tearSchema = itemSchema.properties.tear_profile;
 
 test('explosive tear schema accepts up to three catalog flags and rejects a fourth, unknown names, and blast parameters', () => {
@@ -696,7 +691,7 @@ test('explosive tears receive the named bit, preserve existing bits, and stop ap
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
-      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==8)
+      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==11)
       local function shot(native)
         local data={}
         local tear={SpawnerEntity=player,TearFlags=2,Scale=1,GetData=function() return data end}
@@ -753,7 +748,7 @@ test('confusion tears receive the named bit, preserve existing bits, and stop ap
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
-      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==8)
+      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==11)
       local function shot(native)
         local data={}
         local tear={SpawnerEntity=player,TearFlags=2,Scale=1,GetData=function() return data end}
@@ -810,7 +805,7 @@ test('knockback tears receive the named bit, preserve existing bits, and stop ap
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
-      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==8)
+      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==11)
       local function shot(native)
         local data={}
         local tear={SpawnerEntity=player,TearFlags=2,Scale=1,GetData=function() return data end}
@@ -866,12 +861,6 @@ test('explosive, confusion, and knockback compose as three flags; a fourth is re
   await run(`nextRaw='profile'; Demo:onPostUpdate(); assert(#entities==0 and #events==0)`,fixture);
 });
 
-import { applyRegion, applySystems, repairProfile } from '../../bridge/prompt-features.mjs';
-const validateDesign = vm.runInNewContext(
-  generator.slice(generator.indexOf('const HIT_TRIGGERS ='), generator.indexOf('const fixture =')) + '\n' +
-  generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt, quality)')) + '\nvalidateProfile',
-  { capabilities:catalog, validateSchema, applyRegion, applySystems, repairProfile, Buffer, profileWeight },
-);
 function designFor(fixture) {
   const design=structuredClone(fixture);
   for (const key of ['version','generated_at','bridge_request_id','sprite_sheet','familiar_sprite_sheet','familiar_animation','familiar_animation_sheet']) delete design[key];
@@ -908,6 +897,127 @@ const cacheHarness=`
     Demo:onEvaluateCache(self,CacheFlag.CACHE_LUCK)
   end
 `;
+test('kill bursts credit the damage owner, cap targets, and cannot chain themselves', async () => {
+  const fixture=structuredClone(profile);
+  fixture.systems=['on_kill']; fixture.affects_stats=false; delete fixture.stats; delete fixture.tear_profile; fixture.rules=[];
+  fixture.on_kill={conditions:[],cooldown:30,actions:[{type:'damage_burst',amount:2,radius:60}]};
+  validateDesign(designFor(fixture));
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    function EntityRef(owner) return {Entity=owner} end
+    local function enemy(seed)
+      local data={}
+      local enemy={InitSeed=seed,Position=Vector(0,0),damage=0,ToPlayer=function() return nil end,ToNPC=function(self) return self end,GetData=function() return data end}
+      function enemy:TakeDamage(amount,flags,source)
+        self.damage=self.damage+amount
+        Demo:onEntityTakeDamage(self,amount,flags,source)
+        Demo:onPostEntityKill(self)
+      end
+      return enemy
+    end
+    local victim=enemy(1)
+    enemies={}
+    for index=1,10 do enemies[index]=enemy(index+1) end
+    Demo:onEntityTakeDamage(victim,1,0,{Entity={SpawnerEntity=player}})
+    Demo:onPostEntityKill(victim)
+    for index=1,8 do assert(enemies[index].damage==2) end
+    assert(enemies[9].damage==0 and enemies[10].damage==0)
+    frame=31; Demo:onPostEntityKill(victim); assert(enemies[1].damage==2)
+    local uncredited=enemy(99); Demo:onPostEntityKill(uncredited); assert(enemies[1].damage==2)
+  `,fixture);
+});
+
+test('status impacts are per item and tear; contact retaliation repeats only after cooldown', async () => {
+  const fixture=structuredClone(profile);
+  fixture.systems=['tear_impact','collision']; fixture.affects_stats=false; delete fixture.stats; delete fixture.tear_profile; fixture.rules=[];
+  fixture.tear_impact={conditions:[],cooldown:30,actions:[{type:'apply_status',status:'burn',duration:60,amount:1}]};
+  fixture.collision={conditions:[],cooldown:30,actions:[{type:'retaliate',amount:2}]};
+  validateDesign(designFor(fixture));
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    local enemy={InitSeed=1,Position=Vector(0,0),hits=0,damage=0,ToNPC=function(self) return self end}
+    function enemy:AddBurn(source,duration,amount) self.hits=self.hits+1; self.duration=duration; self.burn=amount end
+    function enemy:TakeDamage(amount) self.damage=self.damage+amount end
+    local data={}; local tear={SpawnerEntity=player,GetData=function() return data end}
+    Demo:onPreTearCollision(tear,enemy); Demo:onPreTearCollision(tear,enemy)
+    assert(enemy.hits==1 and enemy.duration==60 and enemy.burn==1)
+    Demo:onPrePlayerCollision(player,enemy); Demo:onPrePlayerCollision(player,enemy); assert(enemy.damage==2)
+    frame=30; Demo:onPrePlayerCollision(player,enemy); assert(enemy.damage==4)
+    Demo:onPreTearCollision(tear,enemy); assert(enemy.hits==1)
+    local secondData={}; Demo:onPreTearCollision({SpawnerEntity=player,GetData=function() return secondData end},enemy)
+    assert(enemy.hits==2)
+  `,fixture);
+});
+
+test('combat effects reject missing cooldowns, wrong triggers, and invented parameters', async () => {
+  for (const change of [proc=>delete proc.cooldown,proc=>proc.cooldown=15,proc=>proc.actions[0].radius=121,proc=>proc.actions[0].status='burn',proc=>proc.actions[0].amount=4]) {
+    const fixture=structuredClone(profile);
+    fixture.systems=['on_kill']; fixture.affects_stats=false; delete fixture.stats; delete fixture.tear_profile; fixture.rules=[];
+    fixture.on_kill={conditions:[],cooldown:30,actions:[{type:'damage_burst',amount:1,radius:60}]};
+    change(fixture.on_kill); await rejectedByBoth(fixture);
+  }
+  const fixture=structuredClone(profile);
+  fixture.rules=[{trigger:'room_clear',conditions:[],cooldown:30,actions:[{type:'retaliate',amount:1}]}];
+  await rejectedByBoth(fixture);
+});
+
+test('timed stat stacks expire, persist remaining time, and clear on source removal', async () => {
+  const fixture=structuredClone(profile);
+  fixture.systems=['rules']; fixture.affects_stats=false; delete fixture.stats; delete fixture.tear_profile;
+  fixture.rules=[{trigger:'room_clear',conditions:[],cooldown:15,actions:[{type:'grant_stat',stat:'damage',amount:1,duration:60,stack_limit:2}]}];
+  validateDesign(designFor(fixture));
+  await run(cacheHarness+`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    Demo:onPreSpawnCleanAward(); assert(player.Damage==4.5)
+    frame=14; Demo:onPreSpawnCleanAward(); assert(player.Damage==4.5)
+    frame=15; Demo:onPreSpawnCleanAward(); assert(player.Damage==5.5)
+    frame=30; Demo:onPreSpawnCleanAward(); assert(player.Damage==5.5)
+    frame=40; Demo:onPreGameExit(true)
+    frame=0; Demo=assert(load(mainSource.."\\nreturn Demo"))(); Demo:onGameStarted(true)
+    assert(player.Damage==5.5)
+    frame=49; Demo:onPostUpdate(); assert(player.Damage==5.5)
+    frame=50; Demo:onPostUpdate(); assert(player.Damage==3.5)
+    Demo:onPreSpawnCleanAward(); assert(player.Damage==4.5)
+    owns=false; Demo:onPostUpdate(); assert(player.Damage==3.5)
+    owns=true; player:EvaluateItems(); assert(player.Damage==3.5)
+  `,fixture);
+});
+
+test('a failed chance does not consume cooldown and cooldowns survive continue', async () => {
+  const fixture=structuredClone(profile);
+  fixture.systems=['rules']; fixture.affects_stats=false; delete fixture.stats; delete fixture.tear_profile;
+  fixture.rules=[{trigger:'room_clear',conditions:[{type:'chance',chance:0.5}],cooldown:60,actions:[{type:'grant_soul_hearts',amount:1}]}];
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    math.random=function() return 0.9 end
+    Demo:onPreSpawnCleanAward(); assert(player.hearts==0)
+    math.random=function() return 0.1 end
+    Demo:onPreSpawnCleanAward(); assert(player.hearts==1)
+    frame=20; Demo:onPreGameExit(true)
+    frame=0; Demo=assert(load(mainSource.."\\nreturn Demo"))(); Demo:onGameStarted(true)
+    frame=39; Demo:onPreSpawnCleanAward(); assert(player.hearts==1)
+    frame=40; Demo:onPreSpawnCleanAward(); assert(player.hearts==2)
+  `,fixture);
+});
+
+test('lifecycle bounds and pickup subtype families agree in both validators', async () => {
+  for (const fields of [{cooldown:0},{cooldown:1801},{cooldown:1.5}]) {
+    const fixture=structuredClone(profile); Object.assign(fixture.rules[0],fields); await rejectedByBoth(fixture);
+  }
+  for (const fields of [{duration:14},{duration:1801},{stack_limit:0},{stack_limit:5},{duration:20,stack_limit:1.5}]) {
+    const fixture=structuredClone(profile); fixture.rules[0].actions=[{type:'grant_stat',stat:'luck',amount:1,...fields}]; await rejectedByBoth(fixture);
+  }
+  const invalid=structuredClone(profile);
+  invalid.rules[0].actions=[{type:'spawn_pickup',pickup_type:'coin',pickup_subtype:'soul',amount:1}]; await rejectedByBoth(invalid);
+  const fixture=structuredClone(profile);
+  fixture.rules[0].actions=[{type:'spawn_pickup',pickup_type:'coin',pickup_subtype:'nickel',amount:1}];
+  validateDesign(designFor(fixture));
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    Demo:onPreSpawnCleanAward(); assert(entities[2].SubType==2)
+  `,fixture);
+});
+
 for (const [stat,field,base,sign] of [['damage','Damage',4,1],['tears','MaxFireDelay',10,-1],['luck','Luck',0,1]]) {
   test(`grant_stat ${stat}: bounded cache bonus does not stack, reloads, and expires next room`,async()=>{
     for (const amount of [1,4]) {
@@ -1071,10 +1181,6 @@ for(const [flag,constant] of Object.entries(allTearFlags)) test(`flag audit: ${f
   `,fixture);
 });
 
-const repairDesign = vm.runInNewContext(
-  generator.slice(generator.indexOf('function repairGeneratedProfile(profile, playerPrompt, quality)'),generator.indexOf('function validateProfile(profile)')) + '\nrepairGeneratedProfile',
-  { repairProfile, applyRegion, applySystems, raiseQualityToFit, fitWeightBudget, capabilities: catalog },
-);
 test('room-only stat wording does not acquire an unintended permanent stat during repair',()=>{
   for(const prompt of ['When I get hit, add damage for this room.','When I get hit, add luck until the next room.','When I get hit, add damage for the rest of this room.']) {
     const f={systems:['on_hit'],affects_stats:false,rules:[{trigger:'player_hurt',conditions:[],actions:[{type:'grant_stat',stat:'damage',amount:1}]}]};
@@ -1181,25 +1287,32 @@ test('creator mouse click returns focus to the prompt and buttons remain clickab
 test('creator sends the selected quality with its item request', async () => {
   await run(`
     held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
-    mousePosition=Vector(580,240); mouseDown=true; Demo:onPostRender(); assert(uiPrompt.quality==1)
+    mousePosition=Vector(580,240); mouseDown=true; Demo:onPostRender(); assert(uiPrompt.quality==0)
     mouseDown=false; Demo:onPostRender()
     uiCallbacks.input('a small candle'); mousePosition=Vector(350,380); mouseDown=true; Demo:onPostRender()
-    assert(lastRequest.quality==1 and lastRequest.prompt=='a small candle')
+    assert(lastRequest.quality==0 and lastRequest.prompt=='a small candle')
   `);
 });
 
 test('creator reaches the quality selector from prompt and every main button', async () => {
   await run(`
     held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false; now=200
-    keyDown[Keyboard.KEY_RIGHT]=true; Demo:onPostRender(); assert(uiPrompt.focus==7)
+    keyDown[Keyboard.KEY_RIGHT]=true; Demo:onPostRender(); assert(uiPrompt.focus==8)
     keyDown[Keyboard.KEY_RIGHT]=false; Demo:onPostRender()
     for focus=2,4 do
-      uiPrompt.focus=focus; keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==7)
+      uiPrompt.focus=focus; keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==8)
       keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
     end
-    keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==8)
+    keyDown[Keyboard.KEY_DOWN]=true; Demo:onPostRender(); assert(uiPrompt.focus==9)
     keyDown[Keyboard.KEY_DOWN]=false; Demo:onPostRender()
     keyDown[Keyboard.KEY_ENTER]=true; Demo:onPostRender(); assert(uiPrompt.quality==4)
+    keyDown[Keyboard.KEY_ENTER]=false; Demo:onPostRender()
+    for _=1,4 do
+      keyDown[Keyboard.KEY_UP]=true; Demo:onPostRender()
+      keyDown[Keyboard.KEY_UP]=false; Demo:onPostRender()
+    end
+    assert(uiPrompt.focus==5)
+    keyDown[Keyboard.KEY_ENTER]=true; Demo:onPostRender(); assert(uiPrompt.quality==0)
   `);
 });
 
@@ -1297,4 +1410,314 @@ test('new pickups spawn their variants and one friendly stays alive', async () =
   `, fixture);
   fixture.rules[0].actions[1].amount = 2;
   await rejectedByBoth(fixture);
+});
+
+function rulesFixture(actions, extra = {}) {
+  return { version: 1, generated_at: profile.generated_at, bridge_request_id: profile.bridge_request_id,
+    sprite_sheet: profile.sprite_sheet, metadata: { ...profile.metadata, quality: 4 },
+    visuals: profile.visuals, affects_stats: false, systems: ['rules'],
+    rules: [{ trigger: 'room_clear', cooldown: 30, conditions: [], actions }], ...extra };
+}
+
+test('resource exchange spends only available input and rolls back capped output', async () => {
+  const fixture = rulesFixture([{ type: 'convert_resource', input_resource: 'coin', output_resource: 'key', cost: 2, amount: 1 }]);
+  validateDesign(designFor(fixture));
+  await run(`
+    local coins,keys=1,0
+    player.GetNumCoins=function() return coins end; player.GetNumKeys=function() return keys end
+    player.AddCoins=function(_,n) coins=coins+n end; player.AddKeys=function(_,n) keys=math.min(99,keys+n) end
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    Demo:onPreSpawnCleanAward(); assert(coins==1 and keys==0)
+    coins=2; Demo:onPreSpawnCleanAward(); assert(coins==0 and keys==1)
+    coins=2; Demo:onPreSpawnCleanAward(); assert(coins==2 and keys==1)
+    frame=30; keys=99; Demo:onPreSpawnCleanAward(); assert(coins==2 and keys==99)
+  `, fixture);
+});
+
+test('triggered aura expires, continues with remaining time, and clears on source loss', async () => {
+  const fixture = rulesFixture([{ type: 'activate_aura', amount: 1, duration: 60 }], {
+    systems: ['rules', 'aura'], aura: { type: 'damage', damage: 0.5, radius: 80, cooldown: 15, triggered: true },
+  });
+  validateDesign(designFor(fixture));
+  await run(`
+    local hits=0
+    enemies={{Position=Vector(0,0),TakeDamage=function() hits=hits+1 end,IsVulnerableEnemy=function() return true end,IsDead=function() return false end}}
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    Demo:updatePassiveEffects(); assert(hits==0)
+    Demo:onPreSpawnCleanAward(); Demo:updatePassiveEffects(); assert(hits==1)
+    frame=15; Demo:onPreGameExit(true); frame=100; Demo:onGameStarted(true)
+    frame=120; Demo:updatePassiveEffects(); assert(hits==2)
+    owns=false; Demo:updatePassiveEffects(); owns=true; frame=135; Demo:updatePassiveEffects(); assert(hits==2)
+    Demo:onPreSpawnCleanAward(); frame=195; Demo:updatePassiveEffects(); assert(hits==2)
+  `, fixture);
+});
+
+test('friendly children are removed when their owner loses the source', async () => {
+  const fixture = rulesFixture([{ type: 'spawn_friendly', friendly_type: 'spider', amount: 1 }]);
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true; Demo:onPreSpawnCleanAward()
+    assert(#friendlies==1 and friendlies[1]:Exists())
+    owns=false; frame=1; Demo:onPostUpdate(); assert(not friendlies[1]:Exists())
+  `, fixture);
+});
+
+const blankInventory = `
+  local blanks,generated,activeInventory=1,0,0
+  player.GetCollectibleNum=function(_,id) if id==797 then return blanks end; return generated end
+  player.HasCollectible=function(_,id) if id==797 then return blanks>0 end; return generated>0 end
+  player.RemoveCollectible=function(_,id) if id==797 then blanks=blanks-1 else generated=generated-1; if id>=798 then activeInventory=0 end end end
+  player.AddCollectible=function(_,id) if id==797 then blanks=blanks+1 else generated=generated+1; if id>=798 then activeInventory=id end end end
+  Demo:onPostAddCollectible(797,nil,true,nil,nil,player)
+  Demo:onPostRender(); uiCallbacks.input('a glass eye'); uiCallbacks.submit()
+  assert(lastRequest.delivery.mode=='blank' and lastRequest.delivery.owner=='11' and blanks==1)
+`;
+
+test('blank request survives continue and exchanges exactly once before ACK', async () => {
+  await run(blankInventory + `
+    Demo:onPreGameExit(true); Demo:onGameStarted(true)
+    assert(uiPrompt.pending=='123_0_1_123_1' and uiPrompt.text=='a glass eye')
+    envelope.delivery={mode='blank',owner='11'}; nextRaw='profile'; frame=1; Demo:onPostUpdate()
+    assert(blanks==0 and generated==1 and events[1]=='ack:123_0_1_123_1')
+    nextRaw='profile'; frame=2; Demo:onPostUpdate(); assert(blanks==0 and generated==1)
+    Demo:onPreGameExit(true); Demo:onGameStarted(true); assert(uiPrompt.pending==nil)
+  `);
+});
+
+test('blank delivery rejects forged ownership and preserves entitlement on save failure', async () => {
+  await run(blankInventory + `
+    envelope.delivery={mode='blank',owner='22'}; nextRaw='profile'; frame=1; Demo:onPostUpdate()
+    assert(blanks==1 and generated==0 and #events==0)
+  `);
+  await run(blankInventory + `
+    Demo.SaveData=function() error('disk full') end
+    envelope.delivery={mode='blank',owner='11'}; nextRaw='profile'; frame=1; Demo:onPostUpdate()
+    assert(blanks==1 and generated==0 and #events==0)
+  `);
+});
+
+test('creator errors and close preserve a blank and allow a new request', async () => {
+  await run(blankInventory + `
+    uiCallbacks.close(); assert(blanks==1)
+    envelope={version=1,type='status',id=lastRequest.id,status='error',detail='Art service unavailable'}
+    frame=1; nextRaw='status'; Demo:onPostUpdate(); assert(blanks==1)
+    uiCallbacks.submit(); assert(lastRequest.id=='123_0_1_123_2' and blanks==1)
+  `);
+});
+
+const activeFixture = rulesFixture([], {systems:['active'],rules:[],active:{effect:'radial_burst',charges:6,targeting:'self',damage:4,radius:100}});
+
+test('active use bounds targets, refuses empty rooms and duplicate uses, and preserves alternate slots',async()=>{
+  validateDesign(designFor(activeFixture));
+  assert.equal(profileWeight(designFor(activeFixture),catalog),8);
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); assert(entities[1].SubType==798)
+    local activeSlot,charges=1,6
+    player.GetActiveItem=function(_,slot) return slot==activeSlot and 798 or 0 end
+    player.GetActiveCharge=function(_,slot) assert(slot==activeSlot); return charges end
+    owns=true; enemies={}
+    assert(Demo:onPreUseItem(798,nil,player,0,1).Discharge==false)
+    local hits=0
+    for i=1,12 do enemies[i]={Position=Vector(10,0),ToNPC=function(self) return self end,IsVulnerableEnemy=function() return true end,IsDead=function() return false end,TakeDamage=function(_,amount) assert(amount==4); hits=hits+1 end} end
+    assert(Demo:onPreUseItem(798,nil,player,0,1)==nil)
+    assert(Demo:onUseItem(798,nil,player,0,0).Discharge==false and hits==0)
+    local result=Demo:onUseItem(798,nil,player,0,1); assert(result.Discharge and result.ShowAnim and not result.Remove and hits==8)
+    assert(Demo:onUseItem(798,nil,player,0,1).Discharge==false and hits==8)
+    frame=1; charges=5; assert(Demo:onUseItem(798,nil,player,0,1).Discharge==false)
+    charges=6; UseFlag={USE_CARBATTERY=4}; assert(Demo:onUseItem(798,nil,player,4,1).Discharge==false)
+    Demo:onPreGameExit(true); frame=10; Demo:onGameStarted(true)
+    assert(Demo:onUseItem(798,nil,player,0,1).Discharge and hits==16)
+    assert(charges==6) -- The handler returns charge policy; the engine owns charge mutation.
+  `,activeFixture);
+});
+
+test('failed active damage spends no charge and invalid active profiles reject on both sides',async()=>{
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); owns=true
+    player.GetActiveItem=function() return 798 end; player.GetActiveCharge=function() return 6 end
+    enemies={{Position=Vector(0,0),ToNPC=function(self) return self end,TakeDamage=function() error('damage unavailable') end}}
+    assert(Demo:onUseItem(798,nil,player,0,0).Discharge==false)
+  `,activeFixture);
+  for(const field of [{charges:3},{damage:7},{radius:121},{effect:'arbitrary'},{targeting:'mouse'},{callback:'execute'}]) {
+    const fixture=structuredClone(activeFixture);Object.assign(fixture.active,field);await rejectedByBoth(fixture);
+  }
+  const fixture=structuredClone(activeFixture);fixture.systems.push('rules');fixture.rules=[{trigger:'room_clear',conditions:[],actions:[{type:'spawn_pickup',pickup_type:'coin',amount:1}]}];
+  await rejectedByBoth(fixture);
+});
+
+test('active shell bank never overwrites a passive and the ninth active is refused',async()=>{
+  await run(`
+    for slot=0,8 do
+      envelope=deepCopy(envelope)
+      envelope.id='123_0_1_active_'..slot;envelope.profile.bridge_request_id=envelope.id
+      envelope.profile.sprite_sheet=string.format('gfx/items/collectibles/generated_slot_%02d.png',slot)
+      frame=slot;nextRaw='profile';Demo:onPostUpdate()
+    end
+    assert(#entities==8)
+    for index,pickup in ipairs(entities) do assert(pickup.SubType==797+index) end
+    Demo:onPreGameExit(true);Demo:onGameStarted(true)
+    assert(uiPrompt.getContext().active_count==8 and uiPrompt.getContext().count==8)
+  `,activeFixture);
+});
+
+test('blank active keeps an occupied inventory and delivers into an empty slot',async()=>{
+  await run(blankInventory.replace("uiCallbacks.input('a glass eye')","uiPrompt.itemType='active';uiCallbacks.input('a glass eye')")+`
+    player.GetActiveItem=function() return activeInventory end
+    envelope.profile=${toLua(activeFixture)}; envelope.delivery={mode='blank',owner='11'}
+    frame=1;nextRaw='profile';Demo:onPostUpdate();assert(blanks==0 and generated==1)
+  `);
+  await run(blankInventory+`
+    player.GetActiveItem=function() return 42 end
+    envelope.profile=${toLua(activeFixture)}; envelope.delivery={mode='blank',owner='11'}
+    frame=1;nextRaw='profile';Demo:onPostUpdate();assert(blanks==1 and generated==0 and #events==0)
+  `);
+});
+
+test('Creator replacement preserves shop and choice data and excludes quest, active, and special pedestals',async()=>{
+  await run(`
+    Isaac.GetPlayerTypeByName=function() return 20 end;player.GetPlayerType=function() return 20 end
+    ItemType={ITEM_PASSIVE=1,ITEM_FAMILIAR=2,ITEM_ACTIVE=3};ItemConfig={TAG_QUEST=2}
+    local itemType,tags=1,0
+    Isaac.GetItemConfig=function() return {GetCollectible=function() return {Type=itemType,Tags=tags} end} end
+    Demo:onExecuteCmd('nebius','replace on')
+    local function pedestal(subtype,price)
+      local data={};local pickup={SubType=subtype,Variant=100,Price=price,ShopItemId=4,OptionsPickupIndex=7,AutoUpdatePrice=false,Wait=10,GetData=function() return data end}
+      function pickup:Morph(_,_,id) self.SubType=id;self.Price=0;self.ShopItemId=-1;self.OptionsPickupIndex=0;self.Wait=0 end
+      return pickup
+    end
+    local pickup=pedestal(10,15);Demo:onPickupUpdate(pickup)
+    assert(pickup.SubType==797 and pickup.Price==15 and pickup.ShopItemId==4 and pickup.OptionsPickupIndex==7 and pickup.AutoUpdatePrice==false and pickup.Wait==10)
+    Demo:onPickupUpdate(pickup);assert(pickup.SubType==797)
+    tags=2;local quest=pedestal(11,0);Demo:onPickupUpdate(quest);assert(quest.SubType==11)
+    tags=0;itemType=3;local active=pedestal(12,0);Demo:onPickupUpdate(active);assert(active.SubType==12)
+    itemType=1;local devil=pedestal(13,-2);Demo:onPickupUpdate(devil);assert(devil.SubType==13)
+    local generated=pedestal(733,0);Demo:onPickupUpdate(generated);assert(generated.SubType==733)
+    local special=pedestal(14,0);special.VarData=1;Demo:onPickupUpdate(special);assert(special.SubType==14)
+  `);
+});
+
+test('creator controller can open, type, choose active, and cancel without spending an AI Item',async()=>{
+  await run(`
+    local actions={};ButtonAction={ACTION_MAP=1,ACTION_DROP=2,ACTION_MENULEFT=3,ACTION_MENURIGHT=4,ACTION_MENUUP=5,ACTION_MENUDOWN=6,ACTION_MENUCONFIRM=7,ACTION_MENUBACK=8}
+    player.ControllerIndex=1
+    Input.IsActionPressed=function(action,controller) assert(controller==1);return actions[action]==true end
+    actions[1],actions[2]=true,true;Demo:onPostRender();assert(uiPrompt.open)
+    actions={};now=200;Demo:onPostRender()
+    actions[7]=true;Demo:onPostRender();assert(uiPrompt.virtualKeyboard)
+    actions={};Demo:onPostRender();actions[7]=true;Demo:onPostRender();assert(uiPrompt.text=='a')
+    actions={};Demo:onPostRender();actions[8]=true;Demo:onPostRender();assert(not uiPrompt.virtualKeyboard and uiPrompt.open)
+    actions={};Demo:onPostRender();actions[1]=true;Demo:onPostRender();assert(uiPrompt.itemType=='active')
+    actions={};Demo:onPostRender();actions[8]=true;Demo:onPostRender();assert(not uiPrompt.open)
+  `);
+});
+
+test('creator hotkey and replacement setting survive a new run, and cancel keeps the blank',async()=>{
+  await run(blankInventory+`
+    Keyboard.KEY_F6=295;Demo:onExecuteCmd('nebius','hotkey KEY_F6');Demo:onExecuteCmd('nebius','replace on')
+    Demo:onExecuteCmd('nebius','cancel');assert(blanks==1 and uiPrompt.pending==nil)
+    Demo:onGameStarted(false);assert(uiPrompt.getHotkey()=='KEY_F6')
+    uiPrompt:close();held=true;Demo:onPostRender();assert(not uiPrompt.open)
+    held=false;Demo:onPostRender();keyDown[295]=true;Demo:onPostRender();assert(uiPrompt.open)
+  `);
+});
+
+test('contact retaliation has independent bounded cooldowns for each target',async()=>{
+  const fixture=rulesFixture([], {systems:['collision'],rules:[],collision:{conditions:[],cooldown:30,actions:[{type:'retaliate',amount:2}]}});
+  await run(`
+    nextRaw='profile';Demo:onPostUpdate();owns=true
+    local hits=0
+    local function enemy(seed) return {InitSeed=seed,Position=Vector(0,0),ToNPC=function(self) return self end,TakeDamage=function() hits=hits+1 end} end
+    local one,two=enemy(1),enemy(2)
+    Demo:onPrePlayerCollision(player,one);Demo:onPrePlayerCollision(player,one);Demo:onPrePlayerCollision(player,two)
+    assert(hits==2)
+    frame=30;Demo:onPrePlayerCollision(player,one);assert(hits==3)
+  `,fixture);
+});
+
+test('stacked weapon updates preserve other sources and native recalculation',async()=>{
+  const fixture=rulesFixture([], {systems:['tear_update','bomb','laser','knife'],rules:[],tear_update:{behavior:'pulse',strength:1},bomb:{damage:1,radius:100},laser:{damage:1},knife:{damage:1}});
+  await run(`
+    nextRaw='profile';Demo:onPostUpdate()
+    envelope=deepCopy(envelope);envelope.id='123_0_1_second';envelope.profile.bridge_request_id=envelope.id;envelope.profile.sprite_sheet='gfx/items/collectibles/generated_slot_01.png'
+    envelope.profile.tear_update={behavior='shrink',strength=1};envelope.profile.bomb.radius=60
+    frame=1;nextRaw='profile';Demo:onPostUpdate()
+    local ownedIds={[733]=true,[734]=true};player.HasCollectible=function(_,id) return ownedIds[id]==true end
+    local data={};local tear={SpawnerEntity=player,Position=Vector(0,0),Velocity=Vector(1,0),Scale=1,GetData=function() return data end}
+    Demo:onPostFireTear(tear);frame=11;Demo:onPostTearUpdate(tear);assert(tear.Scale<1)
+    ownedIds[734]=nil;frame=12;Demo:onPostTearUpdate(tear);assert(math.abs(tear.Scale-(1+0.08*math.sin(frame*0.3)))<0.00001)
+    ownedIds[733]=nil;Demo:onPostTearUpdate(tear);assert(tear.Scale==1)
+    ownedIds[733],ownedIds[734]=true,true
+    local bd={};local bomb={SpawnerEntity=player,ExplosionDamage=10,Radius=1,GetData=function() return bd end}
+    Demo:onPostFireBomb(bomb);Demo:onPostFireBomb(bomb);assert(bomb.ExplosionDamage==12 and bomb.Radius==100)
+    for _,method in ipairs({'onPostLaserUpdate','onPostKnifeUpdate'}) do
+      local wd={};local weapon={SpawnerEntity=player,CollisionDamage=3,GetData=function() return wd end}
+      Demo[method](Demo,weapon);Demo[method](Demo,weapon);assert(weapon.CollisionDamage==5)
+      weapon.CollisionDamage=7;Demo[method](Demo,weapon);assert(weapon.CollisionDamage==9)
+      ownedIds[734]=nil;Demo[method](Demo,weapon);assert(weapon.CollisionDamage==8)
+      ownedIds[733]=nil;Demo[method](Demo,weapon);assert(weapon.CollisionDamage==7)
+      ownedIds[733],ownedIds[734]=true,true
+    end
+  `,fixture);
+});
+
+
+test('co-op blank delivery belongs to the purchasing player and never falls back to player zero',async()=>{
+  await run(`
+    local first=player;local second=deepCopy(player);second.InitSeed=22
+    local baseGame=Game;Game=function() local game=baseGame();game.GetNumPlayers=function() return 2 end;return game end
+    Isaac.GetPlayer=function(index) return index==0 and first or second end
+    for _,owner in ipairs({first,second}) do
+      owner.blanks,owner.generated=1,0
+      owner.GetCollectibleNum=function(self,id) return id==797 and self.blanks or self.generated end
+      owner.HasCollectible=function(self,id) return self:GetCollectibleNum(id)>0 end
+      owner.RemoveCollectible=function(self,id) if id==797 then self.blanks=self.blanks-1 else self.generated=self.generated-1 end end
+      owner.AddCollectible=function(self,id) if id==797 then self.blanks=self.blanks+1 else self.generated=self.generated+1 end end
+    end
+    Demo:onPostAddCollectible(797,nil,true,nil,nil,second);Demo:onPostRender()
+    uiCallbacks.input('a coin eye');uiCallbacks.submit();assert(lastRequest.delivery.owner=='22')
+    Demo:onPreGameExit(true);Demo:onGameStarted(true)
+    envelope.delivery={mode='blank',owner='22'};frame=1;nextRaw='profile';Demo:onPostUpdate()
+    assert(first.blanks==1 and first.generated==0 and second.blanks==0 and second.generated==1)
+  `);
+});
+
+test('player-hurt retaliation waits for confirmed damage and does not replay legacy rewards',async()=>{
+  const fixture=rulesFixture([], {systems:['on_hit'],rules:[
+    {trigger:'player_hurt',conditions:[],cooldown:30,actions:[{type:'retaliate',amount:2}]},
+    {trigger:'player_hurt',conditions:[],actions:[{type:'grant_soul_hearts',amount:1}]},
+  ]});
+  validateDesign(designFor(fixture));
+  await run(`
+    nextRaw='profile';Demo:onPostUpdate();owns=true
+    local hits=0
+    local enemy={Position=Vector(0,0),ToNPC=function(self) return self end,TakeDamage=function() hits=hits+1;Demo:onPostEntityTakeDamage(player,1,0,{Entity=enemy}) end}
+    Demo:onEntityTakeDamage(player,1,0,{Entity=enemy});assert(hits==0 and player.hearts==1)
+    Demo:onPostEntityTakeDamage(player,1,0,{Entity=enemy});assert(hits==1 and player.hearts==1)
+    Demo:onPostEntityTakeDamage(player,1,0,{Entity=enemy});assert(hits==1 and player.hearts==1)
+  `,fixture);
+});
+
+test('inactive effect families do not scan enemies or allocate weapon data',async()=>{
+  const fixture=rulesFixture([], {systems:[],rules:[]});
+  await run(`
+    nextRaw='profile';Demo:onPostUpdate();owns=true
+    Isaac.FindInRadius=function() error('unexpected radius scan') end
+    Isaac.FindByType=function() error('unexpected entity scan') end
+    local entity={SpawnerEntity=player,GetData=function() error('unexpected entity data') end}
+    Demo:onPostUpdate();Demo:onPostFireTear(entity);Demo:onPostTearUpdate(entity);Demo:onPostFireBomb(entity)
+    Demo:onPostLaserUpdate(entity);Demo:onPostKnifeUpdate(entity);Demo:updatePassiveEffects()
+    Demo:onPreTearCollision(entity,entity);Demo:onPrePlayerCollision(player,entity);Demo:onPostEntityKill(entity)
+  `,fixture);
+});
+
+test('presentation choices are bounded and missing engine sounds fall back safely',async()=>{
+  const fixture=structuredClone(profile);fixture.visuals={...fixture.visuals,sound:'chime',animation:'pulse'};
+  validateDesign(designFor(fixture));
+  await run(`
+    SoundEffect={SOUND_POWERUP1=1};nextRaw='profile';Demo:onPostUpdate();Demo:onPostRender()
+    Demo:onPostAddCollectible(733,nil,true,nil,nil,player)
+    frame=10;Demo:onPickupRender(entities[1]);assert(lastDestination.width>=30 and lastDestination.width<=34)
+  `,fixture);
+  for(const visuals of [{sound:'execute'},{animation:'arbitrary'},{path:'../../file'}]){
+    const invalid=structuredClone(profile);Object.assign(invalid.visuals,visuals);await rejectedByBoth(invalid);
+  }
 });

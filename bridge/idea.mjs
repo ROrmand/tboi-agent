@@ -30,13 +30,32 @@ export function cleanIdeaBrief(value) {
   return brief;
 }
 
+const DISTINCTIVE_ACTIONS = ["grant_stat", "damage_burst", "apply_status", "retaliate", "convert_resource", "activate_aura"];
+
 export function fallbackIdeaBrief(prompt, capabilities, variation = "") {
   const theme = String(prompt).replace(/\s+/g, " ").trim().slice(0, 100);
+  const systems = capabilities.systems || [];
+  const actions = capabilities.actions || [];
+  const auras = capabilities.auras || [];
   const options = [];
-  if (capabilities.systems.includes("stats")) options.push("slightly raises Isaac's luck");
-  if (capabilities.systems.includes("tears")) options.push("gives Isaac's tears a poison effect");
-  if (capabilities.systems.includes("rules") && capabilities.actions.includes("spawn_pickup")) options.push("occasionally spawns a coin after a room clear");
-  if (capabilities.systems.includes("aura") && capabilities.auras.includes("slow")) options.push("surrounds Isaac with a small slowing aura");
+  if (systems.includes("stats")) {
+    options.push("slightly raises Isaac's damage");
+    options.push("slightly raises Isaac's tears");
+  }
+  if (systems.includes("on_kill") && actions.includes("damage_burst")) options.push("when an enemy dies, deals a small damage burst");
+  if (systems.includes("tear_impact") && actions.includes("apply_status")) options.push("when a tear hits an enemy, applies a status");
+  if ((systems.includes("collision") || systems.includes("on_hit")) && actions.includes("retaliate")) {
+    options.push("when Isaac is hit, retaliates against the attacker");
+  }
+  if (systems.includes("tears")) options.push("gives Isaac's tears a poison effect");
+  if (systems.includes("aura") && auras.includes("damage")) options.push("surrounds Isaac with a small damage aura");
+  else if (systems.includes("aura") && auras.includes("slow")) options.push("surrounds Isaac with a small slowing aura");
+  if (systems.includes("familiar")) options.push("adds a small following familiar");
+  if (systems.includes("rules") && actions.includes("grant_stat")) options.push("on room clear, grants temporary damage");
+  if (!options.length && systems.includes("stats")) options.push("slightly raises Isaac's luck");
+  if (!options.length && systems.includes("rules") && actions.includes("spawn_pickup")) {
+    options.push("occasionally spawns a coin after a room clear");
+  }
   const seed = Array.from(`${theme}:${variation}`).reduce((total, character) => total + character.charCodeAt(0), 0);
   const effects = options.length ? [options[seed % options.length], options[(seed + 1) % options.length]].filter((effect, index, list) => index === 0 || effect !== list[0]) : [];
   if (!effects.length) throw Error("No safe fallback mechanic is available.");
@@ -89,7 +108,21 @@ export function normalizeCatalogPlan(plan, capabilities) {
   const aura = (capabilities.auras || []).includes(plan.aura) ? plan.aura : null;
   const familiar = (capabilities.familiars || []).includes(plan.familiar) ? plan.familiar : null;
   let actionStat = null;
-  if (!action || !trigger) {
+  const combatSpec = action ? capabilities.combat_effects?.[action] : null;
+  let combatSystem = null;
+  if (combatSpec) {
+    pickup = null;
+    friendly = null;
+    combatSystem = combatSystemFor(trigger, combatSpec);
+    trigger = combatSystem === "on_hit" ? (HIT_TRIGGERS.has(trigger) ? trigger : "player_hurt") : null;
+  } else if (action === "grant_stat") {
+    const grantStats = capabilities.room_stat_reward?.stats || ["damage", "tears", "luck"];
+    actionStat = grantStats.includes(stat) ? stat : "damage";
+    stat = null;
+    pickup = null;
+    friendly = null;
+    trigger = trigger || "room_clear";
+  } else if (!action || !trigger) {
     action = null;
     trigger = null;
     pickup = null;
@@ -100,17 +133,13 @@ export function normalizeCatalogPlan(plan, capabilities) {
   } else if (action === "spawn_friendly") {
     friendly = friendly || "spider";
     pickup = null;
-  } else if (action === "grant_stat") {
-    actionStat = stat || "luck";
-    stat = null;
-    pickup = null;
-    friendly = null;
   } else {
     pickup = null;
     friendly = null;
   }
   const ordered = [];
-  if (action) ensure(ordered, HIT_TRIGGERS.has(trigger) ? "on_hit" : "rules");
+  if (combatSystem) ensure(ordered, combatSystem);
+  else if (action) ensure(ordered, HIT_TRIGGERS.has(trigger) ? "on_hit" : "rules");
   if (tearFlags.length) ensure(ordered, "tears");
   if (aura) ensure(ordered, "aura");
   if (familiar) ensure(ordered, "familiar");
@@ -120,8 +149,8 @@ export function normalizeCatalogPlan(plan, capabilities) {
   const normalized = {
     systems,
     tear_flags: systems.includes("tears") ? tearFlags : [],
-    trigger: systems.includes("rules") || systems.includes("on_hit") ? trigger : null,
-    action: systems.includes("rules") || systems.includes("on_hit") ? action : null,
+    trigger: null,
+    action: null,
     pickup_type: null,
     friendly_type: null,
     stat: systems.includes("stats") ? stat : null,
@@ -129,6 +158,13 @@ export function normalizeCatalogPlan(plan, capabilities) {
     aura: systems.includes("aura") ? aura : null,
     familiar: systems.includes("familiar") ? familiar : null,
   };
+  if (combatSystem && systems.includes(combatSystem)) {
+    normalized.action = action;
+    normalized.trigger = combatSystem === "on_hit" ? trigger : combatSystem;
+  } else if (action && (systems.includes("rules") || systems.includes("on_hit"))) {
+    normalized.trigger = trigger;
+    normalized.action = action;
+  }
   if (normalized.action === "spawn_pickup") normalized.pickup_type = pickup;
   if (normalized.action === "spawn_friendly") normalized.friendly_type = friendly;
   if (normalized.action === "grant_stat") normalized.action_stat = actionStat;
@@ -137,35 +173,66 @@ export function normalizeCatalogPlan(plan, capabilities) {
   return normalized;
 }
 
+function combatSystemFor(trigger, spec) {
+  const triggers = spec.triggers || [];
+  if (triggers.length === 1 && triggers[0] === "on_kill") return "on_kill";
+  if (triggers.length === 1 && triggers[0] === "tear_impact") return "tear_impact";
+  if (HIT_TRIGGERS.has(trigger)) return "on_hit";
+  if (triggers.includes("collision")) return "collision";
+  if (triggers.includes("player_hurt")) return "on_hit";
+  return triggers[0] || null;
+}
+
 function actionPhrase(plan, capabilities) {
   const reward = capabilities.heart_rewards?.[plan.action];
   if (reward?.label) return `grants a ${reward.label}`;
   if (plan.action === "grant_soul_hearts") return "grants a soul heart";
   if (plan.action === "spawn_pickup") return `spawns a ${plan.pickup_type || "coin"}`;
   if (plan.action === "spawn_friendly") return `spawns a ${plan.friendly_type || "spider"}`;
-  if (plan.action === "grant_stat") return `grants ${plan.action_stat || "luck"}`;
+  if (plan.action === "grant_stat") return `grants ${plan.action_stat || "damage"}`;
   return String(plan.action || "").replaceAll("_", " ");
+}
+
+function combatBrief(action, trigger) {
+  if (action === "damage_burst") return "when an enemy dies, deals a small damage burst";
+  if (action === "apply_status") return "when a tear hits an enemy, applies a status";
+  if (action === "retaliate") {
+    return trigger === "player_hurt" || trigger === "enemy_hit"
+      ? "when Isaac is hit, retaliates against the attacker"
+      : "when Isaac touches an enemy, retaliates";
+  }
+  return null;
 }
 
 export function describeCatalogPlan(prompt, plan, capabilities) {
   const theme = String(prompt).replace(/\s+/g, " ").trim().slice(0, 80);
   const parts = [];
   if (plan.tear_flags.length) parts.push(`gives tears ${plan.tear_flags.join(" and ")}`);
-  if (plan.stat) parts.push(`slightly changes ${plan.stat.replaceAll("_", " ")}`);
+  if (plan.stat) parts.push(`slightly raises Isaac's ${plan.stat.replaceAll("_", " ")}`);
   if (plan.aura) parts.push(`adds a ${plan.aura} aura`);
   if (plan.familiar) parts.push(`adds a ${plan.familiar} familiar`);
-  if (plan.action && plan.trigger) parts.push(`on ${plan.trigger.replaceAll("_", " ")}, ${actionPhrase(plan, capabilities)}`);
+  const combat = combatBrief(plan.action, plan.trigger);
+  if (combat) parts.push(combat);
+  else if (plan.action && plan.trigger) parts.push(`on ${plan.trigger.replaceAll("_", " ")}, ${actionPhrase(plan, capabilities)}`);
   if (!parts.length) throw Error("Catalog planner chose no supported mechanics.");
   return cleanIdeaBrief(`A passive item inspired by "${theme}" ${parts.join(" and ")}.`);
 }
 
 export async function expandIdea(prompt, capabilities, env, request = requestTextModel) {
   if (!env.NEBIUS_API_KEY) throw Error("NEBIUS_API_KEY is required in .env.");
+  const listedActions = [
+    ...DISTINCTIVE_ACTIONS.filter((name) => (capabilities.actions || []).includes(name)),
+    ...(capabilities.actions || []).filter((name) => !DISTINCTIVE_ACTIONS.includes(name)),
+  ];
+  const combatPairs = Object.entries(capabilities.combat_effects || {})
+    .map(([name, spec]) => `${name} uses ${(spec.triggers || []).join(" or ")}`)
+    .join("; ");
   const catalog = [
     `systems: ${(capabilities.systems || []).join(", ")}`,
     `tear_flags: ${(capabilities.tear_flags || []).join(", ")}`,
     `triggers: ${(capabilities.triggers || []).join(", ")}`,
-    `actions: ${(capabilities.actions || []).join(", ")}`,
+    `actions: ${listedActions.join(", ")}`,
+    combatPairs ? `combat pairing: ${combatPairs}` : "",
     `stats: ${STAT_NAMES.join(", ")}`,
     `auras: ${(capabilities.auras || []).join(", ")}`,
     `familiars: ${(capabilities.familiars || []).join(", ")}`,
@@ -181,7 +248,7 @@ export async function expandIdea(prompt, capabilities, env, request = requestTex
       max_tokens: 256,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: `Choose supported Binding of Isaac passive mechanics for a flavor idea. The player does not know the catalog, so infer one or two effects. Return only JSON with keys systems, tear_flags, trigger, action, pickup_type, friendly_type, stat, aura, and familiar. Use catalog ids or empty strings. Do not write names, flavor, parameters, Lua, or unsupported effects. Catalog: ${catalog}.` },
+        { role: "system", content: `Choose supported Binding of Isaac passive mechanics for a flavor idea. The player does not know the catalog, so infer one or two distinctive effects. Prefer permanent stats (especially damage or tears), combat procs, auras, familiars, or unusual tear flags over pickup or soul-heart rewards. Use spawn_pickup or grant_*_hearts only when the flavor is about loot, money, or healing. Combat pairing is mandatory when those actions are chosen: damage_burst uses system on_kill; apply_status uses tear_impact; retaliate uses collision or trigger player_hurt. grant_stat uses trigger room_clear and stat damage, tears, or luck. Return only JSON with keys systems, tear_flags, trigger, action, pickup_type, friendly_type, stat, aura, and familiar. Use catalog ids from this list or empty strings. Do not write names, flavor, parameters, Lua, or unsupported effects. Catalog: ${catalog}.` },
         { role: "user", content: `Flavor idea: ${prompt}` },
       ],
     })),

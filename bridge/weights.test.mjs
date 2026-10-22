@@ -5,6 +5,67 @@ import { assertCatalogWeights, fitWeightBudget, profileWeight, raiseQualityToFit
 
 const catalog = JSON.parse(await readFile(new URL("../content-contract/capabilities.json", import.meta.url)));
 
+test("nearby retaliation pays a multi-target premium and bounded radius weight without changing attacker costs", () => {
+  const weight = action => profileWeight({ systems: ["on_hit"], rules: [{ trigger: "player_hurt", actions: [action] }] }, catalog);
+  for (const amount of [1, 2, 3]) {
+    assert.equal(weight({ type: "retaliate", amount }), 6 + amount);
+    assert.equal(weight({ type: "retaliate", amount, target_mode: "attacker" }), 6 + amount);
+    for (const radius of [40, 60, 60.5, 120]) {
+      assert.equal(weight({ type: "retaliate", amount, target_mode: "nearby", radius }), 6 + amount + 6 + Math.ceil(radius / 60));
+    }
+  }
+  const missing = structuredClone(catalog);
+  delete missing.weights.retaliate_nearby;
+  assert.throws(() => assertCatalogWeights(missing), /retaliate_nearby/);
+});
+
+test("active bursts spend their base, damage, and radius weights at every quality boundary", () => {
+  const profile = { systems: ["active"], active: { effect: "radial_burst", charges: 6, targeting: "self", damage: 1, radius: 40 }, metadata: { quality: 0 } };
+  assert.equal(profileWeight(profile, catalog), 4);
+  profile.active.damage = 4;
+  profile.active.radius = 100;
+  assert.equal(profileWeight(profile, catalog), 8);
+  raiseQualityToFit(profile, catalog);
+  assert.equal(profile.metadata.quality, 1);
+  profile.active.damage = 6;
+  profile.active.radius = 120;
+  assert.equal(profileWeight(profile, catalog), 10);
+  const requested = structuredClone(profile);
+  fitWeightBudget(requested, catalog, 1);
+  assert.equal(requested.metadata.quality, 1);
+  assert.ok(profileWeight(requested, catalog) <= catalog.quality_budgets[1]);
+  assert.ok(requested.active.damage >= 1);
+  assert.ok(requested.active.radius >= 40);
+  raiseQualityToFit(profile, catalog);
+  assert.equal(profile.metadata.quality, 2);
+});
+
+test("catalog coverage catches missing active systems, pickup subtypes, and invalid budgets", () => {
+  for (const mutate of [
+    value => { delete value.weights.systems.active; },
+    value => { delete value.weights.active_effects.radial_burst; },
+    value => { value.active.effects.push("unpriced"); },
+    value => { value.actions.push("unpriced"); },
+    value => { delete value.weights.pickup_subtypes.dime; },
+    value => { value.weights.stats.damage.step = 0; },
+    value => { value.quality_budgets[1] = NaN; },
+    value => { value.quality_budgets[2] = 1; },
+  ]) {
+    const value = structuredClone(catalog);
+    mutate(value);
+    assert.throws(() => assertCatalogWeights(value));
+  }
+});
+
+test("unknown or unpriced mechanics never silently spend zero weight", () => {
+  assert.throws(() => profileWeight({ active: { effect: "invented", damage: 1, radius: 40 } }, catalog), /no weight/);
+  assert.throws(() => profileWeight({ active: { effect: "radial_burst", damage: NaN, radius: 40 } }, catalog), /finite/);
+  assert.throws(() => profileWeight({ rules: [{ actions: [{ type: "invented", amount: 1 }] }] }, catalog), /no weight/);
+  const missing = structuredClone(catalog);
+  delete missing.weights.combat.damage_burst;
+  assert.throws(() => profileWeight({ rules: [{ actions: [{ type: "damage_burst", amount: 1, radius: 40 }] }] }, missing), /no weight/);
+});
+
 test("every catalog effect has a weight and quality spends a fixed budget", () => {
   assertCatalogWeights(catalog);
   assert.deepEqual(catalog.quality_budgets, [4, 8, 12, 18, 24]);
@@ -91,7 +152,9 @@ test("a profile spends flag, stat, pickup, and friendly weight", () => {
   }, catalog);
   assert.equal(packed.stats.speed, 0);
   assert.equal(packed.stats.damage, 1);
-  assert.equal(packed.rules[0].actions[0].type, "grant_soul_hearts");
+  assert.equal(packed.on_kill.actions[0].friendly_type, "pooter");
+  assert.equal(packed.tear_impact.actions[0].friendly_type, "pooter");
+  assert.equal((packed.rules || []).some((rule) => rule.actions?.some((action) => action.type === "grant_soul_hearts")), false);
   assert.ok(profileWeight(packed, catalog) <= catalog.quality_budgets[4]);
   assert.match(packed.metadata.balance_note, /cut to fit the weight budget/);
   const hearts = fitWeightBudget({
@@ -118,6 +181,37 @@ test("a profile spends flag, stat, pickup, and friendly weight", () => {
   }, catalog, 1);
   assert.equal(requested.metadata.quality, 1);
   assert.ok(profileWeight(requested, catalog) <= catalog.quality_budgets[1]);
+  const burst = fitWeightBudget({
+    metadata: { quality: 4, balance_note: "" },
+    region: "passive",
+    systems: ["on_kill"],
+    on_kill: { conditions: [], cooldown: 30, actions: [{ type: "damage_burst", amount: 1, radius: 80 }] },
+    rules: [],
+  }, catalog, 1);
+  assert.equal(burst.metadata.quality, 1);
+  assert.equal(burst.on_kill.actions[0].type, "damage_burst");
+  assert.ok(burst.on_kill.actions[0].radius <= 60);
+  assert.equal(profileWeight(burst, catalog), 8);
+  const heartsLow = fitWeightBudget({
+    metadata: { quality: 4, balance_note: "" },
+    region: "passive",
+    systems: ["rules"],
+    rules: [{ trigger: "room_clear", actions: [{ type: "grant_soul_hearts", amount: 2 }] }],
+  }, catalog, 1);
+  assert.equal(heartsLow.rules[0].actions[0].amount, 1);
+  assert.equal(profileWeight(heartsLow, catalog), 8);
+  const tight = fitWeightBudget({
+    metadata: { quality: 4, balance_note: "" },
+    region: "passive",
+    systems: ["stats", "on_kill"],
+    affects_stats: true,
+    stats: { damage: 1, tears: 0, shot_speed: 0, range: 0, speed: 0, luck: 0, soul_hearts: 0 },
+    on_kill: { conditions: [], cooldown: 30, actions: [{ type: "damage_burst", amount: 1, radius: 80 }] },
+    rules: [],
+  }, catalog, 1);
+  assert.equal(tight.metadata.quality, 1);
+  assert.equal(tight.on_kill.actions[0].type, "damage_burst");
+  assert.ok(profileWeight(tight, catalog) <= catalog.quality_budgets[1]);
 });
 
 test("requested balance charges flat stats, multiplier, health, effects, and flight", () => {

@@ -2,6 +2,33 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BoundedQueue, decodeLines, encodeEnvelope, PROTOCOL_VERSION } from './protocol.mjs';
 
+test('all IPC control envelopes reject unknown fields', () => {
+  for (const type of ['hello', 'poll', 'ack']) {
+    const envelope = { version: 1, type, ...(type === 'ack' ? { id: 'job_1' } : {}) };
+    assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(envelope)).lines, [envelope]);
+    assert.throws(() => encodeEnvelope({ ...envelope, execute: true }), /field/);
+    assert.throws(() => decodeLines(Buffer.alloc(0), JSON.stringify({ ...envelope, execute: true }) + '\n'), /field/);
+  }
+});
+
+test('blank delivery is trusted bounded owner data, not model callback flags', () => {
+  const envelope = { version: 1, type: 'profile', id: 'blank_1', profile: {}, delivery: { mode: 'blank', owner: '-123' } };
+  assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(envelope)).lines, [envelope]);
+  for (const delivery of [
+    null, [], { mode: 'pedestal', owner: '123' }, { mode: 'blank', owner: 123 },
+    { mode: 'blank', owner: '1.5' }, { mode: 'blank', owner: '1'.repeat(41) },
+    { mode: 'blank', owner: '123', run: 'untrusted' },
+  ]) assert.throws(() => encodeEnvelope({ ...envelope, delivery }), /delivery/);
+});
+
+test('error codes only accompany errors and unterminated lines obey framing limits', () => {
+  const envelope = { version: 1, type: 'status', id: 'job_1', status: 'error', detail: 'Offline', error_code: 'BRIDGE_OFFLINE' };
+  assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(envelope)).lines, [envelope]);
+  assert.throws(() => encodeEnvelope({ ...envelope, status: 'generating' }), /error code/);
+  assert.throws(() => encodeEnvelope({ ...envelope, error_code: 'unsafe-code' }), /error code/);
+  assert.throws(() => decodeLines(Buffer.alloc(0), 'x'.repeat(64 * 1024 + 1)), /64 KiB/);
+});
+
 test('IPC framing accepts fragmented versioned hello messages', () => {
   const message = { version: PROTOCOL_VERSION, type: 'hello' };
   const line = encodeEnvelope(message);

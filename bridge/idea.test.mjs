@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDesignPrompt, cleanIdeaBrief, DEFAULT_PLANNER_MODEL, fallbackIdeaBrief, isUnderspecifiedIdea, normalizeCatalogPlan } from "./idea.mjs";
+import { buildDesignPrompt, cleanIdeaBrief, DEFAULT_PLANNER_MODEL, describeCatalogPlan, fallbackIdeaBrief, isUnderspecifiedIdea, normalizeCatalogPlan } from "./idea.mjs";
 
 const capabilities = {
   systems: ["stats", "tears", "rules", "on_hit", "aura", "bomb", "familiar"],
@@ -29,7 +29,10 @@ test("sparse flavor ideas are expanded while mechanical requests pass through", 
   assert.equal(isUnderspecifiedIdea("My bombs gain poison"), false);
   assert.throws(() => cleanIdeaBrief("too short"), /usable expanded idea/);
   assert.throws(() => cleanIdeaBrief("Here's a thinking process for this item."), /reasoning/);
-  assert.match(fallbackIdeaBrief("booble goof", capabilities), /A passive item inspired/);
+  const fallback = fallbackIdeaBrief("booble goof", capabilities);
+  assert.match(fallback, /A passive item inspired/);
+  assert.doesNotMatch(fallback, /coin after a room clear|soul heart/);
+  assert.match(fallback, /damage|tears|poison|aura|familiar/);
 });
 
 test("reasoning-only expansion uses a bounded brief and continues to item design", async () => {
@@ -62,6 +65,7 @@ test("expanded brief is a Nano catalog plan and leaves item JSON to Lightning", 
   assert.deepEqual(body.response_format, { type: "json_object" });
   assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false });
   assert.match(body.messages[0].content, /tear_flags: poison, explosive/);
+  assert.match(body.messages[0].content, /Prefer permanent stats/);
   assert.match(result.designPrompt, /Original idea: poopsock/);
   assert.match(result.ideaBrief, /gives tears poison/);
   assert.match(result.ideaBrief, /black heart/);
@@ -95,6 +99,34 @@ test("catalog plans keep supported effects and attach the system that implements
   assert.equal(plan.aura, "slow");
   assert.equal(plan.familiar, null);
   assert.equal(plan.stat, null);
+});
+
+test("combat plans attach the required proc instead of a room-clear pickup", () => {
+  const catalog = {
+    systems: ["stats", "on_kill", "tear_impact", "collision", "on_hit", "rules", "tears"],
+    tear_flags: ["burn"],
+    triggers: ["room_clear", "player_hurt"],
+    actions: ["damage_burst", "apply_status", "retaliate", "spawn_pickup", "grant_stat"],
+    combat_effects: {
+      damage_burst: { triggers: ["on_kill"] },
+      apply_status: { triggers: ["tear_impact"] },
+      retaliate: { triggers: ["collision", "player_hurt"] },
+    },
+    room_stat_reward: { stats: ["damage", "tears", "luck"] },
+  };
+  const burst = normalizeCatalogPlan({ action: "damage_burst", trigger: "room_clear", stat: "damage" }, catalog);
+  assert.ok(burst.systems.includes("on_kill"));
+  assert.ok(burst.systems.includes("stats"));
+  assert.equal(burst.action, "damage_burst");
+  assert.equal(burst.trigger, "on_kill");
+  const brief = describeCatalogPlan("poopsock", burst, catalog);
+  assert.doesNotMatch(brief, /coin|soul heart|room clear/);
+  assert.match(brief, /damage burst/);
+  assert.match(brief, /raises Isaac's damage/);
+  const grant = normalizeCatalogPlan({ action: "grant_stat" }, catalog);
+  assert.equal(grant.action, "grant_stat");
+  assert.equal(grant.action_stat, "damage");
+  assert.equal(grant.trigger, "room_clear");
 });
 
 test("a specific prompt never needs an expansion request", async () => {

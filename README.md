@@ -10,15 +10,17 @@ renderer notes remain in [native/README.md](native/README.md).
 
 ## Current scope
 
-This project generates **passive collectibles** for *The Binding of Isaac:
+This project generates **passive collectibles and bounded active collectibles** for *The Binding of Isaac:
 Repentance+* during a run. A player describes an item, and the local bridge
 uses Nebius Token Factory to produce a validated item profile and its visual
 assets. The mod assigns the accepted result to a pre-allocated item slot,
 without requiring a game restart.
 
-The current release deliberately covers passives only. A generated result is
-declarative data, never model-produced Lua, and is applied only by fixed,
-tested Lua handlers.
+The implementation also includes the blank **AI Item**, **The Creator** character,
+and an eight-shell active bank. These additions have automated coverage but still
+require the live-game acceptance checks in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+A generated result is declarative data, never model-produced Lua, and is applied
+only by fixed Lua handlers.
 
 ## Run the first slice
 
@@ -45,13 +47,13 @@ tested Lua handlers.
 
 4. Enable only the **Live Sprite Swap Demo** mod in Isaac, start a run, and
    press top-row or keypad `8`. Enter a passive-item prompt in the fixed
-   **Nebius Item Creator**, choose quality **1** through **4**, then select **Generate Item**. While the creator is
+   **Nebius Item Creator**, choose quality **0** through **4**, then select **Generate Item**. While the creator is
    open, room updates pause without opening Isaac's pause menu. The panel is
    drawn in the game view and keeps its prompt, Randomize, Generate, Close,
    and status controls visible together. The game HUD is hidden while it is
    open. Use Down to select the button row, Left/Right to choose a button, and
    Enter to activate it; Up returns focus to the prompt. Type with the keyboard, use Backspace
-   to edit, Enter for a new line, Escape to close, and click the buttons with
+   to edit, Confirm/Enter on the prompt for the on-screen keyboard, Escape to close, and click the buttons with
    the mouse. The prompt
    writes a fixed JSON request to Isaac's log; the bridge delivers the validated result back
    through native IPC and spawns one of 64 independent generated collectibles.
@@ -68,7 +70,7 @@ bridge running and a run open so it can reserve artwork safely.
 Use `npm run validate` for an offline fixture validation; it does not call
 Token Factory or overwrite installed artwork.
 
-## Run persistence and capacity (v1.6.1)
+## Run persistence and capacity
 
 Each run supports 64 independent generated item IDs and up to 64 artwork slots.
 Profiles and rule state are saved with the mod's run data, including on save
@@ -76,10 +78,14 @@ and exit. Continue restores both owned items and uncollected pedestals by their
 collectible IDs. Artwork stays in the installed mod directory. There is no
 permanent item library.
 
-The creator window also has a **Randomize** button. It fills the prompt
-immediately with one local sentence built from word lists in `bridge/words/`
-(adjectives, nouns, verbs, adverbs, prepositions, and places). No model call
-is made. Review or change it, then choose **Generate Item**. The item model
+The creator window also has a **Randomize** button. By default it fills the prompt
+with one local sentence built from word lists in `bridge/words/`
+(adjectives, nouns, verbs, adverbs, prepositions, and places). Set
+`INSPIRATION_BACKEND=local` and `INSPIRATION_MODEL` to use an already installed
+OpenAI-compatible local text model instead. The default request budget is 2.5 seconds;
+timeouts, invalid output, and repeated ideas fall back to word lists. No model
+download is required, and Randomize does not reserve item or artwork slots.
+Review or change the idea, then choose **Generate Item**. The item model
 chooses the region and the systems from that sentence. Sparse prompts stay
 flavor for the player. A fast
 catalog planner (`NEBIUS_PLANNER_MODEL`, default
@@ -103,8 +109,9 @@ When `IMAGE_BACKEND=comfyui`, the bridge now checks that ComfyUI is reachable
 before asking the text model to design an item. Start ComfyUI and wait until it
 reports that its server is running at `http://127.0.0.1:8188`; otherwise the
 generator returns an actionable error before a text-generation request.
-The current bridge reserves an artwork slot before starting the generator, so
-even a failed preflight conservatively consumes that session's reservation.
+Runtime compatibility and ComfyUI health checks happen before reserving artwork.
+After reservation, failures conservatively retain the slot because artwork may
+already have been written or loaded.
 
 Generation stops with a clear error at either limit; it never wraps around or
 replaces an existing item. A new run frees item IDs. Artwork already used by
@@ -112,9 +119,10 @@ the current Isaac process stays reserved until Isaac restarts, at which point
 continued-run artwork remains pinned. Failed generations conservatively consume
 an artwork reservation. Restarting only the bridge does not free any slots.
 Do not delete `art-reservations.json`, saved mod data, or generated PNGs to
-bypass the limit. This initial implementation targets one active save slot;
-switching between separate Isaac save slots with continuable generated runs
-is not supported yet.
+bypass the limit. The reservation ledger protects the union of continuable runs
+across all three save slots as well as artwork loaded by the current game process.
+The 64 artwork files are shared, not 64 new files per save. Missing or corrupt
+initialized manifests fail closed. Cross-save behavior still needs live acceptance.
 
 Stats stack across owned items; tear flags combine, tear scale is clamped to
 0.5–2, and the most recently generated owned item's tint wins. Rule limits are
@@ -154,9 +162,9 @@ Every accepted item resolves the following before it is applied:
 Generated content is data, not executable model-produced Lua. Lua maps only
 known profile entries to fixed Isaac callbacks.
 
-## Initial mechanics catalog
+## Implemented mechanics catalog
 
-The first vertical slice supports a deliberately small set of item triggers:
+The fixed rule handlers support these triggers:
 
 - `room_enter`
 - `room_clear`
@@ -166,7 +174,16 @@ The first vertical slice supports a deliberately small set of item triggers:
 - `new_floor`
 - `tear_fire`
 
-The model may combine those only with whitelisted conditions and actions. It
+The catalog also includes `on_kill`, `tear_impact`, and `collision` procs;
+familiars and auras; and bounded `tear_update`, bomb, laser, and knife systems.
+Those systems have handlers, but their effects are limited to the parameters
+in `content-contract/capabilities.json`. Distinct combat actions include a bounded
+on-kill damage burst, tear-impact slow/burn/fear, contact retaliation, and
+confirmed-player-hurt retaliation. Legacy reward actions remain supported.
+Rules and procs support bounded frame cooldowns; room-stat grants can declare
+durations and stack limits, pickup actions can select approved subtypes, and
+resource conversion atomically spends input before granting output. The model may
+combine catalog entries only with whitelisted conditions and actions. It
 cannot invent callbacks, unbounded state, or arbitrary Lua. Runtime state is
 owned by the mod and scoped to an item, room, floor, or run (for example, a
 "once per room" proc or a cooldown).
@@ -201,8 +218,9 @@ phrase the model is allowed to invent.
 - **Nebius Token Factory:** structured item-profile generation.
 - **ComfyUI:** local source-art generation from the item visual prompt.
 
-The live mod pre-registers 64 passive shells and keeps an independent accepted
-profile on each one. It does not create item definitions at runtime, and it
+The live mod pre-registers 64 passive shells, the blank AI Item, and eight active
+shells. A run can accept 64 generated profiles total, at most eight of them active.
+The existing passive IDs stay unchanged. It does not create item definitions at runtime, and it
 does not execute generated code.
 
 ## Safety and fallbacks
@@ -212,9 +230,14 @@ does not execute generated code.
   tear-effect IDs.
 - The offline validation path falls back to the demo shell icon; production
   image requests leave the previous icon intact when they fail.
-- A malformed profile falls back to a named visual item with neutral stats and
-  no behavior rule.
-- Slot and transient state are cleared on run start and exit.
+- Malformed production output receives one bounded correction attempt and then
+  an actionable error; a neutral fallback is not reported as successful generation.
+- Durable jobs distinguish queued publication from acknowledged application.
+  Queued profiles recover after bridge restart; ambiguous interrupted model/art
+  requests fail without blind replay. Saved Lua receipts prevent duplicate delivery.
+- New runs clear their gameplay state, not artwork protected by other continuable
+  saves or the current process. Saved-state version 3 explicitly reads version 2;
+  the profile format remains version 1 and the runtime compatibility contract is 11.
 
 ## How an item is built
 
@@ -254,10 +277,10 @@ Familiar movement and aura ticks run only for items on those lists. Tear tint
 and flags run from `MC_POST_FIRE_TEAR` only for items that marked `tears`.
 `MC_POST_ENTITY_KILL`, `MC_PRE_TEAR_COLLISION`, and `MC_PRE_PLAYER_COLLISION`
 return immediately when no owned item marked `on_kill`, `tear_impact`, or
-`collision`. An empty list is the whole hot-path cost. Those three procs latch
-once per enemy, once per tear, or once per enemy touched in the room. Richer
-behavior inside each callback is the next rework, not more branches in the
-update loop.
+`collision`. Proc latches and cooldowns are scoped to each item/player and,
+where appropriate, each tear/target. Generated damage is guarded against recursive
+burst/retaliation chains. New kill combat effects use credited ownership; legacy
+kill rewards retain their all-player semantics.
 
 New handlers follow the same lifecycle, implemented in the mod rather than
 generated:
@@ -276,7 +299,7 @@ generated:
 - **Tears.** `MC_POST_FIRE_TEAR` stores custom fields on `tear:GetData()`.
   Impacts and status effects are read later from `MC_PRE_TEAR_COLLISION` or
   `MC_POST_TEAR_UPDATE`.
-- **Actives, later.** `MC_USE_ITEM` returns a discharge table such as
+- **Actives.** `MC_USE_ITEM` returns a discharge table such as
   `{ Discharge = true, Remove = false, ShowAnim = true }`. `MC_PRE_USE_ITEM`
   can refuse the use before charge is spent.
 
@@ -286,64 +309,53 @@ It does not live in an untracked global that survives a room change.
 A system ships in four places: a catalog id, schema and numeric bounds, one
 fixed handler, and tests. An unknown system is rejected.
 
-## Roadmap
+## Creator and active-item controls
 
-Each new effect is still a versioned catalog system. Unsupported fields are
-rejected rather than interpreted.
+- Press `8` (or keypad `8`) to open the creator. A controller can use Map + Drop,
+  menu directions, Confirm, and Back; Confirm on the prompt opens the on-screen
+  keyboard. Tab / Map toggles passive versus active generation.
+- Use the console command `nebius hotkey KEY_F6` to save a different keyboard
+  hotkey. `nebius replace on` / `nebius replace off` saves the optional Creator
+  replacement setting outside run state.
+- The Creator starts with an AI Item. Collecting a blank queues a player-owned
+  entitlement and opens the editor when available. Successful generation exchanges
+  one blank for the generated item; closing, cancellation, errors, and capacity
+  exhaustion keep it. `nebius cancel` cancels a pending request.
+- Replacement only applies while The Creator is present and the setting is on.
+  Eligible passive/familiar pedestals preserve shop/choice data; actives, quest
+  items, generated shells, and unsupported special pedestals are excluded.
+- Active generation currently supports only a self-centered radial burst: six
+  charges, at most eight enemies, bounded damage and radius. Refused or failed
+  uses spend no charge. Car Battery duplicate activation and recursive use are
+  refused; repeated same-frame uses are suppressed per player/item/slot. Other
+  targeting modes are not exposed. Engine interactions, alternate slots, and
+  charge-restoring items remain subject to live acceptance.
 
-1. **Rework the new callbacks.** `on_kill`, `tear_impact`, and `collision`
-   currently spend the same pickup and soul-heart actions as rules. The next
-   pass gives each callback its own bounded effect instead of another
-   if/else in the update loop.
-2. **Tear and combat depth.** Status, homing, and on-hit behavior stay catalog
-   ids. Tear flags are not raw game constants from the model.
-3. **Richer rule parameters.** Expand actions with cooldown, duration, stack
-   limit, pickup subtype, and an effect ledger so overlapping items clean up
-   when the source item is gone.
-4. **More passive families.** Enemy debuffs, temporary auras, projectile
-   modifiers, damage retaliation, and resource conversion, each with the same
-   four-part contract.
-5. **Presentation.** Art direction, approved sound and animation catalogs,
-   in-game profile details, a configurable `8` hotkey, and clearer generation
-   errors.
-6. **Reliability and balance.** Fuzzed envelopes, deterministic fixtures,
-   balance budgets, and REPENTOGON compatibility checks.
-7. **Active collectibles.** Only after the passive systems stay idle when
-   unused. An active needs its own charge, input, targeting, and
-   `MC_USE_ITEM` contract. It is not another passive rule.
+## Implementation and release status
 
-## Next creator experience
+[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) records the implementation
+checklist, automated evidence, and remaining live checks separately. All eight
+milestones have implementation paths; this is not a claim of game acceptance.
+The automated suite uses deterministic profiles, Lua engine mocks, local fake
+model/art services, and durable restart/ACK fixtures. Run `npm test` and
+`npm run validate` before syncing.
 
-The next player-facing milestone is an **AI item** and the character built
-around it. Picking up this deliberately blank item opens the in-game creator
-window. Its character may replace normal game items with that blank item, so
-each pickup becomes an opportunity to generate the content for that run. The
-replacement must remain optional and bounded by the same slot, persistence,
-and safety rules as generated passives.
+Generation progress uses readable stage labels and stable error codes. Profile
+summaries derive from validated mechanics rather than trusting model-written
+flavor. Presentation choices are limited to approved sounds and animations with
+fallbacks. Local inspiration stays opt-in until latency and variety have been
+measured with an installed model.
 
-The creator now provides fixed in-game prompt controls, a paused room while
-editing, and a lower-left progress indicator while generating. The terminal
-remains useful for local development. The next presentation pass can refine
-the visual art, stage labels, and controller interaction after an in-game review.
-
-Reliability work for that UI path includes better error classification,
-timeouts, retries only where safe, and a parser/repair layer for imperfect
-model responses before the normal schema validation and capability checks.
-Invalid or unrecoverable output must resolve to a safe fallback and an
-actionable in-game message, never a stalled prompt or broken run. The target
-is a seamless generation loop with errors minimized before they reach the
-player.
-
-The **Randomize** flow should also evolve from a fixed sentence generator into
-an inspiration generator. It can use a local model such as Nemo to produce a
-  short, varied seed - a sentence, phrase, or other compact concept - which the
-player can edit before generating an item. This keeps prompting optional while
-still giving the item designer an intelligible creative direction. The local
-model choice, prompt template, latency budget, and fallback phrase list should
-be evaluated before making it the default.
+For game acceptance, deliberately sync with `npm run mod:sync`, prepare artwork
+with `npm run art:prepare`, and fully restart Isaac and the bridge. Check co-op
+attribution, source removal, shop and choice pickups, cancellation/continue,
+save A -> save B -> continue A, and active charges in the actual game. Record the
+Isaac/REPENTOGON build and results in the plan. Do not replace REPENTOGON binaries
+or delete manifests as a recovery shortcut.
 
 ## Existing design references
 
-[prompts/item.md](prompts/item.md) contains the current item-design draft and
-will be migrated into the machine-readable capability catalog and schema as
-implementation begins.
+[prompts/item.md](prompts/item.md) is an older design exploration, not the
+implemented contract. Its 20-slot design, synergies, costumes, arbitrary active
+effects, and generated Lua hooks are not product features. The current contract is
+`content-contract/capabilities.json` plus the bridge and Lua validators.

@@ -10,6 +10,15 @@ test("a model reply becomes one ordinary sentence", () => {
   assert.equal(cleanSentence("<think>I need a sentence.</think> A cracked bell rings in an empty room."), "A cracked bell rings in an empty room.");
 });
 
+test('inspiration rejects non-text, unfinished reasoning, code, and structured replies', () => {
+  for (const reply of [{ idea: 'A hollow bell keeps a secret.' }, ['A hollow bell keeps a secret.'],
+    '<think>I should invent a hollow bell.', '<analysis>A hollow bell keeps a secret.</analysis>',
+    '```text\nA hollow bell keeps a secret.\n```', '{"idea":"A hollow bell keeps a secret."}',
+    'A hollow\u0000bell keeps a secret.']) {
+    assert.throws(() => cleanSentence(reply));
+  }
+});
+
 test("word files supply every part of speech", () => {
   const lists = wordLists();
   for (const name of ["adjectives", "nouns", "verbs", "adverbs", "prepositions", "places"]) {
@@ -44,4 +53,22 @@ test("randomize inserts a local sentence and does not call a model", async () =>
   }
   assert.equal(called, false);
   assert.ok(seen.size > 1);
+});
+
+test('optional local inspiration returns one bounded editable idea', async () => {
+  const idea=await requestRandomSentence({INSPIRATION_BACKEND:'local',INSPIRATION_MODEL:'nemo'}, async (url,options)=>{
+    assert.match(url,/chat\/completions$/);
+    const body=JSON.parse(options.body);
+    assert.equal(body.model,'nemo'); assert.ok(options.signal);
+    return {ok:true,json:async()=>({choices:[{message:{content:'A hollow marble keeps the last sound it heard.'}}]})};
+  });
+  assert.equal(idea,'A hollow marble keeps the last sound it heard.');
+});
+
+test('invalid, repeated, unavailable, and hung inspiration requests fall back locally', async () => {
+  const env={INSPIRATION_BACKEND:'local',INSPIRATION_MODEL:'nemo',INSPIRATION_TIMEOUT_MS:100};
+  for (const fetchImpl of [async()=>{throw Error('offline');},async()=>({ok:false}),async()=>({ok:true,json:async()=>({choices:[{message:{content:'no'}}]})}),()=>new Promise(()=>{})]) {
+    const result=await requestRandomSentence(env,fetchImpl);
+    assert.match(result,/^[A-Z].+[.]$/); assert.ok(result.length<=180);
+  }
 });

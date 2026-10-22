@@ -36,9 +36,37 @@ export function assertCatalogWeights(capabilities) {
   }
   requireWeight(weights.flying, "flying");
   requireWeight(weights.grant_stat, "grant_stat");
-  for (const system of Object.keys(weights.systems)) requireWeight(weights.systems[system], `system ${system}`);
+  requireWeight(weights.convert_resource, "convert_resource");
+  requireWeight(weights.activate_aura, "activate_aura");
+  requireWeight(weights.retaliate_nearby, "retaliate_nearby");
+  for (const effect of Object.keys(capabilities.combat_effects || {})) requireWeight(weights.combat?.[effect], effect);
+  for (const effect of capabilities.active?.effects || []) {
+    const spec = weights.active_effects?.[effect];
+    requireWeight(spec?.damage, `active ${effect} damage`);
+    requireWeight(spec?.radius, `active ${effect} radius`);
+    if (!Number.isFinite(spec.radius_step) || spec.radius_step <= 0) throw Error(`Active ${effect} has no positive radius step.`);
+  }
+  for (const action of capabilities.actions) {
+    if (!["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_stat", "convert_resource", "activate_aura"].includes(action)
+        && !Object.hasOwn(capabilities.heart_rewards, action) && !Object.hasOwn(capabilities.combat_effects || {}, action)) {
+      throw Error(`Action ${action} has no weight.`);
+    }
+  }
+  for (const subtypes of Object.values(capabilities.pickup_subtypes || {})) {
+    for (const subtype of Object.keys(subtypes)) requireWeight(weights.pickup_subtypes?.[subtype], subtype);
+  }
+  for (const system of ["familiar", "aura", "bomb", "laser", "knife", "tear_update", "active"]) {
+    if (capabilities.systems.includes(system)) requireWeight(weights.systems?.[system], `system ${system}`);
+  }
+  for (const [system, weight] of Object.entries(weights.systems || {})) requireWeight(weight, `system ${system}`);
+  for (const [stat, spec] of Object.entries(weights.stats || {})) {
+    if (!Number.isFinite(spec.step) || spec.step <= 0) throw Error(`stat ${stat} has no positive step.`);
+  }
   if (!Array.isArray(capabilities.quality_budgets) || capabilities.quality_budgets.length !== 5) {
     throw Error("quality budgets must declare weights for qualities 0 through 4.");
+  }
+  if (capabilities.quality_budgets.some((budget, index, budgets) => !Number.isFinite(budget) || budget < 0 || (index > 0 && budget < budgets[index - 1]))) {
+    throw Error("quality budgets must be finite nonnegative increasing weights.");
   }
 }
 
@@ -57,9 +85,43 @@ export function raiseQualityToFit(profile, capabilities) {
 const HIT_TRIGGERS = new Set(["player_hurt", "enemy_hit"]);
 const POSITIVE_STATS = ["damage", "damage_multiplier", "tears", "shot_speed", "range", "speed", "luck", "soul_hearts"];
 
-function overBudget(profile, capabilities) {
-  const ceiling = capabilities.quality_budgets[capabilities.quality_budgets.length - 1];
+const COMBAT_RANGE_STEP = 60;
+
+function overBudget(profile, capabilities, requestedQuality) {
+  const budgets = capabilities.quality_budgets;
+  const index = Number.isInteger(requestedQuality) ? requestedQuality : budgets.length - 1;
+  const ceiling = budgets[Math.min(Math.max(index, 0), budgets.length - 1)];
   return profileWeight(profile, capabilities) > ceiling;
+}
+
+function shrinkScaled(value, step, min) {
+  if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0 || !Number.isFinite(min)) return null;
+  const current = Math.ceil(value / step);
+  const cheaper = Math.max(min, (current - 1) * step);
+  if (Math.ceil(cheaper / step) >= current) return null;
+  return cheaper;
+}
+
+function combatMin(action, capabilities, bound) {
+  return capabilities.combat_effects?.[action?.type]?.[bound]?.[0];
+}
+
+function shrinkActive(profile, capabilities) {
+  const active = profile.active;
+  const spec = capabilities.weights?.active_effects?.[active?.effect];
+  const bounds = capabilities.active;
+  if (!active || !spec || !bounds) return false;
+  const cheaperRadius = shrinkScaled(active.radius, spec.radius_step, bounds.radius_bounds[0]);
+  if (cheaperRadius != null) {
+    active.radius = cheaperRadius;
+    return true;
+  }
+  if (active.damage > bounds.damage_bounds[0]) {
+    active.damage -= 1;
+    if (active.damage < bounds.damage_bounds[0]) active.damage = bounds.damage_bounds[0];
+    return true;
+  }
+  return false;
 }
 
 function zeroPositiveStat(profile, name, capabilities) {
@@ -142,9 +204,33 @@ function dropOneExpense(profile, capabilities) {
     actions[index].amount -= 1;
     return true;
   })) return true;
+  if (changeAction(profile, (action) => action?.type === "spawn_pickup" || action?.type === "grant_soul_hearts" || Object.hasOwn(capabilities.heart_rewards || {}, action?.type), (actions, index) => {
+    actions.splice(index, 1);
+    return true;
+  })) return true;
   if (popFlag(profile.tear_profile, 1)) return true;
   if (popFlag(profile.familiar?.attack, 1)) return true;
   if (popFlag(profile.bomb, 1)) return true;
+  if (changeAction(profile, (action) => shrinkScaled(action?.radius, COMBAT_RANGE_STEP, combatMin(action, capabilities, "radius_bounds")) != null, (actions, index) => {
+    const next = shrinkScaled(actions[index].radius, COMBAT_RANGE_STEP, combatMin(actions[index], capabilities, "radius_bounds"));
+    if (next == null) return false;
+    actions[index].radius = next;
+    return true;
+  })) return true;
+  if (changeAction(profile, (action) => shrinkScaled(action?.duration, COMBAT_RANGE_STEP, combatMin(action, capabilities, "duration_bounds")) != null, (actions, index) => {
+    const next = shrinkScaled(actions[index].duration, COMBAT_RANGE_STEP, combatMin(actions[index], capabilities, "duration_bounds"));
+    if (next == null) return false;
+    actions[index].duration = next;
+    return true;
+  })) return true;
+  if (shrinkActive(profile, capabilities)) return true;
+  if (changeAction(profile, (action) => action?.amount > 1, (actions, index) => {
+    actions[index].amount -= 1;
+    return true;
+  })) return true;
+  for (const stat of ["luck", "range", "damage", "damage_multiplier", "tears"]) {
+    if (zeroPositiveStat(profile, stat, capabilities)) return true;
+  }
   if (dropSystem(profile, "collision")) return true;
   if (dropSystem(profile, "tear_impact")) return true;
   if (Array.isArray(profile.rules) && profile.rules.length > 1) {
@@ -155,10 +241,6 @@ function dropOneExpense(profile, capabilities) {
     if (!hitRules.length) profile.systems = profile.systems?.filter((system) => system !== "on_hit");
     return true;
   }
-  if (changeAction(profile, (action) => action?.amount > 1, (actions, index) => {
-    actions[index].amount -= 1;
-    return true;
-  })) return true;
   if (changeAction(profile, (action) => action?.type === "grant_soul_hearts", (actions, index) => {
     actions.splice(index, 1);
     return true;
@@ -204,14 +286,15 @@ function syncRegion(profile) {
   else if (profile.region && profile.region !== "passive") profile.region = "passive";
 }
 
-// Quality 4 is the ceiling. Raise quality when the effects fit a higher tier.
-// When they do not fit any tier, drop incidental extras until they do.
+// A requested quality is an exact budget. Unrequested items use quality 4 as the
+// ceiling and raise quality when the remaining effects fit a higher tier.
+// When spend does not fit, shrink scaled costs and drop extras until it does.
 export function fitWeightBudget(profile, capabilities, requestedQuality) {
   if (!profile?.metadata || !Number.isInteger(profile.metadata.quality)) return profile;
   const targetQuality = Number.isInteger(requestedQuality) ? requestedQuality : null;
   if (targetQuality != null) profile.metadata.quality = targetQuality;
   let trimmed = false;
-  for (let guard = 0; guard < 48 && overBudget(profile, capabilities); guard += 1) {
+  for (let guard = 0; guard < 48 && overBudget(profile, capabilities, targetQuality); guard += 1) {
     if (!dropOneExpense(profile, capabilities)) break;
     trimmed = true;
   }
@@ -223,6 +306,16 @@ export function fitWeightBudget(profile, capabilities, requestedQuality) {
 export function profileWeight(profile, capabilities) {
   const weights = capabilities.weights;
   let total = 0;
+  if (profile.active) {
+    const active = profile.active;
+    if (!capabilities.active.effects.includes(active.effect)) throw Error(`Active effect ${active.effect} has no weight.`);
+    if (!Number.isFinite(active.damage) || !Number.isFinite(active.radius)) throw Error("Active damage and radius must be finite.");
+    const spec = weights.active_effects?.[active.effect];
+    const damageWeight = required(spec?.damage, `active ${active.effect} damage`);
+    const radiusWeight = required(spec?.radius, `active ${active.effect} radius`);
+    if (!Number.isFinite(spec.radius_step) || spec.radius_step <= 0) throw Error(`Active ${active.effect} has no positive radius step.`);
+    total += active.damage * damageWeight + Math.ceil(active.radius / spec.radius_step) * radiusWeight;
+  }
   const flags = [
     ...(profile.tear_profile?.flags ?? []),
     ...(profile.familiar?.attack?.flags ?? []),
@@ -249,17 +342,23 @@ export function profileWeight(profile, capabilities) {
   }
   const roomStats = {};
   for (const action of profileActions(profile)) {
-    if (action.type === "spawn_pickup") total += required(weights.pickups[action.pickup_type], action.pickup_type) * action.amount;
+    if (action.type === "spawn_pickup") total += required(action.pickup_subtype ? weights.pickup_subtypes[action.pickup_subtype] : weights.pickups[action.pickup_type], action.pickup_subtype || action.pickup_type) * action.amount;
     else if (action.type === "spawn_friendly") total += required(weights.friendlies[action.friendly_type], action.friendly_type) * action.amount;
     else if (typeof weights.heart_rewards[action.type] === "number") total += weights.heart_rewards[action.type] * action.amount;
-    else if (action.type === "grant_stat") roomStats[action.stat] = Math.max(roomStats[action.stat] || 0, action.amount);
+    else if (Object.hasOwn(capabilities.combat_effects || {}, action.type)) total += required(weights.combat?.[action.type], action.type) + action.amount + Math.ceil((action.radius || 0) / COMBAT_RANGE_STEP) + Math.ceil((action.duration || 0) / COMBAT_RANGE_STEP) + (action.type === "retaliate" && action.target_mode === "nearby" ? required(weights.retaliate_nearby, "retaliate_nearby") : 0);
+    else if (action.type === "convert_resource") total += weights.convert_resource + required(weights.pickups[action.output_resource], action.output_resource) * action.amount;
+    else if (action.type === "activate_aura") total += weights.activate_aura + Math.ceil(action.duration / 60);
+    else if (action.type === "grant_stat") {
+      if (action.duration !== undefined || action.stack_limit !== undefined) total += action.amount * (action.stack_limit || 1) * weights.grant_stat;
+      else roomStats[action.stat] = Math.max(roomStats[action.stat] || 0, action.amount);
+    } else throw Error(`Action ${action.type} has no weight.`);
   }
   for (const amount of Object.values(roomStats)) total += amount * weights.grant_stat;
   return total;
 }
 
 function required(weight, name) {
-  if (typeof weight !== "number") throw Error(`${name} has no weight.`);
+  if (typeof weight !== "number" || !Number.isFinite(weight)) throw Error(`${name} has no weight.`);
   return weight;
 }
 

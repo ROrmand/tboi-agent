@@ -9,6 +9,13 @@ const featured = (region) => ({
   stats: { luck: 1 },
 });
 
+test("active profiles never acquire passive stats, flags, or rewards from phrase repair", () => {
+  const profile = { systems: ["active"], active: { effect: "radial_burst" }, rules: [] };
+  const original = structuredClone(profile);
+  repairProfile(profile, "Add damage. Tears poison. When I clear a room, I sometimes find a coin.");
+  assert.deepEqual(profile, original);
+});
+
 test("a passive region drops familiar and aura the model also filled", () => {
   const profile = applyRegion({ ...featured("passive"), systems: ["stats", "familiar", "aura", "tears"] });
   assert.equal(profile.familiar, undefined);
@@ -63,10 +70,12 @@ test("an on_hit repair tells the model to add the hit rule", () => {
 test("repair notes name the missing object", () => {
   assert.match(repairNote("The stats system requires stats."), /stats\.speed|speed above 0/);
   assert.match(repairNote("The tears system requires a tear profile."), /tear_profile/);
-  assert.match(repairNote("The on_kill system requires its proc."), /on_kill/);
+  assert.match(repairNote("The on_kill system requires its proc."), /damage_burst/);
+  assert.match(repairNote("Combat effects require their catalog trigger and at least 30 frames cooldown."), /Do not replace a combat action/);
   assert.match(repairNote("The tear_impact system requires its proc."), /tear_impact/);
   assert.match(repairNote("metadata.description exceeds the 64-byte game limit."), /60 characters/);
-  assert.match(repairNote("Item spends 14 weight and quality 3 allows 18. The weight budget cannot hold this item."), /Quality 4 allows 24/);
+  assert.match(repairNote("Item spends 14 weight and quality 3 allows 18. The weight budget cannot hold this item."), /Quality 3 allows 18/);
+  assert.match(repairNote("Item spends 10 weight and quality 1 allows 8. The weight budget cannot hold this item."), /Quality 1 allows 8/);
   assert.match(repairNote("The aura system must match the region."), /passive cannot include familiar or aura/);
 });
 
@@ -162,6 +171,29 @@ test("a filled tear profile keeps the model's flags", () => {
   assert.equal(profile.stats.range, 5);
   assert.deepEqual(profile.tear_profile.flags, ["orbit"]);
   assert.equal(profile.rules.length, 1);
+});
+
+test("a flavor brief fills damage and a kill burst instead of a room-clear coin", () => {
+  const profile = repairProfile({
+    region: "passive",
+    systems: ["stats", "on_kill"],
+    rules: [{ trigger: "room_clear", conditions: [], actions: [{ type: "spawn_pickup", pickup_type: "coin", amount: 1 }] }],
+  }, 'A passive item inspired by "poopsock" slightly raises Isaac\'s damage and when an enemy dies, deals a small damage burst.');
+  assert.equal(profile.stats.damage, 1);
+  assert.equal(profile.on_kill.actions[0].type, "damage_burst");
+  assert.equal(profile.on_kill.cooldown, 30);
+  assert.equal(profile.rules.some((rule) => rule.actions?.some((action) => action.type === "spawn_pickup")), false);
+});
+
+test("a kill burst missing cooldown keeps the combat action", () => {
+  const profile = repairProfile({
+    region: "passive",
+    systems: ["on_kill"],
+    on_kill: { conditions: [], actions: [{ type: "damage_burst", amount: 1, radius: 80 }] },
+    rules: [],
+  }, "When an enemy dies, deal a small burst.");
+  assert.equal(profile.on_kill.cooldown, 30);
+  assert.equal(profile.on_kill.actions[0].type, "damage_burst");
 });
 
 test("a marked callback keeps its proc and a stats system sets the flag", () => {

@@ -64,4 +64,13 @@
   <passive name="Generated Passive 61" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
   <passive name="Generated Passive 62" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
   <passive name="Generated Passive 63" description="Generated passive item" gfx="collectibles/ember_orb.png" quality="3" cache="damage firedelay range luck shotspeed speed" />
+  <passive name="AI Item" description="Describe what this becomes" gfx="collectibles/ember_orb.png" quality="3" />
+  <active name="Generated Active 00" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 01" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 02" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 03" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 04" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 05" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 06" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
+  <active name="Generated Active 07" description="Generated active item" gfx="collectibles/ember_orb.png" quality="3" maxcharges="6" />
 </items>

@@ -10,9 +10,11 @@ export const MOD_FILES = [
   "nebius_prompt.lua",
   "metadata.xml",
   "content/items.xml",
+  "content/players.xml",
   "content/sounds.xml",
   "content/entities2.xml",
   "resources/gfx/nebius_creator/white.png",
+  "resources/gfx/ui/boss/nebius_creator_name.png",
 ];
 
 export async function syncMod(source, target) {

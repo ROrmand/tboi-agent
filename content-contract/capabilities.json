@@ -1,58 +1,447 @@
 {
-  "version": 1,
+  "version": 3,
   "entity_type": "passive_item",
-  "item_limits": {"max_systems":6,"max_total_flags":3},
-  "quality_budgets": [4, 8, 12, 18, 24],
-  "triggers": ["room_enter", "room_clear", "enemy_hit", "player_hurt", "pickup", "new_floor", "tear_fire"],
-  "conditions": ["chance", "once_per_room", "once_per_floor"],
-  "actions": ["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_half_red_hearts", "grant_full_red_hearts", "grant_black_hearts", "grant_eternal_hearts", "grant_bone_hearts", "grant_stat"],
+  "item_limits": {
+    "max_systems": 6,
+    "max_total_flags": 3
+  },
+  "quality_budgets": [
+    4,
+    8,
+    12,
+    18,
+    24
+  ],
+  "triggers": [
+    "room_enter",
+    "room_clear",
+    "enemy_hit",
+    "player_hurt",
+    "pickup",
+    "new_floor",
+    "tear_fire"
+  ],
+  "conditions": [
+    "chance",
+    "once_per_room",
+    "once_per_floor"
+  ],
+  "rule_lifecycle": {
+    "cooldown_bounds": [
+      15,
+      1800
+    ],
+    "duration_bounds": [
+      15,
+      1800
+    ],
+    "stack_limit_bounds": [
+      1,
+      4
+    ],
+    "max_grants": 1536,
+    "expires": "duration_or_next_room",
+    "legacy_stacking": "maximum_per_item_player_stat"
+  },
+  "pickup_subtypes": {
+    "coin": {
+      "penny": 1,
+      "nickel": 2,
+      "dime": 3
+    },
+    "key": {
+      "normal": 1
+    },
+    "bomb": {
+      "normal": 1
+    },
+    "heart": {
+      "full": 1,
+      "half": 2,
+      "soul": 3
+    }
+  },
+  "actions": [
+    "spawn_pickup",
+    "spawn_friendly",
+    "grant_soul_hearts",
+    "grant_half_red_hearts",
+    "grant_full_red_hearts",
+    "grant_black_hearts",
+    "grant_eternal_hearts",
+    "grant_bone_hearts",
+    "grant_stat",
+    "damage_burst",
+    "apply_status",
+    "retaliate",
+    "convert_resource",
+    "activate_aura"
+  ],
+  "resources": {
+    "coin": {
+      "read": "GetNumCoins",
+      "write": "AddCoins"
+    },
+    "key": {
+      "read": "GetNumKeys",
+      "write": "AddKeys"
+    },
+    "bomb": {
+      "read": "GetNumBombs",
+      "write": "AddBombs"
+    }
+  },
+  "temporary_aura": {
+    "duration_bounds": [
+      15,
+      1800
+    ],
+    "amount": 1,
+    "minimum_cooldown": 30,
+    "expires": "duration_or_next_room_or_source_removal"
+  },
+  "combat_effects": {
+    "damage_burst": {
+      "triggers": [
+        "on_kill"
+      ],
+      "amount_bounds": [
+        1,
+        3
+      ],
+      "radius_bounds": [
+        40,
+        120
+      ],
+      "max_targets": 8,
+      "minimum_cooldown": 30
+    },
+    "apply_status": {
+      "triggers": [
+        "tear_impact"
+      ],
+      "statuses": [
+        "slow",
+        "burn",
+        "fear"
+      ],
+      "amount_bounds": [
+        1,
+        2
+      ],
+      "duration_bounds": [
+        15,
+        120
+      ],
+      "minimum_cooldown": 30
+    },
+    "retaliate": {
+      "triggers": [
+        "collision",
+        "player_hurt"
+      ],
+      "amount_bounds": [
+        1,
+        3
+      ],
+      "target_modes": ["attacker", "nearby"],
+      "default_target_mode": "attacker",
+      "nearby_trigger": "player_hurt",
+      "radius_bounds": [40, 120],
+      "max_targets": 8,
+      "minimum_cooldown": 30
+    }
+  },
   "heart_rewards": {
-    "grant_half_red_hearts": {"handler":"AddHearts","units":1,"amount_bounds":[1,4],"label":"half red heart"},
-    "grant_full_red_hearts": {"handler":"AddHearts","units":2,"amount_bounds":[1,4],"label":"full red heart"},
-    "grant_black_hearts": {"handler":"AddBlackHearts","units":2,"amount_bounds":[1,4],"label":"black heart"},
-    "grant_eternal_hearts": {"handler":"AddEternalHearts","units":1,"amount_bounds":[1,4],"label":"eternal heart"},
-    "grant_bone_hearts": {"handler":"AddBoneHearts","units":1,"amount_bounds":[1,4],"label":"bone heart"}
+    "grant_half_red_hearts": {
+      "handler": "AddHearts",
+      "units": 1,
+      "amount_bounds": [
+        1,
+        4
+      ],
+      "label": "half red heart"
+    },
+    "grant_full_red_hearts": {
+      "handler": "AddHearts",
+      "units": 2,
+      "amount_bounds": [
+        1,
+        4
+      ],
+      "label": "full red heart"
+    },
+    "grant_black_hearts": {
+      "handler": "AddBlackHearts",
+      "units": 2,
+      "amount_bounds": [
+        1,
+        4
+      ],
+      "label": "black heart"
+    },
+    "grant_eternal_hearts": {
+      "handler": "AddEternalHearts",
+      "units": 1,
+      "amount_bounds": [
+        1,
+        4
+      ],
+      "label": "eternal heart"
+    },
+    "grant_bone_hearts": {
+      "handler": "AddBoneHearts",
+      "units": 1,
+      "amount_bounds": [
+        1,
+        4
+      ],
+      "label": "bone heart"
+    }
   },
-  "regions": ["passive", "familiar", "aura", "familiar_aura"],
-  "systems": ["stats", "tears", "rules", "familiar", "aura", "on_hit", "on_kill", "tear_impact", "collision", "tear_update", "bomb", "laser", "knife"],
-  "tear_update_behaviors": ["home", "pulse", "shrink"],
-  "familiars": ["sentry", "melee", "normal", "shield"],
-  "familiar_patterns": ["single", "fan", "lob", "varied"],
-  "friendlies": ["attack_fly", "spider", "pooter"],
-  "auras": ["damage", "slow", "burn", "fear"],
-  "room_stat_reward": {"handler":"MC_EVALUATE_CACHE","stats":["damage","tears","luck"],"amount_bounds":[1,4],"integer":true,"stacking":"maximum_per_item_player_stat","expires":"next_room","tears_unit":"fire_delay_reduction"},
+  "regions": [
+    "passive",
+    "familiar",
+    "aura",
+    "familiar_aura"
+  ],
+  "systems": [
+    "stats",
+    "tears",
+    "rules",
+    "familiar",
+    "aura",
+    "on_hit",
+    "on_kill",
+    "tear_impact",
+    "collision",
+    "tear_update",
+    "bomb",
+    "laser",
+    "knife",
+    "active"
+  ],
+  "tear_update_behaviors": [
+    "home",
+    "pulse",
+    "shrink"
+  ],
+  "familiars": [
+    "sentry",
+    "melee",
+    "normal",
+    "shield"
+  ],
+  "familiar_patterns": [
+    "single",
+    "fan",
+    "lob",
+    "varied"
+  ],
+  "friendlies": [
+    "attack_fly",
+    "spider",
+    "pooter"
+  ],
+  "auras": [
+    "damage",
+    "slow",
+    "burn",
+    "fear"
+  ],
+  "room_stat_reward": {
+    "handler": "MC_EVALUATE_CACHE",
+    "stats": [
+      "damage",
+      "tears",
+      "luck"
+    ],
+    "amount_bounds": [
+      1,
+      4
+    ],
+    "integer": true,
+    "stacking": "maximum_per_item_player_stat",
+    "expires": "next_room",
+    "tears_unit": "fire_delay_reduction"
+  },
   "aura_statuses": {
-    "slow": {"handler":"AddSlowing","duration_bounds":[15,120],"radius_bounds":[50,180],"cooldown_bounds":[15,90],"slow_factor":0.5},
-    "burn": {"handler":"AddBurn","duration_bounds":[15,120],"damage_bounds":[0.25,2],"radius_bounds":[50,180],"cooldown_bounds":[15,90]},
-    "fear": {"handler":"AddFear","duration_bounds":[15,120],"radius_bounds":[50,180],"cooldown_bounds":[15,90]}
+    "slow": {
+      "handler": "AddSlowing",
+      "duration_bounds": [
+        15,
+        120
+      ],
+      "radius_bounds": [
+        50,
+        180
+      ],
+      "cooldown_bounds": [
+        15,
+        90
+      ],
+      "slow_factor": 0.5
+    },
+    "burn": {
+      "handler": "AddBurn",
+      "duration_bounds": [
+        15,
+        120
+      ],
+      "damage_bounds": [
+        0.25,
+        2
+      ],
+      "radius_bounds": [
+        50,
+        180
+      ],
+      "cooldown_bounds": [
+        15,
+        90
+      ]
+    },
+    "fear": {
+      "handler": "AddFear",
+      "duration_bounds": [
+        15,
+        120
+      ],
+      "radius_bounds": [
+        50,
+        180
+      ],
+      "cooldown_bounds": [
+        15,
+        90
+      ]
+    }
   },
-  "bomb_flags": ["poison"],
-  "bomb_flag_effects": {"poison":{"handler":"AddTearFlags","flag":"TEAR_POISON","max_flags":1}},
-  "pickup_types": ["coin", "key", "bomb", "heart", "pill", "card", "battery", "trinket", "chest", "sack"],
-  "tear_flags": ["homing", "spectral", "piercing", "poison", "burn", "slow", "fear", "charm", "bounce", "split", "orbit", "glow", "explosive", "confusion", "knockback", "continuum", "boomerang", "grow", "shrink", "sticky", "wiggle", "slowing_creep"],
+  "bomb_flags": [
+    "poison"
+  ],
+  "bomb_flag_effects": {
+    "poison": {
+      "handler": "AddTearFlags",
+      "flag": "TEAR_POISON",
+      "max_flags": 1
+    }
+  },
+  "pickup_types": [
+    "coin",
+    "key",
+    "bomb",
+    "heart",
+    "pill",
+    "card",
+    "battery",
+    "trinket",
+    "chest",
+    "sack"
+  ],
+  "tear_flags": [
+    "homing",
+    "spectral",
+    "piercing",
+    "poison",
+    "burn",
+    "slow",
+    "fear",
+    "charm",
+    "bounce",
+    "split",
+    "orbit",
+    "glow",
+    "explosive",
+    "confusion",
+    "knockback",
+    "continuum",
+    "boomerang",
+    "grow",
+    "shrink",
+    "sticky",
+    "wiggle",
+    "slowing_creep"
+  ],
   "stat_bounds": {
-    "damage": [-1, 15],
-    "damage_multiplier": [0.5, 2.0],
-    "tears": [-1, 10],
-    "shot_speed": [-0.3, 1.5],
-    "range": [-5, 20],
-    "speed": [-0.15, 0.5],
-    "luck": [-1, 10],
-    "soul_hearts": [-4, 4]
+    "damage": [
+      -1,
+      15
+    ],
+    "damage_multiplier": [
+      0.5,
+      2
+    ],
+    "tears": [
+      -1,
+      10
+    ],
+    "shot_speed": [
+      -0.3,
+      1.5
+    ],
+    "range": [
+      -5,
+      20
+    ],
+    "speed": [
+      -0.15,
+      0.5
+    ],
+    "luck": [
+      -1,
+      10
+    ],
+    "soul_hearts": [
+      -4,
+      4
+    ]
   },
   "weights": {
     "tear_flags": {
       "glow": 6,
-      "spectral": 6, "bounce": 6, "wiggle": 6,
-      "poison": 6, "burn": 6, "slow": 6, "fear": 6, "charm": 6, "confusion": 6, "split": 6, "knockback": 6,
-      "grow": 6, "shrink": 6, "sticky": 6, "slowing_creep": 6,
-      "piercing": 6, "orbit": 6, "continuum": 6, "boomerang": 6,
-      "homing": 6, "explosive": 6
+      "spectral": 6,
+      "bounce": 6,
+      "wiggle": 6,
+      "poison": 6,
+      "burn": 6,
+      "slow": 6,
+      "fear": 6,
+      "charm": 6,
+      "confusion": 6,
+      "split": 6,
+      "knockback": 6,
+      "grow": 6,
+      "shrink": 6,
+      "sticky": 6,
+      "slowing_creep": 6,
+      "piercing": 6,
+      "orbit": 6,
+      "continuum": 6,
+      "boomerang": 6,
+      "homing": 6,
+      "explosive": 6
     },
     "pickups": {
       "coin": 1,
-      "heart": 2, "key": 2, "bomb": 2, "pill": 2, "card": 2, "battery": 2, "sack": 2,
-      "trinket": 3, "chest": 3
+      "heart": 2,
+      "key": 2,
+      "bomb": 2,
+      "pill": 2,
+      "card": 2,
+      "battery": 2,
+      "sack": 2,
+      "trinket": 3,
+      "chest": 3
+    },
+    "pickup_subtypes": {
+      "penny": 1,
+      "nickel": 5,
+      "dime": 10,
+      "normal": 2,
+      "full": 2,
+      "half": 2,
+      "soul": 8
     },
     "heart_rewards": {
       "grant_half_red_hearts": 2,
@@ -62,19 +451,119 @@
       "grant_bone_hearts": 4,
       "grant_eternal_hearts": 5
     },
-    "friendlies": {"attack_fly": 2, "spider": 2, "pooter": 3},
+    "friendlies": {
+      "attack_fly": 2,
+      "spider": 2,
+      "pooter": 3
+    },
     "stats": {
-      "damage": {"step": 1, "weight": 1},
-      "damage_multiplier": {"base": 1, "step": 0.1, "weight": 1, "activation_weight": 1},
-      "tears": {"step": 1, "weight": 1},
-      "shot_speed": {"step": 0.1, "weight": 3},
-      "range": {"step": 1, "weight": 1},
-      "speed": {"step": 0.1, "weight": 4},
-      "luck": {"step": 1, "weight": 1},
-      "soul_hearts": {"step": 1, "weight": 2}
+      "damage": {
+        "step": 1,
+        "weight": 1
+      },
+      "damage_multiplier": {
+        "base": 1,
+        "step": 0.1,
+        "weight": 1,
+        "activation_weight": 1
+      },
+      "tears": {
+        "step": 1,
+        "weight": 1
+      },
+      "shot_speed": {
+        "step": 0.1,
+        "weight": 3
+      },
+      "range": {
+        "step": 1,
+        "weight": 1
+      },
+      "speed": {
+        "step": 0.1,
+        "weight": 4
+      },
+      "luck": {
+        "step": 1,
+        "weight": 1
+      },
+      "soul_hearts": {
+        "step": 1,
+        "weight": 2
+      }
     },
     "flying": 8,
-    "systems": {"familiar": 4, "aura": 6, "bomb": 3, "laser": 3, "knife": 3, "tear_update": 6},
-    "grant_stat": 1
-  }
+    "systems": {
+      "familiar": 4,
+      "aura": 6,
+      "bomb": 3,
+      "laser": 3,
+      "knife": 3,
+      "tear_update": 6,
+      "active": 2
+    },
+    "active_effects": {
+      "radial_burst": {
+        "damage": 1,
+        "radius": 1,
+        "radius_step": 60
+      }
+    },
+    "grant_stat": 1,
+    "convert_resource": 2,
+    "activate_aura": 2,
+    "retaliate_nearby": 6,
+    "combat": {
+      "damage_burst": 6,
+      "apply_status": 6,
+      "retaliate": 6
+    }
+  },
+  "active": {
+    "effects": [
+      "radial_burst"
+    ],
+    "charges": [
+      6
+    ],
+    "targeting": [
+      "self"
+    ],
+    "damage_bounds": [
+      1,
+      6
+    ],
+    "radius_bounds": [
+      40,
+      120
+    ],
+    "max_targets": 8,
+    "shell_capacity": 8,
+    "duplicate_policy": "once_per_player_item_slot_frame",
+    "use_restrictions": {
+      "requires_full_charge": true,
+      "requires_enemy_in_radius": true,
+      "allows_recursive_use": false,
+      "allows_car_battery_use": false,
+      "active_slot_bounds": [0, 3],
+      "spend_charge_on": "successful_damage"
+    }
+  },
+  "presentation": {
+    "sounds": [
+      "none",
+      "chime",
+      "click",
+      "powerup"
+    ],
+    "animations": [
+      "none",
+      "pulse"
+    ]
+  },
+  "profile_version": 1,
+  "entity_types": [
+    "passive_item",
+    "active_item"
+  ]
 }

@@ -12,6 +12,9 @@ import { assertRuntimeCompatible } from './compatibility.mjs';
 import { syncMod } from './sync-mod.mjs';
 import { requestRandomSentence } from './sentence.mjs';
 import { createGenerationTimer, noteGeneratorLine } from './timing.mjs';
+import { JobStore } from './job-store.mjs';
+import { generationErrorCode } from './errors.mjs';
+import { assertComfyUiReady } from './comfyui.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
@@ -26,21 +29,71 @@ const isaacLog = env.ISAAC_LOG_FILE || path.join(
 );
 const jobs = new Map();
 const jobTimers = new WeakMap();
+const jobChildren = new WeakMap();
 let activeJob = null;
-let finishingJob = false;
+const finishingJobs = new WeakSet();
 const slotLedger = new SlotLedger(path.join(modDirectory, 'art-reservations.json'));
 let gameContext = null;
 let gameContextAt = 0;
 let statusWrites = Promise.resolve();
 let errorWrites = Promise.resolve();
 let timingWrites = Promise.resolve();
-const nativePipe = new NativePipeServer({ seedHello: true });
+const nativePipe = new NativePipeServer({ seedHello: true, canDeliver: envelope => matchesCurrentRun(jobs.get(envelope.id), true) });
 const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY
   ? path.resolve(root, env.NEBIUS_OUTPUT_DIRECTORY)
   : path.join(root, 'runtime', 'generated');
 // Isaac caches failed include() calls. One fresh module name is consumed each
 // second, so this covers the bridge's 370-second in-game timeout with margin.
 const GAME_MODULE_SLOT_COUNT = 400;
+const jobStore = new JobStore(path.join(outputDirectory, 'job-journal.json'));
+const recoveryNotices = new Map();
+const missingRequests = new Map();
+let capacityNotice=null;
+function matchesCurrentRun(job, allowCapacity = false) {
+  const blocked = gameContext?.blocked;
+  const capacityOnly = allowCapacity && typeof blocked === 'string' && /^(Item|Artwork) limit reached: 64\/64\./.test(blocked);
+  return Boolean(job && gameContext && (!blocked || capacityOnly) && gameContext.ended_run !== true &&
+    Date.now() - gameContextAt <= 5000 && job.run === gameContext.run &&
+    (job.saveSlot === undefined || job.saveSlot === gameContext.save_slot));
+}
+function trimJobs() {
+  for (const [id,job] of jobs) {
+    if (jobs.size<=256) break;
+    if (job.state==="applied" || job.state==="failed" || (job.kind==="sentence" && job.completedAt)) jobs.delete(id);
+  }
+  for (const map of [missingRequests,recoveryNotices]) while(map.size>256) map.delete(map.keys().next().value);
+}
+
+function recoverQueued(context) {
+  if (!context?.run) return;
+  try { assertRuntimeCompatible(context); } catch { return; }
+  const ledger=slotLedger.data;
+  const protectedArt=new Set([...(ledger.used || []),...(ledger.legacy || []),...Object.values(ledger.manifests || {}).flatMap(manifest=>manifest.used)]);
+  const noticeKey=context.run+":"+protectedArt.size;
+  if (capacityNotice!==noticeKey) { publishStatus(context.run+"_capacity","capacity",String(protectedArt.size)); capacityNotice=noticeKey; }
+  for (const id of Array.isArray(context.pending) ? context.pending.slice(0,64) : []) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(id) || !id.startsWith(context.run + "_")) continue;
+    const record=jobStore.records.get(id);
+    if (!record && !missingRequests.has(id)) missingRequests.set(id,Date.now());
+    const missing=!record && Date.now()-missingRequests.get(id)>5000;
+    const notice=record?.state === "failed" ? (record.error || "Generation was interrupted. Retry your prompt.") : (missing ? "Request was not received by the bridge. Retry your prompt." : null);
+    if (notice && recoveryNotices.get(id)!==notice) { publishStatus(id,"error",notice.slice(0,500)); recoveryNotices.set(id,notice); }
+  }
+  for (const record of jobStore.records.values()) {
+    if (record.state !== 'queued') continue;
+    if ((context.ended_run === true && record.run === context.run) || (context.fresh_run === true && record.saveSlot === context.save_slot && record.run !== context.run)) {
+      nativePipe.discard(record.id);
+      const failed = { ...record, state:'failed', status:'error', errorCode:'STALE_RUN', error:'Run ended before item application.' };
+      jobStore.put(failed);
+      jobs.set(record.id,failed);
+      continue;
+    }
+    if (!matchesCurrentRun(record, true)) { nativePipe.discard(record.id); continue; }
+    try { nativePipe.publish(record.envelope); }
+    catch (error) { console.warn('Queued delivery is waiting:', error.message); }
+  }
+  trimJobs();
+}
 
 function errorCategory(detail) {
   if (/timed out|timeout/i.test(detail)) return 'timeout';
@@ -66,7 +119,7 @@ function logTiming(job, error) {
   const timing = timer.finish();
   const entry = {
     time: new Date().toISOString(), id: job.id, kind: job.kind || 'item',
-    outcome: error ? 'error' : 'ready', duration_ms: timing.duration_ms,
+    outcome: error ? 'error' : job.status, duration_ms: timing.duration_ms,
     stages: timing.stages, totals_ms: timing.totals_ms,
   };
   if (Number.isInteger(job.quality)) entry.quality = job.quality;
@@ -119,8 +172,8 @@ const server = createServer(async (request, response) => {
     const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
     if (!prompt || prompt.length > 2000) return send(response, 400, { error: "prompt must contain 1–2000 characters" });
 
-    const quality = Number.isInteger(input.quality) && input.quality >= 1 && input.quality <= 4 ? input.quality : 3;
-    const job = startJob(prompt, randomUUID(), false, quality);
+    const quality = Number.isInteger(input.quality) && input.quality >= 0 && input.quality <= 4 ? input.quality : 3;
+    const job = startJob(prompt, undefined, false, quality, undefined, input.item_type);
     send(response, 202, job);
   } catch (error) {
     return send(response, 400, { error: error.message || "Invalid request" });
@@ -162,26 +215,49 @@ function finishSentence(job, error, sentence, timeout) {
     console.log(`Job ${job.id}: sentence`);
   }
   logTiming(job, error);
+  trimJobs();
 }
 
-function startJob(prompt, id = randomUUID(), writeGameStatus = false, quality = 3) {
+function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, itemType = "passive") {
   if(activeJob) throw Error('Another request is running. Wait until it finishes.');
   if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
   assertRuntimeCompatible(gameContext);
-  if (!id.startsWith(gameContext.run + '_')) id = gameContext.run + '_' + id;
-  const artSlot = slotLedger.reserve(gameContext);
-  const job = { id, status: "generating", quality, promptChars: prompt.length, createdAt: new Date().toISOString() };
+  if (!["passive","active"].includes(itemType)) throw Error("Invalid item type.");
+  if (itemType === "active" && (!Number.isInteger(gameContext.active_count) || gameContext.active_count >= 8 || gameContext.active_available !== true)) throw Error("Active shell capacity unavailable or full (8/8).");
+  if (id === undefined) id = gameContext.run + '_' + randomUUID().slice(0, 99 - gameContext.run.length);
+  if (!id.startsWith(gameContext.run + '_')) throw Error('Generation request is from another run.');
+  if (jobs.has(id)) return jobs.get(id);
+  if (delivery !== undefined && (!delivery || Object.keys(delivery).some(key => !["mode", "owner"].includes(key)) || delivery.mode !== "blank" || typeof delivery.owner !== "string" || !/^-?\d{1,40}$/.test(delivery.owner))) throw Error("Invalid blank delivery request.");
+  const job = { id, run: gameContext.run, saveSlot:gameContext.save_slot, state: 'received', status: "generating", quality, delivery, itemType, promptChars: prompt.length, createdAt: new Date().toISOString() };
+  job.prompt = prompt;
+  jobStore.put(job);
+  job.state="preflight"; jobStore.put(job);
   jobTimers.set(job, createGenerationTimer());
   activeJob = job;
   jobs.set(id, job);
   publishStatus(id, 'generating', 'Bridge received the prompt. Designing the passive item...');
   if (writeGameStatus) writeGameBridgeStatus(job);
-  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--quality", String(quality), "--request-id", id, "--art-slot", String(artSlot)], {
+  prepareJob(job, prompt, writeGameStatus).catch(error => finishJob(job, error.message, writeGameStatus));
+  return job;
+}
+
+async function prepareJob(job, prompt, writeGameStatus) {
+  if ((env.IMAGE_BACKEND || 'comfyui') === 'comfyui') await assertComfyUiReady(env.COMFYUI_URL || 'http://127.0.0.1:8188');
+  if (job.completedAt) return;
+  if (!matchesCurrentRun(job)) throw Error('Run ended or changed before generation started.');
+  assertRuntimeCompatible(gameContext);
+  job.artSlot = slotLedger.reserve(gameContext);
+  job.state = 'reserved';
+  jobStore.put(job);
+  const id = job.id;
+  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--quality", String(job.quality), "--request-id", id, "--art-slot", String(job.artSlot), "--item-type", job.itemType], {
     cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
+  jobChildren.set(job,child);
   let output = "";
   let pending = '';
   child.stdout.on("data", (chunk) => {
+    if (job.completedAt) return;
     output = (output + chunk).slice(-8000);
     pending += chunk;
     const lines = pending.split('\n'); pending = lines.pop();
@@ -189,41 +265,47 @@ function startJob(prompt, id = randomUUID(), writeGameStatus = false, quality = 
       const stage = noteGeneratorLine(jobTimers.get(job), line);
       if (!stage) continue;
       job.stage = stage;
+      job.state = ['image', 'art', 'familiar_art', 'familiar_anim'].includes(stage) ? 'rendering' : (stage === 'publish' ? 'validating' : 'designing');
+      try { jobStore.put(job); } catch (error) { child.kill(); finishJob(job, error.message, writeGameStatus); return; }
       publishStatus(id, 'generating', 'Generating passive item: ' + job.stage);
       if(writeGameStatus) writeGameBridgeStatus(job);
       console.log(`Job ${id}: ${job.stage}`);
     }
   });
-  child.stderr.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { output = (output + chunk).slice(-8000); });
   child.on("error", (error) => finishJob(job, error.message, writeGameStatus));
   child.on("close", (code) => finishJob(job, code === 0 ? null : output.trim().slice(-500) || `Generator exited with code ${code}.`, writeGameStatus));
   const deadline = setTimeout(() => {child.kill(); finishJob(job, 'Generation timed out. Retry with a simpler prompt.', writeGameStatus);}, 350000);
   child.on('close', () => clearTimeout(deadline));
-  return job;
 }
 
 async function finishJob(job, error, writeGameStatus) {
-  if (job.completedAt || finishingJob) return;
-  finishingJob = true;
+  if (job.completedAt || finishingJobs.has(job)) return;
+  finishingJobs.add(job);
   if (!error) {
     jobTimers.get(job)?.mark('deliver');
     try {
-      if (!gameContext || !job.id.startsWith(gameContext.run + '_') || gameContext.blocked) throw Error('Run ended or changed before generation completed.');
+      if (!matchesCurrentRun(job)) throw Error('Run ended or changed before generation completed.');
       assertRuntimeCompatible(gameContext);
       await publishNativeProfile(job);
     } catch (publishError) {
       error = `Native profile publish failed: ${publishError.message}`;
     }
   }
-  job.status = error ? "error" : "ready";
-  if (error) job.error = error;
+  if (job.completedAt) { finishingJobs.delete(job); return; }
+  job.status = error ? "error" : "queued";
+  job.state = error ? 'failed' : 'queued';
+  if (error) { job.error = error; job.errorCode = job.errorCode || generationErrorCode(error); }
   job.completedAt = new Date().toISOString();
-  activeJob = null;
-  finishingJob = false;
+  try { jobStore.put(job); }
+  catch (storeError) { console.error('Job journal could not be updated:', storeError.message); }
+  if (activeJob === job) activeJob = null;
+  finishingJobs.delete(job);
   if (error) publishStatus(job.id, 'error', error.slice(0, 500));
   console.log(`Job ${job.id}: ${job.status}${error ? ' - ' + error : ''}`);
   logTiming(job, error);
   if (writeGameStatus) writeGameBridgeStatus(job);
+  trimJobs();
 }
 
 function publishStatus(id, status, detail) {
@@ -232,7 +314,7 @@ function publishStatus(id, status, detail) {
     logError({ id, phase: job?.stage || job?.kind || 'request',
       category: errorCategory(detail), detail });
   }
-  try { nativePipe.publish({ version: 1, type: 'status', id, status, detail }); }
+  try { nativePipe.publish({ version: 1, type: 'status', id, status, detail, ...(status==='error' ? {error_code:jobs.get(id)?.errorCode || generationErrorCode(detail)} : {}) }); }
   catch (error) { console.warn('Native IPC status skipped: ' + error.message); }
 }
 
@@ -245,7 +327,15 @@ async function publishNativeProfile(job) {
   if (profile.version !== 1 || profile.bridge_request_id !== job.id) {
     throw Error('generated profile does not belong to this request');
   }
-  nativePipe.publish({ version: 1, type: 'profile', id: job.id, profile });
+  if (job.completedAt) throw Error('Request cancelled before publication.');
+  if (!matchesCurrentRun(job)) throw Error('Run ended or changed before profile publication.');
+  assertRuntimeCompatible(gameContext);
+  const envelope = { version: 1, type: 'profile', id: job.id, profile };
+  if (job.delivery) envelope.delivery = job.delivery;
+  job.state = 'queued';
+  jobStore.put(job, envelope);
+  try { nativePipe.publish(envelope); }
+  catch(error) { console.warn("Durable delivery is waiting for IPC capacity:",error.message); }
   console.log(`Native IPC profile published: ${job.id}`);
 }
 
@@ -278,6 +368,33 @@ async function watchIsaacLog() {
       const end = appended.lastIndexOf(10);
       remainder = appended.subarray(end+1);
       for (const line of appended.subarray(0,end+1).toString('utf8').split(/\r?\n/)) {
+        const rejection=line.match(/\[NebiusBridge\] rejected (\{.*\})/);
+        if (rejection) {
+          try {
+            const input=JSON.parse(rejection[1]); const job=jobs.get(input.id);
+            if (job?.state==="queued" && job.run===gameContext?.run) {
+              const failed={...job,state:"failed",status:"error",errorCode:"DELIVERY_REJECTED",error:String(input.reason || "Isaac rejected the delivery.").slice(0,500)};
+              jobStore.put(failed); Object.assign(job,failed); nativePipe.discard(job.id);
+              logError({id:job.id,phase:"delivery",category:"delivery",detail:failed.error,source:"game"});
+            }
+          } catch(error) { console.warn("Could not save delivery rejection:",error.message); }
+          continue;
+        }
+        const cancellation=line.match(/\[NebiusBridge\] cancel (\{.*\})/);
+        if (cancellation) {
+          try {
+            const {id}=JSON.parse(cancellation[1]); const job=jobs.get(id);
+            if (typeof id==="string" && gameContext?.run && id.startsWith(gameContext.run+"_") && job && !["applied","failed"].includes(job.state)) {
+              const failed={...job,state:"failed",status:"error",errorCode:"CANCELLED",error:"Request cancelled. AI Item kept.",completedAt:new Date().toISOString()};
+              jobStore.put(failed);
+              Object.assign(job,failed);
+              nativePipe.discard(id); jobChildren.get(job)?.kill();
+              if (activeJob===job) activeJob=null;
+              publishStatus(id,"error",job.error);
+            }
+          } catch(error) { console.warn("Could not cancel request:",error.message); }
+          continue;
+        }
         const uiError = line.match(/\[NebiusBridge\] error (\{.*\})/);
         if (uiError) {
           try {
@@ -291,7 +408,12 @@ async function watchIsaacLog() {
         }
         const state = line.match(/\[NebiusBridge\] state (\{.*\})/);
         if (state) {
-          try { gameContext = JSON.parse(state[1]); gameContextAt = Date.now(); } catch {}
+          try {
+            gameContext = JSON.parse(state[1]); gameContextAt = Date.now();
+            try { assertRuntimeCompatible(gameContext); slotLedger.observe(gameContext); }
+            catch (error) { gameContext.blocked=error.message; }
+            recoverQueued(gameContext);
+          } catch {}
           continue;
         }
         const sentenceMatch = line.match(/\[NebiusBridge\] sentence (\{.*\})/);
@@ -315,11 +437,14 @@ async function watchIsaacLog() {
           const input = JSON.parse(match[1]);
           const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
           const id = typeof input.id === "string" ? input.id : "";
-          const quality = Number.isInteger(input.quality) && input.quality >= 1 && input.quality <= 4 ? input.quality : 3;
+          const quality = Number.isInteger(input.quality) && input.quality >= 0 && input.quality <= 4 ? input.quality : 3;
           if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && prompt && prompt.length <= 2000 && !jobs.has(id)) {
             if(activeJob) publishStatus(id, 'error', 'Another request is running. Wait until it finishes.');
             else {
-              try { startJob(prompt, id, false, quality); }
+              try {
+                if (!gameContext?.run || !id.startsWith(gameContext.run+'_')) throw Error('Generation request is from another run.');
+                startJob(prompt, id, false, quality, input.delivery, input.item_type);
+              }
               catch (error) { publishStatus(id, 'error', error.message.slice(0,500)); }
             }
           }
@@ -372,13 +497,28 @@ server.on("error", async (error) => {
 });
 
 server.listen(port, "127.0.0.1", () => {
+  try { for (const job of jobStore.recover()) jobs.set(job.id, job); }
+  catch (error) { console.error('Job recovery failed:', error.message); server.close(); process.exitCode = 1; return; }
   console.log(`Nebius Isaac bridge listening at http://127.0.0.1:${port}`);
   watchIsaacLog();
-  nativePipe.start().then(() => {
+  nativePipe.start(env.NEBIUS_PIPE_NAME).then(() => {
     console.log('Native IPC pipe ready at \\.\\pipe\\nebius_isaac_bridge_v1');
   }).catch((error) => {
     console.error(`Native IPC pipe could not start: ${error.message}`);
   });
 });
 
-nativePipe.on('ack', (id) => console.log(`Native IPC acknowledgement: ${id}`));
+nativePipe.on('ack', (id) => {
+  const job = jobs.get(id);
+  if (job?.state === 'queued') {
+    const applied = { ...job, state: 'applied', status: 'applied', appliedAt: new Date().toISOString() };
+    jobStore.put(applied);
+    Object.assign(job, applied);
+    const delivery = { id, applied_at: job.appliedAt, delivery_ms: job.completedAt ? Date.parse(job.appliedAt) - Date.parse(job.completedAt) : null };
+    timingWrites = timingWrites.then(async () => {
+      await mkdir(outputDirectory, { recursive: true });
+      await appendFile(path.join(outputDirectory, 'generation-deliveries.jsonl'), JSON.stringify(delivery) + '\n');
+    }).catch(error => console.error('Delivery log write failed:', error.message));
+  }
+  console.log(`Native IPC acknowledgement: ${id}`);
+});
