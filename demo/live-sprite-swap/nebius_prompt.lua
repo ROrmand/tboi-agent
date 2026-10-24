@@ -19,7 +19,8 @@ end
 function Prompt.new(json)
   return setmetatable({ json=json, failed=false, requested=false, held=false,
     open=false, sequence=0, phase="editing", status="Describe a passive item, or choose Randomize.",
-    text="", quality=3, itemType="passive", activesEnabled=ACTIVES_ENABLED, keyHeld={}, focus=1, hudHidden=false }, Prompt)
+    text="", quality=3, itemType="passive", activesEnabled=ACTIVES_ENABLED, keyHeld={}, focus=1, hudHidden=false,
+    page="creator", menuFocus=1, itemIndex=1, detailScroll=0, pauseLibrary=false }, Prompt)
 end
 
 function Prompt:logError(category, detail)
@@ -96,6 +97,8 @@ function Prompt:close()
   self.open=false
   self.requested=false
   self.virtualKeyboard=false
+  self.page,self.pauseLibrary="creator",false
+  self.menuFocus,self.itemIndex,self.detailScroll=1,1,0
   self.keyHeld={}
   self:setHudHidden(false)
   if self.persist and not self.resetting then self.persist() end
@@ -260,6 +263,7 @@ end
 
 function Prompt:editInput()
   if Isaac.GetTime()-(self.openedAt or 0)<150 then return end
+  if self.page~="creator" then self:editMenu(); return end
   if self:keyPressed("KEY_TAB",false) then
     if self.activesEnabled then self.itemType=self.itemType=="active" and "passive" or "active" end
     return
@@ -371,7 +375,166 @@ function Prompt:button(label,x,y,w,h,hover,enabled)
   Isaac.RenderText(label,x+8,y+6,enabled and 0.95 or 0.45,enabled and 0.95 or 0.5,1,1)
 end
 
+function Prompt:setPage(page)
+  self.page=page
+  self.menuFocus,self.detailScroll=1,0
+  self.virtualKeyboard=false
+end
+
+function Prompt:ensureCanvas()
+  if self.pixel then return true end
+  self.pixel=Renderer.LoadImage("gfx/nebius_creator/white.png")
+  self.pixelQuad=SourceQuad.NewFromRectangle(Vector(0,0),1,1,false)
+  return self.pixel~=nil and self.pixelQuad~=nil
+end
+
+function Prompt:openPauseLibrary()
+  if self.open then return end
+  self.pauseLibrary=true
+  self:setPage("library")
+  play("open")
+end
+
+function Prompt:closePauseLibrary()
+  self.pauseLibrary=false
+  self:setPage("creator")
+  self.keyHeld={}
+  play("close")
+end
+
+function Prompt:libraryItems()
+  local items=self.getItems and self.getItems() or {}
+  self.itemIndex=math.max(1,math.min(self.itemIndex,#items))
+  return items
+end
+
+function Prompt:selectItem(delta)
+  local items=self:libraryItems()
+  self.itemIndex=math.max(1,math.min(#items,self.itemIndex+delta))
+  self.detailScroll=0
+end
+
+function Prompt:menuButtons()
+  local layout=self:layout()
+  local items=self:libraryItems()
+  local buttons={
+    {label="PREV",enabled=self.itemIndex>1,action=function() self:selectItem(-1) end},
+    {label="NEXT",enabled=self.itemIndex<#items,action=function() self:selectItem(1) end},
+    {label="UP",enabled=self.detailScroll>0,action=function() self.detailScroll=math.max(0,self.detailScroll-3) end},
+    {label="DOWN",enabled=self.detailScroll<(self.maxDetailScroll or 0),action=function() self.detailScroll=math.min(self.maxDetailScroll or 0,self.detailScroll+3) end},
+    {label="BACK",action=function() self:closePauseLibrary() end},
+  }
+  local width=math.floor((layout.w-28-24)/5)
+  for index,button in ipairs(buttons) do
+    button.x,button.y,button.w,button.h=layout.x+14+(index-1)*(width+6),layout.y+layout.h-38,width,26
+  end
+  return buttons
+end
+
+function Prompt:editMenu()
+  if self:keyPressed("KEY_ESCAPE",false) then
+    self:closePauseLibrary()
+    return
+  end
+  local buttons=self:menuButtons()
+  if self:keyPressed("KEY_LEFT",true) then self.menuFocus=(self.menuFocus-2)%#buttons+1 end
+  if self:keyPressed("KEY_RIGHT",true) then self.menuFocus=self.menuFocus%#buttons+1 end
+  if self:keyPressed("KEY_UP",true) then self.detailScroll=math.max(0,self.detailScroll-1) end
+  if self:keyPressed("KEY_DOWN",true) then self.detailScroll=math.min(self.maxDetailScroll or 0,self.detailScroll+1) end
+  if self:confirmPressed() then
+    local button=buttons[self.menuFocus]
+    if button and button.enabled~=false then button.action() end
+  end
+end
+
+function Prompt:descriptorLines(profile,maxChars)
+  local parts={"DESCRIPTION: "..(profile.description or ""),"EFFECTS: "..(profile.summary or "No effect details available.")}
+  local groups={
+    {"SYSTEMS",profile.systems},
+    {"TEAR FLAGS",profile.tearFlagNames},
+    {"FAMILIAR FLAGS",profile.familiar and profile.familiar.attack and profile.familiar.attack.flags},
+    {"BOMB FLAGS",profile.bomb and profile.bomb.flags},
+  }
+  for _,group in ipairs(groups) do
+    parts[#parts+1]=group[1]..": "..((group[2] and #group[2]>0) and table.concat(group[2],", ") or "none")
+  end
+  return linesFor(table.concat(parts,"\n\n"),maxChars)
+end
+
+function Prompt:drawMenu()
+  local layout=self:layout()
+  local x,y,w,h=layout.x,layout.y,layout.w,layout.h
+  self:box(x-2,y-2,w+4,h+4,0.38,0.7,0.75,1)
+  self:box(x,y,w,h,0.055,0.085,0.12,0.98)
+  Isaac.RenderText("GENERATED ITEMS // THIS RUN",x+14,y+10,0.9,1,1,1)
+  local items=self:libraryItems()
+  local profile=items[self.itemIndex]
+  if profile then
+      local quality=profile.quality
+      local valid=type(quality)=="number" and quality==math.floor(quality) and quality>=0 and quality<=4
+      local colors={{0.7,0.7,0.7},{0.35,0.85,0.45},{0.35,0.65,1},{0.8,0.45,1},{1,0.85,0.25}}
+      local color=valid and colors[quality+1] or colors[1]
+      local qualityLabel=valid and ("Q"..quality.." / 4") or "QUALITY UNKNOWN"
+      self:box(x+14,y+35,32,32,0.13,0.24,0.32,1)
+      local rendered=self.renderItemArt and self.renderItemArt(profile,Vector(x+14,y+35),32)
+      if not rendered then Isaac.RenderText("?",x+26,y+43,color[1],color[2],color[3],1) end
+      Isaac.RenderText(tostring(profile.name):sub(1,math.floor((w-80)/6)),x+56,y+34,0.95,0.98,1,1)
+      Isaac.RenderText(qualityLabel.."   |   "..self.itemIndex.." / "..#items,x+56,y+49,color[1],color[2],color[3],1)
+      local lines=self:descriptorLines(profile,math.max(12,math.floor((w-38)/6)))
+      local visible=math.max(1,math.floor((h-130)/12))
+      self.maxDetailScroll=math.max(0,#lines-visible)
+      self.detailScroll=math.max(0,math.min(self.detailScroll,self.maxDetailScroll))
+      for index=1,visible do
+        local line=lines[self.detailScroll+index]
+        if line then Isaac.RenderText(line,x+18,y+77+(index-1)*12,0.86,0.91,0.96,1) end
+      end
+      Isaac.RenderText("Lines "..(self.detailScroll+1).."-"..math.min(#lines,self.detailScroll+visible).." / "..#lines.." | Up/Down scroll",x+14,y+h-57,0.5,0.83,0.88,1)
+  else
+    self.maxDetailScroll,self.detailScroll=0,0
+    Isaac.RenderText("No generated items in this run yet.",x+18,y+80,0.86,0.91,0.96,1)
+  end
+  local mouse=Input.GetMousePosition(false)
+  local pressed=Input.IsMouseBtnPressed(MouseButton.LEFT)
+  local clicked=pressed and not self.mouseHeld
+  self.mouseHeld=pressed
+  for index,button in ipairs(self:menuButtons()) do
+    local hovered=mouse and mouse.X>=button.x and mouse.X<button.x+button.w and mouse.Y>=button.y and mouse.Y<button.y+button.h
+    if hovered then self.menuFocus=index end
+    self:button(button.label,button.x,button.y,button.w,button.h,hovered or self.menuFocus==index,button.enabled~=false)
+    if clicked and hovered and button.enabled~=false then button.action(); break end
+  end
+  if mouse and mouse.X>=x and mouse.X<x+w and mouse.Y>=y and mouse.Y<y+h then Isaac.RenderText("+",mouse.X-3,mouse.Y-6,0.85,0.95,1,1) end
+end
+
+function Prompt:pauseButtonBounds()
+  local screenW,screenH=Isaac.GetScreenWidth(),Isaac.GetScreenHeight()
+  return {x=math.max(12,screenW-190),y=screenH-42,w=178,h=26}
+end
+
+function Prompt:renderPauseScreen()
+  if self.open or self.failed then return end
+  if PauseMenu and PauseMenu.GetState and PauseMenu.GetState()~=1 then return end
+  local ok,failure=pcall(function()
+    if not self:ensureCanvas() then return end
+    if self.pauseLibrary then
+      self:editMenu()
+      if self.pauseLibrary then self:drawMenu() end
+      return
+    end
+    local button=self:pauseButtonBounds()
+    local mouse=Input.GetMousePosition(false)
+    local pressed=Input.IsMouseBtnPressed(MouseButton.LEFT)
+    local clicked=pressed and not self.mouseHeld
+    self.mouseHeld=pressed
+    local hovered=mouse and mouse.X>=button.x and mouse.X<button.x+button.w and mouse.Y>=button.y and mouse.Y<button.y+button.h
+    self:button("VIEW AI ITEMS [TAB]",button.x,button.y,button.w,button.h,hovered,true)
+    if (clicked and hovered) or self:keyPressed("KEY_TAB",false) then self:openPauseLibrary() end
+  end)
+  if not ok then self:logError("pause_ui",failure) end
+end
+
 function Prompt:draw()
+  if self.page~="creator" then self:drawMenu(); return end
   local layout=self:layout()
   local x,y,w,h=layout.x,layout.y,layout.w,layout.h
   self:box(x-2,y-2,w+4,h+4,0.38,0.7,0.75,1)

@@ -74,6 +74,29 @@ bridge running and a run open so it can reserve artwork safely.
 Use `npm run validate` for an offline fixture validation; it does not call
 Token Factory or overwrite installed artwork.
 
+## Generated-item HUD and effects library
+
+AI artwork replaces each generated collectible's placeholder directly in Isaac's
+Extra HUD item history. The game controls ordering, visible slots, HUD offset,
+and twin-player placement. Normal uses 32x32 icons, Mini uses 16x16, and Off
+does not request or draw item-history artwork. Pedestal art and the item library
+remain available with Extra HUD Off. Failed image loads leave the original HUD
+placeholder visible; artwork is loaded once when a visible consumer needs it.
+
+Open Isaac's pause screen to find the **VIEW AI ITEMS [TAB]** button in the
+lower-right corner; click it or press Tab to open the generated-item library.
+The library includes every accepted generated item in the current run, including
+uncollected pedestals. It shows the icon, generated name, quality **Q0-Q4**,
+model description, deterministic applied effect summary, enabled systems, and
+separate tear, familiar-shot, and bomb flags. Quality colors match the Generator
+tiers (gray, green, blue, purple, yellow). PREV/NEXT select items; UP/DOWN
+scroll long details. Left/Right select buttons, Enter confirms, and Escape or
+Back returns to the pause screen. Mouse controls are also supported.
+
+Item descriptors are rebuilt from validated run profiles on Continue; there is
+no separate permanent library. The pause library does not alter Creator drafts
+or pending generation requests. The Extra HUD setting remains managed by Isaac.
+
 ## Run persistence and capacity
 
 Each run supports 64 independent generated item IDs and up to 64 artwork slots.

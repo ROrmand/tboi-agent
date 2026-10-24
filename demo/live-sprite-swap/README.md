@@ -97,6 +97,30 @@ Each pickup tries up to eight unique ideas before reporting failure; a failed
 or cancelled request keeps the Generator. This bound avoids an unlimited paid
 model loop when the service or available mechanics cannot satisfy the request.
 
+## HUD artwork and generated-item descriptions
+
+Generated icons now occupy the native Extra HUD history slots instead of a
+separate fixed grid: Normal renders 32x32, Mini renders 16x16, and Off requests
+no history artwork. Native item ordering, visibility limits, HUD offset, and
+twin-player offsets are preserved. Missing artwork keeps the default icon.
+Pedestals and explicit library previews remain independent of Extra HUD Off.
+
+Open Isaac's pause screen and choose the lower-right **VIEW AI ITEMS [TAB]**
+button (or press Tab). Each accepted item in this run has a page with its name,
+icon, Q0-Q4 quality, description, actual effect summary, enabled systems, and
+tear/familiar/bomb flags. PREV/NEXT page through items; UP/DOWN scroll details.
+Use the mouse, or Left/Right and Enter to activate buttons; Escape or Back
+returns to the pause screen. This viewer does not affect Creator drafts or a
+pending generation request. Continue restores descriptors from existing run
+profiles; a new run clears them.
+
+Live acceptance after syncing and restarting Isaac: compare generated icons
+with their native slots in Normal and Mini, verify Off hides history art but
+not pedestals, vary HUD offset and minimap size, fill multiple rows, and check
+twins. Open the library, scroll a long descriptor, verify quality and flags,
+then save/continue and confirm the same entries. Automated Lua mocks cover
+these contracts, but pixel alignment still requires an in-game check.
+
 ## Persistence and limits
 
 - Up to 64 generated item identities per run and paired pedestal/familiar

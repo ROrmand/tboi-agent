@@ -760,6 +760,8 @@ local function makeProfile(generated)
   return {
     name = metadata.display_name or "Generated Item",
     description = metadata.description or "",
+    quality = metadata.quality,
+    systems = generated.systems or {},
     summary = effectSummary(generated),
     spriteSheet = generated.sprite_sheet or "gfx/items/collectibles/generated_item.png",
     tearColor = Color(color.r or 1, color.g or 1, color.b or 1, color.a or 1, 0, 0, 0),
@@ -905,6 +907,7 @@ end
 promptUi.persist=function() if running then return saveRun() end return true end
 promptUi.requestFailed=function(id) creator.cancelled[id]=true; creator.requests[id]=nil; if running then saveRun() end end
 promptUi.getHotkey=function() return creator.settings.hotkey end
+promptUi.getItems=function() return runtime end
 promptUi.selectOwner=function(player)
   if promptUi.open or promptUi.pending or next(creator.requests) then
     local owner=creator.player(creator.owner); if owner then creator.handoff(owner) end
@@ -2457,19 +2460,29 @@ function Demo:onExecuteCmd(command,parameters)
   end
   showStatus("nebius hotkey KEY_8 | nebius replace on/off | nebius cancel")
 end
+function creator.loadItemArt(profile)
+  if not profile then return false end
+  local nativePedestalSheet=profile.spriteSheet
+  if not profile.image and not profile.loadFailed and Renderer and SourceQuad then
+    local ok,image=pcall(Renderer.LoadImage, nativePedestalSheet)
+    local quadOk,quad=pcall(SourceQuad.NewFromRectangle, Vector(0, 0), 32, 32, false)
+    if ok and image and quadOk and quad then
+      profile.image,profile.quad=image,quad
+      Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_ART_READY "..nativePedestalSheet)
+    else profile.loadFailed=true; Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_ART_FALLBACK "..nativePedestalSheet) end
+  end
+  return profile.image~=nil and profile.quad~=nil
+end
+promptUi.renderItemArt=function(profile,position,size)
+  if not DestinationQuad or not creator.loadItemArt(profile) then return false end
+  local ok,destination=pcall(DestinationQuad.NewFromRectangle,position,size,size)
+  if not ok or not destination then return false end
+  return pcall(profile.image.Render,profile.image,profile.quad,destination,KColor(1,1,1,1))
+end
 function Demo:onPostRender()
   pollNativeProfile(false); promptUi:render()
   local hideOverlays=promptUi:shouldHideGameOverlays()
   for _,profile in ipairs(runtime) do
-    local nativePedestalSheet=profile.spriteSheet
-    if not profile.image and not profile.loadFailed and Renderer and SourceQuad then
-      local ok,image=pcall(Renderer.LoadImage, nativePedestalSheet)
-      local quadOk,quad=pcall(SourceQuad.NewFromRectangle, Vector(0, 0), 32, 32, false)
-      if ok and image and quadOk and quad then
-        profile.image,profile.quad=image,quad
-        Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_ART_READY "..nativePedestalSheet)
-      else profile.loadFailed=true; Isaac.DebugString("[Live Sprite Swap Demo] NATIVE_ART_FALLBACK "..nativePedestalSheet) end
-    end
     if profile.familiar and not profile.familiarImage and not profile.familiarLoadFailed and Renderer and SourceQuad then
       local ok,image=pcall(Renderer.LoadImage,profile.familiarSpriteSheet)
       local quadOk,quad=pcall(SourceQuad.NewFromRectangle,Vector(0,0),32,32,false)
@@ -2501,6 +2514,7 @@ function Demo:onPickupRender(pickup)
   local index=slotById[pickup.SubType]
   local profile=index and runtime[index]
   if not profile then return end
+  creator.loadItemArt(profile)
   local bob=math.sin(Game():GetFrameCount()*0.2)*3
   local position=Isaac.WorldToScreen(pickup.Position+pickup.PositionOffset)+Vector(-16,-48+bob)
   if profile.image and DestinationQuad then
@@ -2513,18 +2527,42 @@ function Demo:onPickupRender(pickup)
     if good and destination then pcall(function() nativePedestalImage:Render(profile.quad,destination,KColor(1,1,1,1)) end) end
   end
 end
-function Demo:onPostHudRender()
-  if promptUi:shouldHideGameOverlays() then return end
-  local player=Isaac.GetPlayer(0)
-  local count=0
-  for index,profile in ipairs(runtime) do
-    if owned(player,index) and profile.image and DestinationQuad then
-      local position=Vector(Isaac.GetScreenWidth()-148+(count%8)*16,108+math.floor(count/8)*16)
-      local ok,destination=pcall(DestinationQuad.NewFromRectangle,position,16,16)
-      if ok and destination then pcall(function() profile.image:Render(profile.quad,destination,KColor(1,1,1,1)) end) end
-      count=count+1
+function Demo:onPreHistoryHudRender(history,position,mini)
+  creator.hudArt={}
+  if promptUi:shouldHideGameOverlays() or (Options and Options.ExtraHUDStyle==0) or not DestinationQuad then return end
+  if not history or not history.GetCollectibles then return end
+  local hidden,seen={},{}
+  local size=(mini==true or (Options and Options.ExtraHUDStyle==2)) and 16 or 32
+  for playerSlot=0,1 do
+    local ok,items=pcall(history.GetCollectibles,history,playerSlot,ids,false)
+    if ok and type(items)=="table" then
+      for _,item in ipairs(items) do
+        local itemId=item:GetItemID()
+        local index=slotById[itemId]
+        local profile=index and runtime[index]
+        if profile and creator.loadItemArt(profile) then
+          local offset=item:GetRenderOffset()
+          local good,destination=pcall(DestinationQuad.NewFromRectangle,position+offset,size,size)
+          if good and destination then
+            creator.hudArt[#creator.hudArt+1]={profile=profile,destination=destination}
+            if not seen[itemId] then hidden[#hidden+1]=itemId; seen[itemId]=true end
+          end
+        end
+      end
     end
   end
+  if #hidden>0 then return {HideCollectibles=hidden} end
+end
+function Demo:onPostHistoryHudRender()
+  local entries=creator.hudArt or {}
+  creator.hudArt={}
+  if promptUi:shouldHideGameOverlays() or (Options and Options.ExtraHUDStyle==0) then return end
+  for _,entry in ipairs(entries) do
+    pcall(entry.profile.image.Render,entry.profile.image,entry.profile.quad,entry.destination,KColor(1,1,1,1))
+  end
+end
+function Demo:onPostPauseScreenRender()
+  promptUi:renderPauseScreen()
 end
 local callbacks={
  MC_POST_SAVESLOT_LOAD="onSaveSlotLoaded",
@@ -2532,7 +2570,8 @@ local callbacks={
  MC_EVALUATE_CACHE="onEvaluateCache",MC_POST_FIRE_TEAR="onPostFireTear",MC_POST_NEW_ROOM="onPostNewRoom",
  MC_PRE_SPAWN_CLEAN_AWARD="onPreSpawnCleanAward",MC_ENTITY_TAKE_DMG="onEntityTakeDamage",
  MC_POST_NEW_LEVEL="onPostNewLevel",MC_POST_ADD_COLLECTIBLE="onPostAddCollectible",MC_POST_RENDER="onPostRender",
- MC_POST_HUD_RENDER="onPostHudRender",MC_POST_ENTITY_KILL="onPostEntityKill",
+ MC_PRE_HISTORYHUD_RENDER="onPreHistoryHudRender",MC_POST_HISTORYHUD_RENDER="onPostHistoryHudRender",MC_POST_ENTITY_KILL="onPostEntityKill",
+ MC_POST_PAUSE_SCREEN_RENDER="onPostPauseScreenRender",
  MC_PRE_TEAR_COLLISION="onPreTearCollision",MC_PRE_PLAYER_COLLISION="onPrePlayerCollision",
  MC_FAMILIAR_UPDATE="onFamiliarUpdate",MC_POST_TEAR_UPDATE="onPostTearUpdate",
  MC_POST_FIRE_BOMB="onPostFireBomb",MC_POST_LASER_UPDATE="onPostLaserUpdate",

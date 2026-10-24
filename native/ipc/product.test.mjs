@@ -21,6 +21,7 @@ const profile = {
 const mocks = `
 frame, now, held, owns, stage, roomIndex, clipboardText = 0, 0, false, false, 1, 1, nil
 logs, events, entities, uiCallbacks, familiarTears, projectiles, itemBanners, friendlies = {}, {}, {}, {}, {}, {}, {}, {}
+imageLoads,artRenders,textRenders={},{},{}
 function Random() return 123 end
 function Color(...) return {...} end
 function KColor(...) return {...} end
@@ -73,7 +74,7 @@ Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByNa
    return found
   end
   return entities
- end, WorldToScreen=function(position) return position end, RenderText=function() end,
+ end, WorldToScreen=function(position) return position end, RenderText=function(text) textRenders[#textRenders+1]=text end,
  GetScreenWidth=function() return 800 end, GetScreenHeight=function() return 600 end,
  Spawn=function(entityType, variant, subtype, position, velocity)
   if entityType==EntityType.ENTITY_FAMILIAR then
@@ -146,11 +147,12 @@ NebiusBridge = { Poll=function() local result=nextRaw; nextRaw=nil; return resul
  Ack=function(id) events[#events+1]='ack:'..id; return true end }
 windows,uiShown=0,false
 Renderer = { LoadImage=function(path)
+ imageLoads[#imageLoads+1]=path
  if path=='gfx/nebius_creator/white.png' then return { Render=function() end } end
- return { Render=function() events[#events+1]='render' end }
+ return { Render=function(_,_,destination) events[#events+1]='render'; artRenders[#artRenders+1]={path=path,destination=destination} end }
 end }
 SourceQuad = { NewFromRectangle=function() return {} end }
-DestinationQuad = { NewFromRectangle=function(position, width, height) lastDestination={x=position.X,y=position.Y,width=width,height=height}; return {} end }
+DestinationQuad = { NewFromRectangle=function(position, width, height) lastDestination={x=position.X,y=position.Y,width=width,height=height}; return lastDestination end }
 `;
 
 async function run(body, customProfile = profile) {
@@ -222,6 +224,215 @@ test('accepted native profile spawns before ACK, renders art, and applies passiv
     stage=2; Demo:onPreSpawnCleanAward(); assert(#events==5)
   `);
 });
+
+test('History HUD art follows native slots, duplicates, twins, and Normal/Mini sizes', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); Demo:onPostRender()
+    assert(#imageLoads==0)
+    local calls={}
+    local function item(id,x,y)
+      return {GetItemID=function() return id end,GetRenderOffset=function() return Vector(x,y) end}
+    end
+    local history={GetCollectibles=function(_,slot,ids,includeHidden)
+      assert(includeHidden==false and ids[1]==733)
+      calls[#calls+1]=slot
+      if slot==0 then return {item(733,0,32),item(733,32,32),item(1,64,32)} end
+      return {item(733,-2+33,0)}
+    end}
+    Options={ExtraHUDStyle=1}
+    local hidden=Demo:onPreHistoryHudRender(history,Vector(610,114),false)
+    assert(#calls==2 and #hidden.HideCollectibles==1 and hidden.HideCollectibles[1]==733)
+    Demo:onPostHistoryHudRender()
+    assert(#artRenders==3 and #imageLoads==1)
+    assert(artRenders[1].destination.x==610 and artRenders[1].destination.y==146)
+    assert(artRenders[2].destination.x==642 and artRenders[3].destination.x==641)
+    assert(artRenders[1].destination.width==32 and artRenders[1].destination.height==32)
+    Options.ExtraHUDStyle=2
+    Demo:onPreHistoryHudRender(history,Vector(500,80),true); Demo:onPostHistoryHudRender()
+    assert(#artRenders==6 and #imageLoads==1)
+    assert(artRenders[4].destination.x==500 and artRenders[4].destination.y==112)
+    assert(artRenders[4].destination.width==16 and artRenders[4].destination.height==16)
+  `);
+});
+
+test('HUD Off and invisible history entries never request artwork', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); Demo:onPostRender()
+    Options={ExtraHUDStyle=0}
+    local history={GetCollectibles=function() error('Off must not inspect history') end}
+    assert(Demo:onPreHistoryHudRender(history,Vector(600,100),false)==nil)
+    Demo:onPostHistoryHudRender(); assert(#imageLoads==0 and #artRenders==0)
+    Options.ExtraHUDStyle=1
+    history.GetCollectibles=function() return {} end
+    assert(Demo:onPreHistoryHudRender(history,Vector(600,100),false)==nil)
+    Demo:onPostHistoryHudRender(); assert(#imageLoads==0 and #artRenders==0)
+    Demo:onPickupRender(entities[1]); assert(#imageLoads==1 and #artRenders==1)
+  `);
+});
+
+test('failed HUD image loads retain vanilla placeholders without retrying every frame', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); Options={ExtraHUDStyle=1}
+    local attempts=0
+    Renderer.LoadImage=function() attempts=attempts+1; error('missing PNG') end
+    local history={GetCollectibles=function(_,slot)
+      if slot==1 then return {} end
+      return {{GetItemID=function() return 733 end,GetRenderOffset=function() return Vector(0,0) end}}
+    end}
+    assert(Demo:onPreHistoryHudRender(history,Vector(600,100),false)==nil)
+    Demo:onPostHistoryHudRender()
+    assert(Demo:onPreHistoryHudRender(history,Vector(600,100),false)==nil)
+    Demo:onPostHistoryHudRender(); assert(attempts==1 and #artRenders==0)
+  `);
+});
+
+test('pause-screen button opens the library without touching creator drafts or requests', async () => {
+  await run(`
+    uiPrompt.text='Keep my draft'; uiPrompt.pending,uiPrompt.pendingKind='inflight','sentence'
+    Demo:onPostPauseScreenRender()
+    local button=uiPrompt:pauseButtonBounds()
+    mousePosition=Vector(button.x+10,button.y+10); mouseDown=true
+    Demo:onPostPauseScreenRender(); assert(uiPrompt.pauseLibrary and uiPrompt.page=='library')
+    mouseDown=false; Demo:onPostPauseScreenRender()
+    assert(not uiPrompt:shouldPause() and hudVisible and uiPrompt.text=='Keep my draft' and uiPrompt.pending=='inflight')
+    assert(#uiPrompt.getItems()==0)
+    local empty=false
+    for _,text in ipairs(textRenders) do if text=='No generated items in this run yet.' then empty=true end end
+    assert(empty)
+    keyDown[Keyboard.KEY_ESCAPE]=true; Demo:onPostPauseScreenRender()
+    assert(not uiPrompt.pauseLibrary and uiPrompt.page=='creator' and uiPrompt.pending=='inflight')
+  `);
+});
+
+
+test('library displays validated profile quality, effects, and source-specific flags', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate()
+    local items=uiPrompt.getItems()
+    assert(#items==1 and items[1].quality==envelope.profile.metadata.quality)
+    assert(items[1].description==envelope.profile.metadata.description)
+    uiPrompt:openPauseLibrary(); Demo:onPostPauseScreenRender()
+    local combined=table.concat(uiPrompt:descriptorLines(items[1],1000),' ')
+    assert(combined:find('DESCRIPTION: Poison and damage',1,true))
+    assert(combined:find('EFFECTS: Damage',1,true))
+    assert(combined:find('SYSTEMS: stats, tears, rules',1,true))
+    assert(combined:find('TEAR FLAGS: poison',1,true))
+    assert(combined:find('FAMILIAR FLAGS: none',1,true) and combined:find('BOMB FLAGS: none',1,true))
+    assert(#artRenders==1 and artRenders[1].destination.width==32)
+    for quality=0,4 do
+      items[1].quality=quality; textRenders={}; Demo:onPostPauseScreenRender()
+      local found=false
+      for _,text in ipairs(textRenders) do if text:find('Q'..quality..' / 4',1,true) then found=true end end
+      assert(found)
+    end
+    for _,quality in ipairs({'bad',-1,5,1.5}) do
+      items[1].quality=quality; textRenders={}; Demo:onPostPauseScreenRender()
+      local found=false
+      for _,text in ipairs(textRenders) do if text:find('QUALITY UNKNOWN',1,true) then found=true end end
+      assert(found and not uiPrompt.failed)
+    end
+    items[1].quality=nil; Demo:onPostPauseScreenRender(); assert(not uiPrompt.failed)
+    items[1].familiar={attack={flags={'burn'}}}; items[1].bomb={flags={'fear'}}
+    combined=table.concat(uiPrompt:descriptorLines(items[1],1000),' ')
+    assert(combined:find('FAMILIAR FLAGS: burn',1,true) and combined:find('BOMB FLAGS: fear',1,true))
+  `);
+});
+
+test('library pages and scrolls long descriptions without stale selections', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate()
+    envelope=deepCopy(envelope); envelope.id='123_0_1_second'; envelope.profile.bridge_request_id=envelope.id
+    envelope.profile.sprite_sheet='gfx/items/collectibles/generated_slot_01.png'
+    envelope.profile.metadata.display_name='Second item'
+    frame=1; nextRaw='profile'; Demo:onPostUpdate()
+    uiPrompt.getItems()[1].summary=string.rep('Long effect detail. ',100)
+    uiPrompt:openPauseLibrary(); Demo:onPostPauseScreenRender()
+    assert(uiPrompt.maxDetailScroll>0)
+    uiPrompt:menuButtons()[4].action(); Demo:onPostPauseScreenRender(); assert(uiPrompt.detailScroll==3)
+    uiPrompt:menuButtons()[2].action(); Demo:onPostPauseScreenRender()
+    assert(uiPrompt.itemIndex==2 and uiPrompt.detailScroll==0)
+    uiPrompt.itemIndex=500; Demo:onPostPauseScreenRender(); assert(uiPrompt.itemIndex==2)
+    uiPrompt:selectItem(-1); assert(uiPrompt.itemIndex==1)
+    uiPrompt:reset(); assert(uiPrompt.itemIndex==1 and uiPrompt.page=='creator' and uiPrompt.detailScroll==0)
+  `);
+});
+
+test('item descriptors restore from existing run persistence', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate()
+    Demo:onPreGameExit(true)
+    Demo=assert(load(mainSource..string.char(10)..'return Demo'))(); Demo:onGameStarted(true)
+    local items=uiPrompt.getItems()
+    assert(#items==1 and items[1].quality==4 and items[1].name=='Emerald Eye')
+    assert(items[1].tearFlagNames[1]=='poison')
+    Demo:onGameStarted(false); assert(#uiPrompt.getItems()==0)
+  `);
+});
+
+
+test('Tab opens the pause library and Back returns to the pause screen', async () => {
+  await run(`
+    Keyboard.KEY_TAB=258
+    keyDown[Keyboard.KEY_TAB]=true; Demo:onPostPauseScreenRender(); assert(uiPrompt.pauseLibrary)
+    keyDown={}; Demo:onPostPauseScreenRender()
+    local back=uiPrompt:menuButtons()[5]
+    mousePosition=Vector(back.x+10,back.y+10)
+    mouseDown=true; Demo:onPostPauseScreenRender(); assert(not uiPrompt.pauseLibrary)
+  `);
+});
+
+test('pause button stays out of Isaac options screens', async () => {
+  await run(`
+    PauseMenu={GetState=function() return 2 end}
+    Demo:onPostPauseScreenRender(); assert(uiPrompt.pixel==nil and not uiPrompt.pauseLibrary)
+    PauseMenu.GetState=function() return 1 end
+    Demo:onPostPauseScreenRender(); assert(uiPrompt.pixel~=nil)
+  `);
+});
+
+test('library controller navigation pages and scrolls while small viewports stay bounded', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate()
+    uiPrompt.getItems()[1].summary=string.rep('Detailed effect. ',100)
+    uiPrompt:openPauseLibrary(); now=200
+    ButtonAction={ACTION_MENUDOWN=1,ACTION_MENURIGHT=2,ACTION_MENUCONFIRM=3}
+    local actionDown={}
+    Input.IsActionPressed=function(action) return actionDown[action]==true end
+    for _,screen in ipairs({{480,270},{640,360},{800,600}}) do
+      Isaac.GetScreenWidth=function() return screen[1] end
+      Isaac.GetScreenHeight=function() return screen[2] end
+      Demo:onPostPauseScreenRender()
+      local layout=uiPrompt:layout()
+      for _,button in ipairs(uiPrompt:menuButtons()) do
+        assert(button.x>=0 and button.y>=0 and button.x+button.w<=screen[1] and button.y+button.h<=screen[2])
+      end
+    end
+    actionDown[1]=true; Demo:onPostPauseScreenRender(); assert(uiPrompt.detailScroll==1)
+    actionDown={}; Demo:onPostPauseScreenRender()
+    actionDown[2]=true; Demo:onPostPauseScreenRender(); assert(uiPrompt.menuFocus==2)
+    actionDown={}; Demo:onPostPauseScreenRender()
+    uiPrompt.menuFocus=5; actionDown[3]=true; Demo:onPostPauseScreenRender(); assert(not uiPrompt.pauseLibrary)
+  `);
+});
+
+test('HUD rendering fails open when destination allocation or History HUD APIs are unavailable', async () => {
+  await run(`
+    nextRaw='profile'; Demo:onPostUpdate(); Options={ExtraHUDStyle=1}
+    assert(Demo:onPreHistoryHudRender({},Vector(600,100),false)==nil)
+    local history={GetCollectibles=function(_,slot)
+      if slot==1 then return {} end
+      return {{GetItemID=function() return 733 end,GetRenderOffset=function() return Vector(0,0) end}}
+    end}
+    local original=DestinationQuad.NewFromRectangle
+    DestinationQuad.NewFromRectangle=function() error('unavailable destination') end
+    assert(Demo:onPreHistoryHudRender(history,Vector(600,100),false)==nil)
+    Demo:onPostHistoryHudRender(); assert(#artRenders==0)
+    DestinationQuad.NewFromRectangle=original
+    assert(Demo:onPreHistoryHudRender(history,Vector(600,100),false).HideCollectibles[1]==733)
+    Options.ExtraHUDStyle=0; Demo:onPostHistoryHudRender(); assert(#artRenders==0)
+  `);
+});
+
 
 test('pickup banner uses the model name and one effect sentence', async () => {
   await run(`
@@ -1377,7 +1588,7 @@ test('creator hides generated pedestal, status, and collected-item overlays whil
     nextRaw='profile'; Demo:onPostUpdate(); Demo:onPostRender(); events={}
     statusText='Generated item ready'; statusUntil=100
     held=true; Demo:onPostUpdate(); Demo:onPostRender(); held=false
-    Demo:onPickupRender(entities[1]); Demo:onPostHudRender()
+    Demo:onPickupRender(entities[1]); Demo:onPreHistoryHudRender(nil,Vector(0,0)); Demo:onPostHistoryHudRender()
     assert(#events==0)
     uiCallbacks.close(); Demo:onPickupRender(entities[1])
     assert(events[1]=='render')
