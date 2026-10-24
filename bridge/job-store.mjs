@@ -28,19 +28,21 @@ export class JobStore {
     if (job.itemType!==undefined && !["passive","active"].includes(job.itemType)) throw Error("Invalid job item type.");
     if (job.saveSlot!==undefined && ![1,2,3].includes(job.saveSlot)) throw Error("Invalid job save slot.");
     if (job.prompt !== undefined && (typeof job.prompt !== 'string' || !job.prompt.trim() || job.prompt.length > 2000)) throw Error('Invalid job prompt.');
-    if (job.artSlot !== undefined && (!Number.isInteger(job.artSlot) || job.artSlot < 0 || job.artSlot >= 64)) throw Error('Invalid job artwork reservation.');
+    if (job.artSlot !== undefined && (!Number.isInteger(job.artSlot) || job.artSlot < 0 || job.artSlot >= 128)) throw Error('Invalid job artwork reservation.');
+    if (job.auto !== undefined && job.auto !== true) throw Error("Invalid auto job.");
+    if (job.auto && job.prompt !== undefined) throw Error("Auto jobs do not store a player prompt.");
     if (job.delivery!==undefined) encodeEnvelope({version:1,type:"profile",id:job.id,profile:{},delivery:job.delivery});
     if (job.envelope !== undefined) {
       encodeEnvelope(job.envelope);
       if (job.envelope.type !== 'profile' || job.envelope.id !== job.id || job.envelope.profile.bridge_request_id !== job.id) throw Error('Job journal profile mismatch.');
-      if (job.delivery!==undefined && (job.delivery.mode!==job.envelope.delivery?.mode || job.delivery.owner!==job.envelope.delivery?.owner)) throw Error("Job journal delivery mismatch.");
+      if (job.delivery!==undefined && (job.delivery.mode!==job.envelope.delivery?.mode || job.delivery.owner!==job.envelope.delivery?.owner || job.delivery.quality!==job.envelope.delivery?.quality)) throw Error("Job journal delivery mismatch.");
     }
     if (job.state === 'queued' && !job.envelope) throw Error('Queued job has no profile.');
   }
 
   put(job, envelope) {
     const record = {};
-    for (const key of ['id', 'run', 'state', 'status', 'stage', 'quality', 'prompt', 'promptChars', 'createdAt', 'completedAt', 'appliedAt', 'error', 'errorCode', 'artSlot', 'delivery', 'saveSlot', 'itemType']) {
+    for (const key of ['id', 'run', 'state', 'status', 'stage', 'quality', 'prompt', 'promptChars', 'createdAt', 'completedAt', 'appliedAt', 'error', 'errorCode', 'artSlot', 'delivery', 'saveSlot', 'itemType', 'auto']) {
       if (job[key] !== undefined) record[key] = structuredClone(job[key]);
     }
     const previous = this.records.get(job.id);

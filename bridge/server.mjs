@@ -20,7 +20,9 @@ const root = path.resolve(import.meta.dirname, "..");
 const fileEnv = await readEnv(path.join(root, ".env"));
 const env = { ...fileEnv, ...process.env };
 const port = Number(process.env.NEBIUS_BRIDGE_PORT || 3000);
-const generator = path.join(import.meta.dirname, "generate.mjs");
+const generator = env.NEBIUS_GENERATOR_SCRIPT
+  ? path.resolve(root, env.NEBIUS_GENERATOR_SCRIPT)
+  : path.join(import.meta.dirname, "generate.mjs");
 const modDirectory = env.ISAAC_MOD_DIRECTORY
   ? path.resolve(root, env.ISAAC_MOD_DIRECTORY)
   : path.join(root, "demo", "live-sprite-swap");
@@ -45,13 +47,15 @@ const outputDirectory = env.NEBIUS_OUTPUT_DIRECTORY
 // Isaac caches failed include() calls. One fresh module name is consumed each
 // second, so this covers the bridge's 370-second in-game timeout with margin.
 const GAME_MODULE_SLOT_COUNT = 400;
+const GENERATED_ITEM_CAPACITY = 128;
+const GENERATED_ACTIVE_CAPACITY = 8;
 const jobStore = new JobStore(path.join(outputDirectory, 'job-journal.json'));
 const recoveryNotices = new Map();
 const missingRequests = new Map();
 let capacityNotice=null;
 function matchesCurrentRun(job, allowCapacity = false) {
   const blocked = gameContext?.blocked;
-  const capacityOnly = allowCapacity && typeof blocked === 'string' && /^(Item|Artwork) limit reached: 64\/64\./.test(blocked);
+  const capacityOnly = allowCapacity && typeof blocked === 'string' && /^(Item|Artwork) limit reached: 128\/128\./.test(blocked);
   return Boolean(job && gameContext && (!blocked || capacityOnly) && gameContext.ended_run !== true &&
     Date.now() - gameContextAt <= 5000 && job.run === gameContext.run &&
     (job.saveSlot === undefined || job.saveSlot === gameContext.save_slot));
@@ -71,7 +75,7 @@ function recoverQueued(context) {
   const protectedArt=new Set([...(ledger.used || []),...(ledger.legacy || []),...Object.values(ledger.manifests || {}).flatMap(manifest=>manifest.used)]);
   const noticeKey=context.run+":"+protectedArt.size;
   if (capacityNotice!==noticeKey) { publishStatus(context.run+"_capacity","capacity",String(protectedArt.size)); capacityNotice=noticeKey; }
-  for (const id of Array.isArray(context.pending) ? context.pending.slice(0,64) : []) {
+  for (const id of Array.isArray(context.pending) ? context.pending.slice(0,GENERATED_ITEM_CAPACITY) : []) {
     if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(id) || !id.startsWith(context.run + "_")) continue;
     const record=jobStore.records.get(id);
     if (!record && !missingRequests.has(id)) missingRequests.set(id,Date.now());
@@ -170,10 +174,11 @@ const server = createServer(async (request, response) => {
   try {
     const input = JSON.parse(await readBody(request));
     const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-    if (!prompt || prompt.length > 2000) return send(response, 400, { error: "prompt must contain 1–2000 characters" });
+    const auto = input.auto === true;
+    if ((!auto && !prompt) || prompt.length > 2000) return send(response, 400, { error: "prompt must contain 1–2000 characters" });
 
     const quality = Number.isInteger(input.quality) && input.quality >= 0 && input.quality <= 4 ? input.quality : 3;
-    const job = startJob(prompt, undefined, false, quality, undefined, input.item_type);
+    const job = startJob(prompt, undefined, false, quality, input.delivery, input.item_type, auto);
     send(response, 202, job);
   } catch (error) {
     return send(response, 400, { error: error.message || "Invalid request" });
@@ -220,19 +225,28 @@ function finishSentence(job, error, sentence, timeout) {
 
 const ACTIVES_ENABLED = false;
 
-function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, itemType = "passive") {
+function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, itemType = "passive", auto = false) {
   if(activeJob) throw Error('Another request is running. Wait until it finishes.');
   if (!gameContext || Date.now() - gameContextAt > 5000) throw Error('Open an active run in the updated mod before generating.');
   assertRuntimeCompatible(gameContext);
   if (!["passive","active"].includes(itemType)) throw Error("Invalid item type.");
-  if (!ACTIVES_ENABLED && itemType === "active") throw Error("Active generation is vaulted. Generate a passive item.");
-  if (itemType === "active" && (!Number.isInteger(gameContext.active_count) || gameContext.active_count >= 8 || gameContext.active_available !== true)) throw Error("Active shell capacity unavailable or full (8/8).");
+  if (!ACTIVES_ENABLED && itemType === "active" && !(auto === true && delivery?.mode === "generator")) throw Error("Active generation is vaulted. Generate a passive item.");
+  if (itemType === "active" && (!Number.isInteger(gameContext.active_count) || gameContext.active_count >= GENERATED_ACTIVE_CAPACITY || gameContext.active_available !== true)) throw Error(`Active shell capacity unavailable or full (${GENERATED_ACTIVE_CAPACITY}/${GENERATED_ACTIVE_CAPACITY}).`);
+  if (auto !== true && (!prompt || !prompt.trim())) throw Error("prompt must contain 1–2000 characters");
   if (id === undefined) id = gameContext.run + '_' + randomUUID().slice(0, 99 - gameContext.run.length);
   if (!id.startsWith(gameContext.run + '_')) throw Error('Generation request is from another run.');
   if (jobs.has(id)) return jobs.get(id);
-  if (delivery !== undefined && (!delivery || Object.keys(delivery).some(key => !["mode", "owner"].includes(key)) || delivery.mode !== "blank" || typeof delivery.owner !== "string" || !/^-?\d{1,40}$/.test(delivery.owner))) throw Error("Invalid blank delivery request.");
-  const job = { id, run: gameContext.run, saveSlot:gameContext.save_slot, state: 'received', status: "generating", quality, delivery, itemType, promptChars: prompt.length, createdAt: new Date().toISOString() };
-  job.prompt = prompt;
+  if (delivery !== undefined) {
+    const keys = Object.keys(delivery || {});
+    const ownerOk = typeof delivery?.owner === "string" && /^-?\d{1,40}$/.test(delivery.owner);
+    const blank = delivery?.mode === "blank" && ownerOk && keys.every((key) => key === "mode" || key === "owner");
+    const generatorDelivery = delivery?.mode === "generator" && auto === true && ownerOk && delivery.quality === quality && keys.every((key) => key === "mode" || key === "owner" || key === "quality");
+    const singularityDelivery = delivery?.mode === "singularity" && auto === true && ownerOk && delivery.quality === quality && keys.every((key) => key === "mode" || key === "owner" || key === "quality");
+    if (!blank && !generatorDelivery && !singularityDelivery) throw Error("Invalid item delivery request.");
+  }
+  const job = { id, run: gameContext.run, saveSlot:gameContext.save_slot, state: 'received', status: "generating", quality, delivery, itemType, promptChars: auto === true ? 0 : prompt.length, createdAt: new Date().toISOString() };
+  if (auto === true) job.auto = true;
+  else job.prompt = prompt;
   jobStore.put(job);
   job.state="preflight"; jobStore.put(job);
   jobTimers.set(job, createGenerationTimer());
@@ -244,42 +258,66 @@ function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, it
   return job;
 }
 
+function spawnGenerator(job, args, writeGameStatus, finishOnClose) {
+  const child = spawn(process.execPath, [generator, ...args], {
+    cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+  });
+  jobChildren.set(job, child);
+  let output = "";
+  let pending = "";
+  child.stdout.on("data", (chunk) => {
+    if (job.completedAt) return;
+    output = (output + chunk).slice(-8000);
+    pending += chunk;
+    const lines = pending.split("\n");
+    pending = lines.pop();
+    for (const line of lines) {
+      const stage = noteGeneratorLine(jobTimers.get(job), line);
+      if (!stage) continue;
+      job.stage = stage;
+      job.state = ["image", "art", "familiar_art", "familiar_anim"].includes(stage) ? "rendering" : (stage === "publish" ? "validating" : "designing");
+      try { jobStore.put(job); } catch (error) { child.kill(); finishJob(job, error.message, writeGameStatus); return; }
+      publishStatus(job.id, "generating", "Generating passive item: " + job.stage);
+      if (writeGameStatus) writeGameBridgeStatus(job);
+      console.log(`Job ${job.id}: ${job.stage}`);
+    }
+  });
+  child.stderr.on("data", (chunk) => { output = (output + chunk).slice(-8000); });
+  const closed = new Promise((resolve) => {
+    child.on("error", (error) => { finishJob(job, error.message, writeGameStatus); resolve(); });
+    child.on("close", (code) => {
+      if (job.completedAt) { resolve(); return; }
+      if (code === 0 && !finishOnClose) { resolve(); return; }
+      finishJob(job, code === 0 ? null : output.trim().slice(-500) || `Generator exited with code ${code}.`, writeGameStatus);
+      resolve();
+    });
+  });
+  const deadline = setTimeout(() => { child.kill(); finishJob(job, "Generation timed out. Retry with a simpler prompt.", writeGameStatus); }, 350000);
+  child.on("close", () => clearTimeout(deadline));
+  return closed;
+}
+
 async function prepareJob(job, prompt, writeGameStatus) {
   if ((env.IMAGE_BACKEND || 'comfyui') === 'comfyui') await assertComfyUiReady(env.COMFYUI_URL || 'http://127.0.0.1:8188');
   if (job.completedAt) return;
   if (!matchesCurrentRun(job)) throw Error('Run ended or changed before generation started.');
   assertRuntimeCompatible(gameContext);
+  if (job.auto) {
+    const designPath = path.join(outputDirectory, `design-${job.id}.json`);
+    await spawnGenerator(job, ["--auto", "--design-only", "--no-image", "--quality", String(job.quality), "--request-id", job.id, "--item-type", job.itemType, "--design-out", designPath], writeGameStatus, false);
+    if (job.completedAt) return;
+    if (!matchesCurrentRun(job)) throw Error('Run ended or changed before artwork reservation.');
+    assertRuntimeCompatible(gameContext);
+    job.artSlot = slotLedger.reserve(gameContext);
+    job.state = 'reserved';
+    jobStore.put(job);
+    await spawnGenerator(job, ["--render-only", "--quality", String(job.quality), "--request-id", job.id, "--item-type", job.itemType, "--design-in", designPath, "--art-slot", String(job.artSlot)], writeGameStatus, true);
+    return;
+  }
   job.artSlot = slotLedger.reserve(gameContext);
   job.state = 'reserved';
   jobStore.put(job);
-  const id = job.id;
-  const child = spawn(process.execPath, [generator, "--prompt", prompt, "--quality", String(job.quality), "--request-id", id, "--art-slot", String(job.artSlot), "--item-type", job.itemType], {
-    cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-  });
-  jobChildren.set(job,child);
-  let output = "";
-  let pending = '';
-  child.stdout.on("data", (chunk) => {
-    if (job.completedAt) return;
-    output = (output + chunk).slice(-8000);
-    pending += chunk;
-    const lines = pending.split('\n'); pending = lines.pop();
-    for(const line of lines) {
-      const stage = noteGeneratorLine(jobTimers.get(job), line);
-      if (!stage) continue;
-      job.stage = stage;
-      job.state = ['image', 'art', 'familiar_art', 'familiar_anim'].includes(stage) ? 'rendering' : (stage === 'publish' ? 'validating' : 'designing');
-      try { jobStore.put(job); } catch (error) { child.kill(); finishJob(job, error.message, writeGameStatus); return; }
-      publishStatus(id, 'generating', 'Generating passive item: ' + job.stage);
-      if(writeGameStatus) writeGameBridgeStatus(job);
-      console.log(`Job ${id}: ${job.stage}`);
-    }
-  });
-  child.stderr.on("data", (chunk) => { output = (output + chunk).slice(-8000); });
-  child.on("error", (error) => finishJob(job, error.message, writeGameStatus));
-  child.on("close", (code) => finishJob(job, code === 0 ? null : output.trim().slice(-500) || `Generator exited with code ${code}.`, writeGameStatus));
-  const deadline = setTimeout(() => {child.kill(); finishJob(job, 'Generation timed out. Retry with a simpler prompt.', writeGameStatus);}, 350000);
-  child.on('close', () => clearTimeout(deadline));
+  await spawnGenerator(job, ["--prompt", prompt, "--quality", String(job.quality), "--request-id", job.id, "--art-slot", String(job.artSlot), "--item-type", job.itemType], writeGameStatus, true);
 }
 
 async function finishJob(job, error, writeGameStatus) {
@@ -388,7 +426,7 @@ async function watchIsaacLog() {
           try {
             const {id}=JSON.parse(cancellation[1]); const job=jobs.get(id);
             if (typeof id==="string" && gameContext?.run && id.startsWith(gameContext.run+"_") && job && !["applied","failed"].includes(job.state)) {
-              const failed={...job,state:"failed",status:"error",errorCode:"CANCELLED",error:"Request cancelled. AI Item kept.",completedAt:new Date().toISOString()};
+              const failed={...job,state:"failed",status:"error",errorCode:"CANCELLED",error:job.delivery?.mode==="generator" ? "Request cancelled. Generator kept." : job.delivery?.mode==="singularity" ? "Singularity reward cancelled; recharge the asset." : "Request cancelled. AI Item kept.",completedAt:new Date().toISOString()};
               jobStore.put(failed);
               Object.assign(job,failed);
               nativePipe.discard(id); jobChildren.get(job)?.kill();
@@ -441,12 +479,13 @@ async function watchIsaacLog() {
           const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
           const id = typeof input.id === "string" ? input.id : "";
           const quality = Number.isInteger(input.quality) && input.quality >= 0 && input.quality <= 4 ? input.quality : 3;
-          if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && prompt && prompt.length <= 2000 && !jobs.has(id)) {
+          const auto = input.auto === true;
+          if (/^[a-zA-Z0-9_-]{1,100}$/.test(id) && ((auto && prompt.length <= 2000) || (prompt && prompt.length <= 2000)) && !jobs.has(id)) {
             if(activeJob) publishStatus(id, 'error', 'Another request is running. Wait until it finishes.');
             else {
               try {
                 if (!gameContext?.run || !id.startsWith(gameContext.run+'_')) throw Error('Generation request is from another run.');
-                startJob(prompt, id, false, quality, input.delivery, input.item_type);
+                startJob(prompt, id, false, quality, input.delivery, input.item_type, auto);
               }
               catch (error) { publishStatus(id, 'error', error.message.slice(0,500)); }
             }

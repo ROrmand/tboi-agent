@@ -4,6 +4,7 @@ dist/
 .env.*
 !.env.example
 *.log
+ResourceExtractor_log.txt
 .DS_Store
 Thumbs.db
 .reference-repentogon/

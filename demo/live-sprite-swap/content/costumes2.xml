@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<costumes anm2root="gfx/characters/">
+  <costume id="2" anm2path="aisaac_techx.anm2" type="none" priority="1" />
+  <costume id="1" anm2path="creator_angel.anm2" type="none" priority="1" />
+</costumes>

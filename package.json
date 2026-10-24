@@ -6,6 +6,8 @@
   "scripts": {
     "bridge": "node bridge/server.mjs",
     "mod:sync": "node bridge/sync-mod.mjs",
+    "aisaac:prepare": "node demo/live-sprite-swap/scripts/generate_aisaac_assets.mjs",
+    "characters:art": "node demo/live-sprite-swap/scripts/generate_character_art.mjs",
     "repentogon:reset": "node native/reset-repentogon-dll.mjs",
     "generate": "node bridge/generate.mjs",
     "validate": "node bridge/generate.mjs --dry-run --no-image",

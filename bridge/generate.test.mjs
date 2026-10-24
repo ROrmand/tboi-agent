@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { ITEM_SCHEMA, repairGeneratedProfile, validateProfile } from "./generate.mjs";
+import { ITEM_SCHEMA, designUntilValid, repairGeneratedProfile, validateProfile } from "./generate.mjs";
 
 function retaliationProfile(action, trigger = "player_hurt") {
   const proc = { conditions: [], actions: [action], cooldown: 30 };
@@ -187,4 +187,35 @@ test("capability catalog exposes only bounded passive and active effect families
   assert.equal(catalog.active.max_targets,8);
   assert.equal(catalog.active.shell_capacity,8);
   assert.ok(catalog.triggers.includes("room_clear"));
+});
+
+test("auto design retries an invalid idea and returns the requested quality", async () => {
+  const profile = {
+    region: "passive", systems: ["active"], affects_stats: false,
+    metadata: { display_name: "Ashen Pulse", description: "A radial burst of damage", quality: 1, theme: "cursed", balance_note: "" },
+    visuals: { pedestal_prompt: "single rusty iron nail, cursed sickly green glint, pixel art game icon, centered object, plain transparent background, no text" },
+    rules: [], active: { effect: "radial_burst", charges: 6, targeting: "self", damage: 4, radius: 100 },
+  };
+  const ideas = ["nope", "A ringing glass eye that watches the room.", "A ringing glass eye that watches the room.", "A second glass eye that blinks in the dark."];
+  let index = 0;
+  let designs = 0;
+  const result = await designUntilValid({
+    quality: 1,
+    itemType: "active",
+    ideas: async () => ideas[index++],
+    design: async () => {
+      designs += 1;
+      if (designs === 1) throw Error("schema validation failed");
+      return structuredClone(profile);
+    },
+  });
+  assert.equal(designs, 2);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.idea, "A second glass eye that blinks in the dark.");
+  assert.equal(result.profile.metadata.quality, 1);
+  await assert.rejects(() => designUntilValid({
+    quality: 1, itemType: "active", maxAttempts: 2,
+    ideas: async () => "A repeated hollow bell that never changes.",
+    design: async () => { throw Error("still invalid"); },
+  }), /invalid after 2 ideas/);
 });

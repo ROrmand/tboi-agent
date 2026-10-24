@@ -18,7 +18,12 @@ test('blank delivery is trusted bounded owner data, not model callback flags', (
     null, [], { mode: 'pedestal', owner: '123' }, { mode: 'blank', owner: 123 },
     { mode: 'blank', owner: '1.5' }, { mode: 'blank', owner: '1'.repeat(41) },
     { mode: 'blank', owner: '123', run: 'untrusted' },
+    { mode: 'generator', owner: '123' }, { mode: 'blank', owner: '123', quality: 2 },
   ]) assert.throws(() => encodeEnvelope({ ...envelope, delivery }), /delivery/);
+  const generator = { ...envelope, delivery: { mode: 'generator', owner: '-9', quality: 4 } };
+  assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(generator)).lines, [generator]);
+  const singularity = { ...envelope, delivery: { mode: 'singularity', owner: '-9', quality: 0 } };
+  assert.deepEqual(decodeLines(Buffer.alloc(0), encodeEnvelope(singularity)).lines, [singularity]);
 });
 
 test('error codes only accompany errors and unterminated lines obey framing limits', () => {

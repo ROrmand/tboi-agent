@@ -46,6 +46,15 @@ export class BoundedQueue {
   get size() { return this.#messages.length; }
 }
 
+function validDelivery(delivery) {
+  if (!delivery || typeof delivery !== "object" || Array.isArray(delivery) || typeof delivery.owner !== "string" || !/^-?\d{1,40}$/.test(delivery.owner)) return false;
+  const keys = Object.keys(delivery);
+  if (delivery.mode === "blank") return keys.every((key) => key === "mode" || key === "owner");
+  return (delivery.mode === "generator" || delivery.mode === "singularity")
+    && keys.every((key) => key === "mode" || key === "owner" || key === "quality")
+    && Number.isInteger(delivery.quality) && delivery.quality >= 0 && delivery.quality <= 4;
+}
+
 function validateEnvelope(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('IPC envelope must be an object.');
   if (value.version !== PROTOCOL_VERSION) throw Error('Unsupported IPC protocol version.');
@@ -62,10 +71,7 @@ function validateEnvelope(value) {
   }
   if (value.type === 'profile') {
     if (Object.keys(value).some(key => !["version", "type", "id", "profile", "delivery"].includes(key))) throw Error("Unsupported IPC profile payload field.");
-    if (value.delivery !== undefined) {
-      const delivery = value.delivery;
-      if (!delivery || typeof delivery !== "object" || Array.isArray(delivery) || Object.keys(delivery).some(key => !["mode", "owner"].includes(key)) || delivery.mode !== "blank" || typeof delivery.owner !== "string" || !/^-?\d{1,40}$/.test(delivery.owner)) throw Error("Invalid IPC delivery intent.");
-    }
+    if (value.delivery !== undefined && !validDelivery(value.delivery)) throw Error("Invalid IPC delivery intent.");
     if (typeof value.id !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value.id)) throw Error('Invalid IPC profile id.');
     if (!value.profile || typeof value.profile !== 'object' || Array.isArray(value.profile)) throw Error('IPC profile payload must be data.');
   }

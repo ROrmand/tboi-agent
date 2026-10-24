@@ -62,7 +62,7 @@ function Game() return { GetFrameCount=function() return frame end, GetNumPlayer
  GetHUD=function() return hud end,
  GetRoom=function() return { FindFreePickupSpawnPosition=function(_, position) return position end } end,
  GetLevel=function() return { GetCurrentRoomIndex=function() return roomIndex end, GetAbsoluteStage=function() return stage end } end } end
-Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) if name=="AI Item" then return 797 end; if name:match("^Generated Active") then return 798+tonumber(name:match("(%d+)$")) end; return 733+tonumber(name:match("(%d+)$")) end,
+Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) if name=="AI Item" then return 797 end; if name=="Singularity Terminal" then return 900 end; local generator=name:match("^Generator (%d+)$"); if generator then return 820+tonumber(generator) end; if name:match("^Generated Active") then return 798+tonumber(name:match("(%d+)$")) end; local slot=tonumber(name:match("(%d+)$")); return slot<64 and 733+slot or 1000+slot end,
  GetSoundIdByName=function() return 1 end, GetTime=function() return now+frame*34 end, GetClipboard=function() return clipboardText end,
  SetClipboard=function(value) clipboardText=value; return true end, GetPlayer=function() return player end,
  FindByType=function(entityType)
@@ -122,7 +122,7 @@ function deepCopy(value)
 end
 package.preload.json = function() return { decode=function(raw) if raw=='bad' then error('bad JSON') end; return encodedValues[raw] or envelope end,
  encode=function(value)
-  if value.prompt then lastRequest=value end
+  if value.prompt or value.auto then lastRequest=value end
   local key='encoded_'..tostring(#encodedValues+1)
   encodedValues[#encodedValues+1]=deepCopy(value); encodedValues[key]=deepCopy(value)
   return key
@@ -371,7 +371,7 @@ test('familiar profiles are accepted and advertise the loaded runtime contract',
     nextRaw='profile'; Demo:onPostUpdate()
     assert(events[1]=='spawn:100' and events[2]=='ack:123_0_1_123_1')
     local state=encodedValues[#encodedValues]
-    assert(state.runtime_contract==12 and state.count==1)
+    assert(state.runtime_contract==13 and state.count==1)
   `, fixture);
 });
 
@@ -546,26 +546,26 @@ test('two collectibles have independent profiles, art, ownership and persisted r
   `);
 });
 
-test('64 items accepted; 65th blocked in native receiver and prompt without replacing items', async () => {
+test('128 items accepted; 129th blocked in native receiver and prompt without replacing items', async () => {
   await run(`
-    for i=0,63 do
+    for i=0,127 do
       envelope=deepCopy(envelope)
       envelope.id='123_0_1_item_'..i; envelope.profile.bridge_request_id=envelope.id
       envelope.profile.sprite_sheet=string.format('gfx/items/collectibles/generated_slot_%02d.png',i)
       frame=i; nextRaw='profile'; Demo:onPostUpdate()
     end
-    assert(#entities==64 and #events==128)
+    assert(#entities==128 and #events==256)
     envelope=deepCopy(envelope)
     envelope.id='123_0_1_overflow'; envelope.profile.bridge_request_id=envelope.id
-    frame=64; nextRaw='profile'; Demo:onPostUpdate(); assert(#entities==64 and #events==128)
+    frame=128; nextRaw='profile'; Demo:onPostUpdate(); assert(#entities==128 and #events==256)
     held=true; frame=65; Demo:onPostUpdate(); Demo:onPostRender()
     uiCallbacks.input('one more'); uiCallbacks.submit(); Demo:onPostRender()
-    assert(lastRequest==nil and uiPrompt.status:find('Item limit reached: 64/64',1,true))
+    assert(lastRequest==nil and uiPrompt.status:find('Item limit reached: 128/128',1,true))
     Demo:onPreGameExit(true); Demo:onGameStarted(true)
-    uiCallbacks.submit(); Demo:onPostRender(); assert(lastRequest==nil and uiPrompt.status:find('Item limit reached: 64/64',1,true))
+    uiCallbacks.submit(); Demo:onPostRender(); assert(lastRequest==nil and uiPrompt.status:find('Item limit reached: 128/128',1,true))
     Demo:onGameStarted(false)
     uiCallbacks.submit(); Demo:onPostRender()
-    assert(lastRequest==nil and uiPrompt.status:find('Artwork limit reached: 64/64',1,true))
+    assert(lastRequest==nil and uiPrompt.status:find('Artwork limit reached: 128/128',1,true))
   `);
 });
 
@@ -693,7 +693,7 @@ test('explosive tears receive the named bit, preserve existing bits, and stop ap
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
-      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==12)
+      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==13)
       local function shot(native)
         local data={}
         local tear={SpawnerEntity=player,TearFlags=2,Scale=1,GetData=function() return data end}
@@ -750,7 +750,7 @@ test('confusion tears receive the named bit, preserve existing bits, and stop ap
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
-      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==12)
+      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==13)
       local function shot(native)
         local data={}
         local tear={SpawnerEntity=player,TearFlags=2,Scale=1,GetData=function() return data end}
@@ -807,7 +807,7 @@ test('knockback tears receive the named bit, preserve existing bits, and stop ap
     fixture.tear_profile.flags=flags;
     await run(`
       nextRaw='profile'; Demo:onPostUpdate(); assert(events[1]=='spawn:100'); owns=true
-      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==12)
+      local state=encodedValues[#encodedValues]; assert(state.runtime_contract==13)
       local function shot(native)
         local data={}
         local tear={SpawnerEntity=player,TearFlags=2,Scale=1,GetData=function() return data end}
@@ -1761,4 +1761,245 @@ test('presentation choices are bounded and missing engine sounds fall back safel
   for(const visuals of [{sound:'execute'},{animation:'arbitrary'},{path:'../../file'}]){
     const invalid=structuredClone(profile);Object.assign(invalid.visuals,visuals);await rejectedByBoth(invalid);
   }
+});
+
+test('AIsaac applies cosmetic goggles once without granting Tech X', async () => {
+  await run(`
+    Isaac.GetPlayerTypeByName=function(name) if name=='AIsaac' then return 41 end; return -1 end
+    player.GetPlayerType=function() return 41 end
+    local data,costumes={},0
+    player.GetData=function() return data end
+    Isaac.GetCostumeIdByPath=function(path) assert(path=='gfx/characters/aisaac_techx.anm2'); return 0 end
+    player.AddNullCostume=function(_,id) assert(id==0);costumes=costumes+1 end
+    player.AddCollectible=function() error('Goggles must not grant Tech X') end
+    Demo:onPostPlayerInit(player);Demo:onPostPlayerInit(player)
+    assert(costumes==1 and data.nebiusAIsaacGoggles)
+  `);
+});
+
+test('AIsaac morphs pedestals into the matching Generator, including actives and devil deals', async () => {
+  await run(`
+    Isaac.GetPlayerTypeByName=function(name) if name=='AIsaac' then return 41 end; return -1 end
+    player.GetPlayerType=function() return 41 end
+    ItemType={ITEM_PASSIVE=1,ITEM_FAMILIAR=2,ITEM_ACTIVE=3};ItemConfig={TAG_QUEST=2}
+    local qualities={[10]=0,[11]=3,[12]=4,[13]=1,[14]=2}
+    local itemType,tags=1,0
+    Isaac.GetItemConfig=function() return {GetCollectible=function(_,id) return {Type=itemType,Tags=tags,Quality=qualities[id] or 1} end} end
+    local function pedestal(subtype,price)
+      local data={};local pickup={SubType=subtype,Variant=100,InitSeed=subtype,Price=price,ShopItemId=4,OptionsPickupIndex=7,AutoUpdatePrice=false,Wait=10,Touched=false,VarData=0,GetData=function() return data end}
+      function pickup:Morph(_,_,id) self.SubType=id;self.Price=0;self.ShopItemId=-1;self.OptionsPickupIndex=0;self.Wait=0 end
+      return pickup,data
+    end
+    local gray,grayData=pedestal(10,0);Demo:onPickupUpdate(gray)
+    assert(gray.SubType==820 and gray.Price==0 and grayData.nebiusGeneratorQuality==0 and grayData.nebiusGeneratorItemType=='passive')
+    local purple=pedestal(11,15);Demo:onPickupUpdate(purple);assert(purple.SubType==823 and purple.Price==15 and purple.ShopItemId==4)
+    itemType=3;local yellow,yellowData=pedestal(12,-2);Demo:onPickupUpdate(yellow)
+    assert(yellow.SubType==824 and yellow.Price==-2 and yellowData.nebiusGeneratorItemType=='active')
+    itemType=1;tags=2;local quest=pedestal(13,0);Demo:onPickupUpdate(quest);assert(quest.SubType==13)
+    tags=0;local generated=pedestal(733,0);Demo:onPickupUpdate(generated);assert(generated.SubType==733)
+    local choice=pedestal(14,0);choice.GetCollectibleCycle=function() return {1,2} end;Demo:onPickupUpdate(choice);assert(choice.SubType==822)
+  `);
+});
+
+const aisaacPedestalSetup = `
+  Isaac.GetPlayerTypeByName=function(name) if name=='AIsaac' then return 41 end; return -1 end
+  player.GetPlayerType=function() return 41 end
+  ItemType={ITEM_PASSIVE=1,ITEM_FAMILIAR=2,ITEM_ACTIVE=3};ItemConfig={TAG_QUEST=2}
+  Isaac.GetItemConfig=function() return {GetCollectible=function(_,id) return {Type=id==14 and 3 or 1,Tags=0,Quality=id%10} end} end
+  function generatorPedestal(subtype)
+    local data={}
+    local pickup={SubType=subtype,Variant=100,InitSeed=123,Price=15,ShopItemId=4,OptionsPickupIndex=7,AutoUpdatePrice=false,Wait=10,Touched=false,VarData=0,GetData=function() return data end}
+    pickup.GetCollectibleCycle=function() return {} end
+    pickup.HasFlipData=function() return false end
+    pickup.GetFlipCollectible=function() return nil end
+    function pickup:Morph(_,_,id)
+      Demo:onPickupInit(self)
+      self.SubType=id;self.Price=0;self.ShopItemId=-1;self.OptionsPickupIndex=0;self.Wait=0
+    end
+    return pickup,data
+  end
+`;
+
+const singularitySetup = `
+  Isaac.GetPlayerTypeByName=function(name) if name=='AIsaac' then return 41 end; return -1 end
+  player.GetPlayerType=function() return 41 end
+  ItemType={ITEM_PASSIVE=1,ITEM_FAMILIAR=2,ITEM_ACTIVE=3};ItemConfig={TAG_QUEST=2}
+  Isaac.GetItemConfig=function() return {GetCollectible=function() return {Type=3,Tags=0,Quality=3} end} end
+  local inventory={}
+  local activeItem,charge=0,0
+  player.GetActiveItem=function() return activeItem end
+  player.GetActiveCharge=function() return charge end
+  player.GetBatteryCharge=function() return 0 end
+  player.SetActiveCharge=function(_,amount) charge=amount end
+  player.GetCollectibleNum=function(_,id) return inventory[id] or 0 end
+  player.HasCollectible=function(_,id) return (inventory[id] or 0)>0 end
+  player.RemoveCollectible=function(_,id) inventory[id]=(inventory[id] or 0)-1;if activeItem==id then activeItem=0 end end
+  player.AddCollectible=function(_,id,amount,firstTime,slot)
+    inventory[id]=(inventory[id] or 0)+1
+    if id==900 then activeItem=id;charge=amount or 0 end
+    Demo:onPostAddCollectible(id,amount,firstTime,slot,nil,player)
+  end
+  Random=function() return 724217988 end
+`;
+
+test('AIsaac starts with one fully charged Terminal use and never converts it into a Generator', async () => {
+  await run(singularitySetup + `
+    Demo:onGameStarted(false)
+    assert(player:GetActiveItem(0)==900,'startup grant must survive the collectible callback')
+    assert(player:GetCollectibleNum(823)==0 and uiPrompt.pending==nil,'startup must not queue an AI build')
+    assert(player:GetActiveCharge(0)==12,'a fresh run starts with one Terminal use ready')
+    player:SetActiveCharge(7,0);Demo:onPreGameExit(true);Demo:onGameStarted(true)
+    assert(player:GetActiveCharge(0)==7,'continue must preserve earned charge')
+  `);
+});
+
+test('AIsaac leaves dropped Terminal pedestals intact', async () => {
+  await run(aisaacPedestalSetup + `
+    local pickup=generatorPedestal(900)
+    Demo:onPickupInit(pickup);Demo:onPickupUpdate(pickup)
+    Demo:onPrePickupCollision(pickup,player)
+    assert(pickup.SubType==900,'the fixed Terminal is not an active Generator source')
+  `);
+});
+
+test('Terminal needs twelve charges and requests a passive without replacing itself', async () => {
+  await run(singularitySetup + `
+    Demo:onGameStarted(false)
+    for amount=0,11 do
+      player:SetActiveCharge(amount,0)
+      assert(Demo:onPreUseItem(900,nil,player,0,0).Discharge==false)
+      assert(Demo:onUseItem(900,nil,player,0,0).Discharge==false and uiPrompt.pending==nil)
+    end
+    player:SetActiveCharge(12,0)
+    assert(Demo:onPreUseItem(900,nil,player,0,0)==nil)
+    local result=Demo:onUseItem(900,nil,player,0,0)
+    assert(result.Discharge and not result.Remove and player:GetActiveItem(0)==900)
+    assert(lastRequest.delivery.mode=='singularity' and lastRequest.quality==3 and lastRequest.delivery.quality==3 and lastRequest.item_type=='passive')
+    local requestId=uiPrompt.pending
+    assert(Demo:onUseItem(900,nil,player,0,0).Discharge==false and uiPrompt.pending==requestId)
+    envelope.delivery={mode='singularity',owner='11',quality=3}
+    envelope.id=requestId;envelope.profile.bridge_request_id=requestId;envelope.profile.metadata.quality=3
+    frame=1;nextRaw='profile';Demo:onPostUpdate()
+    assert(player:GetCollectibleNum(733)==1 and player:GetActiveItem(0)==900 and uiPrompt.pending==nil)
+  `);
+});
+
+test('Terminal keeps its charge when the generation request cannot be saved', async () => {
+  await run(singularitySetup + `
+    Demo:onGameStarted(false);player:SetActiveCharge(12,0)
+    Demo.SaveData=function() error('save failed') end
+    local result=Demo:onUseItem(900,nil,player,0,0)
+    assert(not result.Discharge and not result.ShowAnim and not result.Remove)
+    assert(uiPrompt.pending==nil and lastRequest==nil and player:GetActiveCharge(0)==12)
+  `);
+});
+
+test('AIsaac converts every quality during pickup initialization and preserves prices and choices', async () => {
+  await run(aisaacPedestalSetup + `
+    for quality=0,4 do
+      local pickup,data=generatorPedestal(10+quality)
+      Demo:onPickupInit(pickup)
+      assert(pickup.SubType==820+quality and data.nebiusGeneratorQuality==quality)
+      assert(data.nebiusGeneratorItemType==(quality==4 and 'active' or 'passive'))
+      assert(pickup.Price==15 and pickup.ShopItemId==4 and pickup.OptionsPickupIndex==7 and pickup.Wait==10 and pickup.AutoUpdatePrice==false)
+      assert(not data.nebiusMorphing)
+    end
+  `);
+});
+
+test('AIsaac reconverts rerolled and revisited pedestals rather than trusting stale replacement markers', async () => {
+  await run(aisaacPedestalSetup + `
+    local pickup,data=generatorPedestal(10)
+    Demo:onPickupUpdate(pickup);assert(pickup.SubType==820)
+    pickup.SubType=14
+    Demo:onPickupUpdate(pickup);assert(pickup.SubType==824 and data.nebiusGeneratorItemType=='active')
+    pickup.SubType=10;data.nebiusCheckedSubtype=10
+    Demo:onPickupUpdate(pickup);assert(pickup.SubType==820 and data.nebiusGeneratorItemType=='passive')
+    local revisited=generatorPedestal(12)
+    Demo:onPickupInit(revisited);assert(revisited.SubType==822)
+  `);
+});
+
+test('AIsaac replacement does not depend on generation readiness or valid generated-item save data', async () => {
+  await run(aisaacPedestalSetup + `
+    Demo:onPreGameExit(true)
+    local early=generatorPedestal(11)
+    Demo:onPickupInit(early);assert(early.SubType==821)
+    savedData='bad';Demo:onGameStarted(true)
+    local blockedPickup=generatorPedestal(13)
+    Demo:onPickupUpdate(blockedPickup);assert(blockedPickup.SubType==823)
+  `);
+});
+
+test('AIsaac converts touched, special, cycling, and Flip pedestals and catches collisions before another update', async () => {
+  await run(aisaacPedestalSetup + `
+    local special=generatorPedestal(12)
+    special.Touched=true;special.VarData=5
+    special.GetCollectibleCycle=function() return {10,12,14} end
+    special.HasFlipData=function() return true end
+    special.GetFlipCollectible=function() return 14 end
+    Demo:onPickupUpdate(special);assert(special.SubType==822)
+    local pickup,data=generatorPedestal(14)
+    Demo:onPrePickupCollision(pickup,player)
+    assert(pickup.SubType==824 and data.nebiusGeneratorItemType=='active')
+    player.GetCollectibleNum=function(_,id) return id==824 and 1 or 0 end
+    Demo:onPostAddCollectible(824,nil,true,nil,nil,player)
+    assert(lastRequest.auto and lastRequest.quality==4 and lastRequest.item_type=='active')
+  `);
+});
+
+test('picking up a Generator queues an auto build without opening the creator', async () => {
+  await run(`
+    Isaac.GetPlayerTypeByName=function(name) if name=='AIsaac' then return 41 end; return -1 end
+    player.GetPlayerType=function() return 41 end
+    local held={[822]=1,[733]=0}
+    player.GetCollectibleNum=function(_,id) return held[id] or 0 end
+    player.RemoveCollectible=function(_,id) held[id]=(held[id] or 1)-1 end
+    player.AddCollectible=function(_,id) held[id]=(held[id] or 0)+1 end
+    local data={nebiusGeneratorQuality=2,nebiusGeneratorItemType='passive'}
+    local pickup={Variant=100,SubType=822,GetData=function() return data end}
+    Demo:onPrePickupCollision(pickup,player)
+    Demo:onPostAddCollectible(822,nil,true,nil,nil,player)
+    Demo:onPostRender()
+    assert(not uiPrompt.open and uiPrompt.pending~=nil and lastRequest.auto==true and lastRequest.quality==2 and lastRequest.delivery.mode=='generator' and lastRequest.delivery.quality==2)
+    local requestId=lastRequest.id
+    Demo:onPreGameExit(true);Demo:onGameStarted(true)
+    assert(uiPrompt.pending==requestId and not uiPrompt.open)
+    envelope.delivery={mode='generator',owner='11',quality=2};envelope.id=requestId;envelope.profile.bridge_request_id=requestId
+    frame=1;nextRaw='profile';Demo:onPostUpdate()
+    assert(held[822]==0 and held[733]==1 and events[1]=='ack:'..requestId)
+  `);
+});
+
+test('AIsaac converts a blank AI Item to a Generator instead of opening the manual creator', async () => {
+  await run(aisaacPedestalSetup + `
+    local pickup=generatorPedestal(797)
+    Demo:onPickupInit(pickup);assert(pickup.SubType==824)
+    local held={[797]=1}
+    player.GetCollectibleNum=function(_,id) return held[id] or 0 end
+    player.RemoveCollectible=function(_,id) held[id]=math.max(0,(held[id] or 0)-1) end
+    player.AddCollectible=function(self,id) held[id]=(held[id] or 0)+1;Demo:onPostAddCollectible(id,nil,true,nil,nil,self) end
+    Demo:onPostAddCollectible(797,nil,true,nil,nil,player)
+    assert(held[797]==0 and held[824]==1 and lastRequest.auto and not uiPrompt.open and not uiPrompt.requested)
+  `);
+});
+
+test('a missed vanilla pickup becomes a Generator and a failed build keeps it', async () => {
+  await run(`
+    Isaac.GetPlayerTypeByName=function(name) if name=='AIsaac' then return 41 end; return -1 end
+    player.GetPlayerType=function() return 41 end
+    ItemType={ITEM_PASSIVE=1,ITEM_ACTIVE=3};ItemConfig={TAG_QUEST=2}
+    Isaac.GetItemConfig=function() return {GetCollectible=function() return {Type=1,Tags=0,Quality=0} end} end
+    local held={}
+    player.GetCollectibleNum=function(_,id) return held[id] or 0 end
+    player.RemoveCollectible=function(_,id) held[id]=math.max(0,(held[id] or 0)-1) end
+    player.AddCollectible=function(self,id) held[id]=(held[id] or 0)+1; Demo:onPostAddCollectible(id,nil,true,nil,nil,self) end
+    held[50]=1
+    Demo:onPostAddCollectible(50,nil,true,nil,nil,player)
+    assert(held[50]==0 and held[820]==1 and lastRequest.auto==true and lastRequest.quality==0 and not uiPrompt.open)
+    local requestId=lastRequest.id
+    envelope={version=1,type='status',id=requestId,status='error',detail='Item design was invalid',error_code='INVALID_OUTPUT'}
+    nextRaw='status';frame=1;Demo:onPostUpdate()
+    assert(held[820]==1 and uiPrompt.pending==nil and uiPrompt.status=='Generator kept.' and not uiPrompt.open)
+  `);
 });

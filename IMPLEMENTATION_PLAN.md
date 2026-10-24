@@ -1,8 +1,8 @@
 # Passive generator completion plan
 
-Status: implementation audit, October 22, 2026. All eight milestones have code
-paths and automated coverage. Checked tasks mean implemented, not certified in
-Isaac. No live-game acceptance was performed in this audit.
+Status: implementation audit, October 22, 2026. Milestones 1–9 have code paths
+and automated coverage. Checked tasks mean implemented, not certified in Isaac.
+No live-game acceptance was performed in this audit.
 
 ## Audit summary
 
@@ -16,6 +16,7 @@ Isaac. No live-game acceptance was performed in this audit.
 | 6: AI Item / Creator | Static declarations, owner entitlements, trusted delivery, persisted requests, optional replacement | Paid/choice pedestals, rerolls, co-op, exit/continue |
 | 7: Presentation | Local-model deadline/fallback, controller keyboard, saved hotkey, derived details, presentation allowlists | Installed-model latency/variety and controller/audio/visual checks |
 | 8: Actives | Eight separate shells, fixed radial burst, six charges, bounded targeting/use, continuation | Charge restoration, alternate slots, duplicate-use engine behavior |
+| 9: AIsaac | Grey Isaac sheet, Tech X null costume, five quality Generators, auto design-then-art, generator exchange | Pedestal replacement, devil deals, co-op with The Creator, continue/cancel in Isaac |
 
 Evidence: `native/ipc/product.test.mjs` runs Lua with deterministic profiles and
 engine mocks; `bridge/server.integration.test.mjs` uses local fake services and
@@ -25,7 +26,7 @@ their respective contracts. Run `npm test` and `npm run validate` for integrated
 verification; these do not replace live completion checks.
 
 Compatibility: capability catalog 4, generated profile 1, saved run state 3
-(with explicit version-2 read migration), bridge/runtime contract 12. Optional
+(with explicit version-2 read migration), bridge/runtime contract 13. Optional
 fields preserve old action semantics and existing passive IDs. Profiles share a
 64-item run limit and 64-artwork global bank, with at most eight active profiles.
 
@@ -316,9 +317,44 @@ Completion checks: success spends charge once; refused/failed uses spend none;
 duplicated uses follow the declared policy; alternate slots and continuation
 preserve the correct item, charge, and profile.
 
+## Milestone 9: AIsaac and Generators
+
+AIsaac is a second character. The Creator, the AI Item, and hotkey `8` stay as
+they are. AIsaac starts with Isaac's health and no Generator.
+
+- [x] Declare AIsaac and Generator 0–4. Copy the official grey Isaac sheet to
+  `character_aisaac.png`, grayscale the Isaac portrait, and draw a custom name
+  plate. Tech X goggles come from the vanilla costume through `costumes2.xml`.
+- [x] While any AIsaac is present, replace eligible pedestals—including actives
+  and devil deals—with the Generator whose quality matches ItemConfig. Skip
+  quest items, generated shells, and the Generators themselves. Convert on
+  pickup initialization, updates, and before collision, including rerolls,
+  touched pickups, choice cycles, and revealed Flip items. Replacement does not
+  depend on generation readiness. The Creator's optional replacement stays
+  unchanged when AIsaac is absent.
+- [x] Picking up a Generator queues one auto entitlement and shows the progress
+  indicator without opening the creator. Quality and active/passive follow the
+  replaced item. Extra pickups queue, up to 16. Failure, cancel, and capacity
+  keep that Generator.
+- [x] Auto jobs invent and validate up to eight ideas before reserving artwork,
+  then render once. Manual creator jobs still reserve before generation. Active
+  generation stays vaulted except for these generator deliveries.
+- [x] If AIsaac receives any other non-quest collectible, remove it and grant
+  the matching Generator.
+
+Completion checks: automated morph, exchange, continue, failsafe, design retry,
+and art-reservation tests pass. Live pedestal, devil-deal, co-op, and
+continue/cancel checks in Isaac are still open.
+
+October 22, 2026: packaged the locally extracted grey Isaac body and cosmetic
+Tech X texture/animation, added reproducible asset preparation and regression
+coverage, and synced all 20 startup files to the installed product mod. All
+293 automated tests, the dry-run validator, and whitespace checks pass. Restart
+Isaac for the remaining live acceptance checks; no live run was performed.
+
 ## Execution and release gates
 
-Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8. Milestone 1 supplies the shared
+Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9. Milestone 1 supplies the shared
 state for the callback rework; it does not expand feature scope by itself.
 
 For each milestone:

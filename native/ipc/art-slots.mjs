@@ -3,7 +3,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { FAMILIAR_FRAME_COUNT, FAMILIAR_FRAME_SIZE, familiarAnimationXml } from './familiar-animation.mjs';
 
-export const ART_SLOT_COUNT = 64;
+export const ART_SLOT_COUNT = 128;
 
 export function artSlotName(slot) {
   return `generated_slot_${String(slot).padStart(2, '0')}.png`;

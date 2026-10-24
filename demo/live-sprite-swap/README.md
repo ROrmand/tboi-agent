@@ -1,8 +1,8 @@
-# Passive Item Runtime — v1.13.2
+# Passive Item Runtime — v1.14.0
 
 The product mod remains **Live Sprite Swap Demo** in `mods/live_sprite_swap_demo`.
 It now registers 64 independent passive shells, Generated Passive 00–63.
-The pedestal and the pickup banner show the model's name and one sentence describing the effect.
+The pickup banner shows the model's name and one sentence describing the effect.
 All generated behavior remains validated JSON applied through fixed Lua handlers.
 
 ## Setup
@@ -19,9 +19,83 @@ All generated behavior remains validated JSON applied through fixed Lua handlers
    with one local sentence from the bridge word lists. Review or
    edit it, then click Generate Item. Do not use `agent generate`.
 
+AIsaac uses the copied grey Isaac sheet plus the vanilla Tech X goggles. His
+pedestals become Generator 0–4. Picking one up builds an item of that quality
+in the corner indicator and does not open the creator.
+
+AIsaac starts with the fixed Singularity Terminal active and one full charge so
+the run can begin with an immediate generation. After that first use, it uses
+the game's normal 12-room charge meter; using it queues a random-quality
+AI passive and keeps the Terminal for the next recharge. Each use first selects
+one random quality from 0 through 4, then asks the random-idea service for a
+sentence and builds that idea at the selected quality. The Terminal is never
+converted into a Generator, including when granted at startup or dropped onto
+a pedestal. Generator 0-4 are separate quality-matched pickup tokens, not five
+versions of the Terminal. Continuing a run preserves its current charge.
+
+In `content/items.xml`, collectible `gfx` values are filenames relative to
+`gfxroot` plus the engine's implicit `collectibles/` directory. Do not prefix
+them with `collectibles/` again: that resolves to a nonexistent nested folder
+and leaves both pedestal sprites and the active HUD icon invisible. The
+asset tests validate these resolved paths and their inclusion in `mod:sync`.
+
+For AIsaac, normal collectible pedestals are converted immediately on spawn and
+rechecked on update and before collection. Rerolls, dropped/touched items,
+cycling choices, revealed Flip items, shop items, and devil deals use the
+original item's quality; the AI Item is converted too. No replacement toggle or
+working generation service is required to see the circles. Progression/quest
+items and already-generated AI collectibles are deliberately left intact.
+
 The terminal fallback is `npm run ipc:generate -- --prompt "..."` with a run open.
 Acceptance spawns a new collectible and saves its profile before queuing ACK.
 The existing paired REPENTOGON DLLs require no changes.
+
+## AIsaac assets and playtest
+
+The packaged body is a byte-for-byte copy of the installed game's grey Isaac
+sheet. The goggles use a copied Tech X animation and texture under mod-specific
+filenames; no Tech X collectible or laser effect is granted. The stage portrait
+is a grayscale copy of Isaac's portrait. Generator and generated-item icons are
+32×32; the character animation sheet and stage portrait intentionally use their
+own larger formats. Character-select portraits are smaller black-and-white
+drawings: a robot perched on AIsaac and an angelic Creator. The Who Am I panel
+uses each character's real name rather than the fallback Random label. AIsaac's
+cosmetic Tech X goggles have blue lenses and are bound directly to the AIsaac
+character definition; the Creator's halo and wings are cosmetic only.
+
+Run `npm run characters:art` to rebuild the character-select portraits and
+Creator costume without extracted game resources. Generated-item descriptions
+no longer remain above pedestals or in the yellow HUD status; error status
+messages still appear.
+
+To rebuild these assets, extract your own game resources first, then run:
+
+```powershell
+npm run aisaac:prepare -- --source "C:/path/to/extracted/resources"
+npm run mod:sync
+```
+
+The source directory must contain `gfx/characters/395_techx.anm2`,
+`gfx/characters/costumes/character_001_isaac_grey.png`,
+`gfx/characters/costumes/costume_395_techx.png`, and
+`gfx/ui/stage/playerportrait_isaac.png`. On this installation the body, portrait,
+and animation came from `afterbirthp.a`; the normal goggles texture came from
+`afterbirth.a`. Extraction must include DLC archives, not just `repentance.a`.
+The local extraction workaround used Gibbed.Rebirth 1.0.2 and the installed
+ResourceExtractor filename list; downloaded tools are not shipped with the mod.
+Run it through `scripts/run-resource-extractor.ps1` to retain only the newest
+1,000 lines of `ResourceExtractor_log.txt` after each extraction. The log is
+generated locally and intentionally excluded from Git changes.
+
+Restart Isaac after syncing. Start a fresh AIsaac run with the bridge and image
+backend running. Check grey skin and cosmetic goggles, then collect all five
+Generator qualities (gray, green, blue, purple, yellow). Verify that an active
+pedestal produces an active build, prices and choices remain correct, and
+save/continue preserves a pending pickup. These are still live acceptance checks.
+
+Each pickup tries up to eight unique ideas before reporting failure; a failed
+or cancelled request keeps the Generator. This bound avoids an unlimited paid
+model loop when the service or available mechanics cannot satisfy the request.
 
 ## Persistence and limits
 

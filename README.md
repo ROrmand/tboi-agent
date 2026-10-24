@@ -16,9 +16,12 @@ uses Nebius Token Factory to produce a validated item profile and its visual
 assets. The mod assigns the accepted result to a pre-allocated item slot,
 without requiring a game restart.
 
-The implementation also includes the blank **AI Item** and **The Creator** character.
-Active collectibles are implemented and covered by tests, but generation is vaulted:
-the creator and bridge accept passives only. These additions still
+The implementation also includes the blank **AI Item**, **The Creator**, and
+**AIsaac**. AIsaac's pedestals become Generator 0–4, and picking one up builds
+an item of that quality without opening the creator. Active collectibles are
+implemented and covered by tests, but typed generation is vaulted: the creator
+and bridge accept passives only. Generator builds may still request an active
+when the replaced pedestal was active. These additions still
 require the live-game acceptance checks in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 A generated result is declarative data, never model-produced Lua, and is applied
 only by fixed Lua handlers.
@@ -340,15 +343,22 @@ fixed handler, and tests. An unknown system is rejected.
 - Replacement only applies while The Creator is present and the setting is on.
   Eligible passive/familiar pedestals preserve shop/choice data; actives, quest
   items, generated shells, and unsupported special pedestals are excluded.
-- Active generation is vaulted. Tab no longer switches item type, and the bridge
-  refuses an active request before it calls the model. The radial-burst handler
-  remains in the mod for profiles already accepted.
+- AIsaac replaces eligible pedestals whenever he is in the run, including
+  actives and devil deals. Each pedestal becomes Generator 0–4, outlined in
+  that quality's color: gray, green, blue, purple, yellow. Pickup starts an
+  automatic build of the same quality and does not open the creator. A failed
+  or cancelled build keeps the Generator. `nebius cancel` applies to that
+  build. If both characters are present, AIsaac's replacement wins.
+- Active generation is vaulted for typed prompts. Tab no longer switches item
+  type, and the bridge refuses a typed active request before it calls the model.
+  A Generator that replaced an active may still request one active shell. The
+  radial-burst handler remains in the mod for profiles already accepted.
 
 ## Implementation and release status
 
 [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) records the implementation
-checklist, automated evidence, and remaining live checks separately. All eight
-milestones have implementation paths; this is not a claim of game acceptance.
+checklist, automated evidence, and remaining live checks separately. Milestones
+1–9 have implementation paths; this is not a claim of game acceptance.
 The automated suite uses deterministic profiles, Lua engine mocks, local fake
 model/art services, and durable restart/ACK fixtures. Run `npm test` and
 `npm run validate` before syncing.

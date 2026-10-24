@@ -7,7 +7,7 @@ local labels = { editing="READY", randomizing="FINDING AN IDEA", generating="GEN
   success="ITEM READY", error="NEEDS ATTENTION" }
 local sounds = { open="SOUND_PAPER_IN", close="SOUND_PAPER_OUT", submit="SOUND_BUTTON_PRESS",
   success="SOUND_POWERUP1", error="SOUND_THUMBS_DOWN" }
-local stages = { startup="Checking services...", expand="Planning mechanics...", text="Designing item...",
+local stages = { startup="Checking services...", idea="Inventing an idea...", retry="Trying another idea...", expand="Planning mechanics...", text="Designing item...",
   repair="Correcting the design...", image="Rendering artwork...", art="Preparing item artwork...",
   familiar_art="Rendering familiar artwork...", familiar_anim="Preparing familiar animation...",
   publish="Validating the item...", deliver="Waiting for Isaac to apply the item..." }
@@ -174,7 +174,7 @@ function Prompt:reset()
   self.resetting=true
   self:close()
   self.resetting=false
-  self.pending,self.pendingKind=nil,nil
+  self.pending,self.pendingKind,self.suppressOpen=nil,nil,false
   self.requested=false
   self.phase,self.status="editing","Describe a passive item, or choose Randomize."
 end
@@ -380,7 +380,7 @@ function Prompt:draw()
   Isaac.RenderText("NEBIUS // ITEM CREATOR",x+14,y+9,0.9,1,1,1)
   if self.activesEnabled then Isaac.RenderText(self.itemType:upper().." [TAB/MAP]",x+w-130,y+9,0.65,0.95,1,1) end
   local context=self.getContext and self.getContext() or {}
-  local heading="Items "..tostring(context.count or 0).."/64 | Art "..tostring(context.art_count or "?").."/64 | AI "..tostring(context.blanks or 0).." | Ctrl+C/V"
+  local heading="Items "..tostring(context.count or 0).."/128 | Art "..tostring(context.art_count or "?").."/128 | AI "..tostring(context.blanks or 0).." | Ctrl+C/V"
   Isaac.RenderText(heading,x+14,y+37,0.75,0.85,0.92,1)
   local inputY,inputH=y+54,h-132
   local qualityX,qualityW=x+w-86,73
@@ -448,14 +448,16 @@ end
 function Prompt:render()
   self:updateInput()
   if self.pending and Isaac.GetTime()-self.started>370000 then
+    local suppress=self.suppressOpen
     self:fail("timeout","Request timed out. Check the bridge, then retry.")
-    self.requested=true
+    if not suppress then self.requested=true end
+    self.suppressOpen=false
   end
   self:renderIndicator()
   if self.failed then return end
   if self.requested then
     self.requested=false
-    if not self.open then
+    if not self.suppressOpen and not self.open then
       self.open=true
       self.focus=1
       self.openedAt=Isaac.GetTime()

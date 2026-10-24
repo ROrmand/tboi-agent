@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <players root="gfx/characters/costumes/" portraitroot="gfx/ui/stage/" nameimageroot="gfx/ui/boss/">
-  <player name="The Creator" skin="character_001_isaac.png" hp="6" armor="0" items="AI Item" canShoot="true" completionparent="Isaac" portrait="playerportrait_01_isaac.png" nameimage="nebius_creator_name.png" />
+  <player name="The Creator" skin="character_001_isaac.png" hp="6" armor="0" items="AI Item" canShoot="true" completionparent="Isaac" portrait="playerportrait_01_isaac.png" nameimage="nebius_creator_name.png" modcostume="1" />
+  <player name="AIsaac" skin="character_aisaac.png" hp="6" armor="0" items="Singularity Terminal" canShoot="true" completionparent="Isaac" portrait="playerportrait_aisaac.png" nameimage="playername_aisaac.png" modcostume="2" />
 </players>

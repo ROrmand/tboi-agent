@@ -1,8 +1,9 @@
 local Demo = RegisterMod("Live Sprite Swap Demo", 1)
 local bridgeJson = require("json")
 local promptUi = include("nebius_prompt").new(bridgeJson)
+local GENERATED_ITEM_CAPACITY, GENERATED_ACTIVE_CAPACITY = 128, 8
 local ids, slotById = {}, {}
-for slot = 0, 63 do
+for slot = 0, GENERATED_ITEM_CAPACITY-1 do
   local id = Isaac.GetItemIdByName(string.format("Generated Passive %02d", slot))
   ids[slot+1], slotById[id] = id, slot+1
 end
@@ -17,12 +18,17 @@ end
 local session = tostring(Random()) .. "_" .. tostring(Isaac.GetTime())
 local serial, runToken, running, blocked = 0, nil, false, nil
 local selectedSaveSlot,freshRun,endedRun=nil,false,false
-local creator={blank=Isaac.GetItemIdByName("AI Item"),requests={},cancelled={},deliveries={},noticed={},replacements={},owner=nil,settings={hotkey="KEY_8",replacePassives=false}}
-creator.passiveIds,creator.activeIds={},{}
+local creator={blank=Isaac.GetItemIdByName("AI Item"),singularity=Isaac.GetItemIdByName("Singularity Terminal"),requests={},cancelled={},deliveries={},noticed={},replacements={},generatorQueue={},touch={},owner=nil,settings={hotkey="KEY_8",replacePassives=false}}
+creator.passiveIds,creator.activeIds,creator.generatorIds,creator.generatorIdSet={},{},{},{}
 for index,id in ipairs(ids) do creator.passiveIds[index]=id end
-for slot=0,7 do creator.activeIds[slot+1]=Isaac.GetItemIdByName(string.format("Generated Active %02d",slot)) end
+for slot=0,GENERATED_ACTIVE_CAPACITY-1 do creator.activeIds[slot+1]=Isaac.GetItemIdByName(string.format("Generated Active %02d",slot)) end
 creator.activeIdSet={}
 for _,id in ipairs(creator.activeIds) do if id>0 then creator.activeIdSet[id]=true end end
+for quality=0,4 do
+  local id=Isaac.GetItemIdByName(string.format("Generator %d", quality))
+  creator.generatorIds[quality]=id
+  if id and id>0 then creator.generatorIdSet[id]=quality end
+end
 function creator.assignShell(index,record)
   local id=creator.passiveIds[index]
   if record.active then
@@ -45,8 +51,35 @@ function creator.isCharacter(player)
   local id=Isaac.GetPlayerTypeByName("The Creator",false)
   return id and id>=0 and player:GetPlayerType()==id
 end
+function creator.isAIsaac(player)
+  if not Isaac.GetPlayerTypeByName or not player or not player.GetPlayerType then return false end
+  local id=Isaac.GetPlayerTypeByName("AIsaac",false)
+  local creatorId=Isaac.GetPlayerTypeByName("The Creator",false)
+  if not id or id<0 or id==creatorId then return false end
+  return player:GetPlayerType()==id
+end
+function creator.anyAIsaac()
+  if not Game or not Isaac.GetPlayer then return false end
+  for playerIndex=0,Game():GetNumPlayers()-1 do
+    if creator.isAIsaac(Isaac.GetPlayer(playerIndex)) then return true end
+  end
+  return false
+end
+function creator.applyAIsaac(player)
+  if not creator.isAIsaac(player) then return end
+  if not creator.aisaacCostume and Isaac.GetCostumeIdByPath then
+    for _,costumePath in ipairs({"gfx/characters/aisaac_techx.anm2","aisaac_techx.anm2"}) do
+      local ok,id=pcall(Isaac.GetCostumeIdByPath,costumePath)
+      if ok and type(id)=="number" and id>=0 then creator.aisaacCostume=id; break end
+    end
+  end
+  if not creator.aisaacCostume or not player.AddNullCostume then return end
+  local data=player.GetData and player:GetData()
+  if type(data)=="table" and data.nebiusAIsaacGoggles then return end
+  if pcall(player.AddNullCostume,player,creator.aisaacCostume) and type(data)=="table" then data.nebiusAIsaacGoggles=true end
+end
 function creator.snapshot()
-  return {requests=creator.requests,cancelled=creator.cancelled,deliveries=creator.deliveries,noticed=creator.noticed,replacements=creator.replacements,idleOpen=promptUi.open or promptUi.requested,owner=creator.owner,settings=creator.settings,itemType=promptUi.itemType,text=promptUi.text,quality=promptUi.quality,sequence=promptUi.sequence,pending=promptUi.pending,pendingKind=promptUi.pendingKind}
+  return {requests=creator.requests,cancelled=creator.cancelled,deliveries=creator.deliveries,noticed=creator.noticed,replacements=creator.replacements,generatorQueue=creator.generatorQueue,idleOpen=promptUi.open or promptUi.requested,owner=creator.owner,settings=creator.settings,itemType=promptUi.itemType,text=promptUi.text,quality=promptUi.quality,sequence=promptUi.sequence,pending=promptUi.pending,pendingKind=promptUi.pendingKind}
 end
 function creator.handoff(player)
   creator.owner=tostring(player.InitSeed)
@@ -72,8 +105,17 @@ function creator.restore(saved,run)
   local count=0
   for id,request in pairs(saved.requests) do
     count=count+1
-    if count>64 or type(id)~="string" or #id>100 or type(run)~="string" or id:sub(1,#run+1)~=run.."_" or not id:match("^[%w_-]+$") or type(request)~="table" or type(request.owner)~="string" or #request.owner>40 or not request.owner:match("^%-?%d+$") or request.mode~="blank" or (request.itemType~=nil and request.itemType~="active" and request.itemType~="passive") then return false end
-    for key in pairs(request) do if key~="mode" and key~="owner" and key~="itemType" then return false end end
+    if count>GENERATED_ITEM_CAPACITY or type(id)~="string" or #id>100 or type(run)~="string" or id:sub(1,#run+1)~=run.."_" or not id:match("^[%w_-]+$") or type(request)~="table" or type(request.owner)~="string" or #request.owner>40 or not request.owner:match("^%-?%d+$") or (request.mode~="blank" and request.mode~="generator" and request.mode~="singularity") then return false end
+    if request.mode=="blank" then
+      if request.itemType~=nil and request.itemType~="active" and request.itemType~="passive" then return false end
+      for key in pairs(request) do if key~="mode" and key~="owner" and key~="itemType" then return false end end
+    elseif request.mode=="generator" and ((request.itemType~="passive" and request.itemType~="active") or type(request.quality)~="number" or request.quality<0 or request.quality>4 or request.quality%1~=0 or type(request.collectible)~="number" or request.collectible~=creator.generatorIds[request.quality]) then return false
+    elseif request.mode=="singularity" then
+      if type(request.quality)~="number" or request.quality<0 or request.quality>4 or request.quality%1~=0 or type(request.slot)~="number" or request.slot<0 or request.slot>3 or request.slot%1~=0 then return false end
+      for key in pairs(request) do if key~="mode" and key~="owner" and key~="quality" and key~="slot" then return false end end
+    else
+      for key in pairs(request) do if key~="mode" and key~="owner" and key~="itemType" and key~="quality" and key~="collectible" and key~="slot" then return false end end
+    end
   end
   creator.requests,creator.owner=saved.requests,saved.owner
   local function requestId(id)
@@ -98,22 +140,39 @@ function creator.restore(saved,run)
   count=0
   for id,receipt in pairs(saved.deliveries or {}) do
     count=count+1
-    if count>64 or not requestId(id) or type(receipt)~="table" or type(receipt.owner)~="string" or #receipt.owner>40 or not receipt.owner:match("^%-?%d+$") or (receipt.phase~="prepared" and receipt.phase~="committed") or not integer(receipt.index,64) or receipt.index<1 or not integer(receipt.shell,1000000) or not integer(receipt.slot,3) or type(receipt.active)~="boolean" then return false end
+    if count>GENERATED_ITEM_CAPACITY or not requestId(id) or type(receipt)~="table" or type(receipt.owner)~="string" or #receipt.owner>40 or not receipt.owner:match("^%-?%d+$") or (receipt.phase~="prepared" and receipt.phase~="committed") or not integer(receipt.index,GENERATED_ITEM_CAPACITY) or receipt.index<1 or not integer(receipt.shell,1000000) or not integer(receipt.slot,3) or type(receipt.active)~="boolean" then return false end
     for _,name in ipairs({"beforeBlank","afterBlank","beforeShell","afterShell","beforeActive","witnessBlank","witnessShell","witnessActive"}) do if not integer(receipt[name],1000000) then return false end end
-    if receipt.beforeBlank<1 or receipt.afterBlank~=receipt.beforeBlank-1 or receipt.afterShell~=receipt.beforeShell+1 then return false end
+    if receipt.beforeBlank<0 or (receipt.afterBlank~=receipt.beforeBlank and receipt.afterBlank~=receipt.beforeBlank-1) or receipt.afterShell~=receipt.beforeShell+1 then return false end
+    if receipt.collectible~=nil and (not integer(receipt.collectible,1000000) or (receipt.collectible~=creator.blank and creator.generatorIdSet[receipt.collectible]==nil)) then return false end
   end
   for owner,count in pairs(saved.noticed or {}) do if type(owner)~="string" or #owner>40 or not owner:match("^%-?%d+$") or not integer(count,1000000) then return false end end
   creator.cancelled,creator.deliveries,creator.noticed=saved.cancelled or {},saved.deliveries or {},saved.noticed or {}
+  if saved.generatorQueue~=nil and type(saved.generatorQueue)~="table" then return false end
+  if type(saved.generatorQueue)=="table" then
+    local queue,queueCount={},0
+    for _,entry in ipairs(saved.generatorQueue) do
+      queueCount=queueCount+1
+      if queueCount>16 or type(entry)~="table" or type(entry.owner)~="string" or #entry.owner>40 or not entry.owner:match("^%-?%d+$") or (entry.itemType~="passive" and entry.itemType~="active") or not integer(entry.quality,4) or not integer(entry.collectible,1000000) or entry.collectible~=creator.generatorIds[entry.quality] then return false end
+      for key in pairs(entry) do if key~="owner" and key~="quality" and key~="itemType" and key~="collectible" then return false end end
+      queue[#queue+1]=entry
+    end
+    creator.generatorQueue=queue
+  else creator.generatorQueue={} end
   if saved.idleOpen and saved.owner and not saved.pending then creator.noticed[saved.owner]=0 end
   if saved.itemType~=nil and saved.itemType~="active" and saved.itemType~="passive" then return false end
   promptUi.itemType=(promptUi.activesEnabled and saved.itemType) or "passive"
   promptUi.text,promptUi.quality,promptUi.sequence=saved.text,saved.quality,saved.sequence
-  if saved.pending and saved.pendingKind=="generate" then promptUi.pending,promptUi.pendingKind,promptUi.started=saved.pending,"generate",Isaac.GetTime(); promptUi.phase,promptUi.status="generating","Recovering pending generation..." end
+  if saved.pending and saved.pendingKind=="generate" then
+    promptUi.pending,promptUi.pendingKind,promptUi.started=saved.pending,"generate",Isaac.GetTime()
+    promptUi.phase,promptUi.status="generating","Recovering pending generation..."
+    if creator.requests[saved.pending] and creator.requests[saved.pending].mode=="generator" then promptUi.suppressOpen=true end
+  end
   return true
 end
 function creator.inventory(player,receipt)
   if not player or not player.GetCollectibleNum or (receipt.active and not player.GetActiveItem) then return end
-  return creator.count(player),player:GetCollectibleNum(receipt.shell),receipt.active and player:GetActiveItem(receipt.slot) or 0
+  local token=receipt.collectible or creator.blank
+  return player:GetCollectibleNum(token),player:GetCollectibleNum(receipt.shell),receipt.active and player:GetActiveItem(receipt.slot) or 0
 end
 function creator.reconcile()
   local rollback
@@ -134,7 +193,7 @@ function creator.reconcile()
     elseif blanks~=receipt.witnessBlank or shells~=receipt.witnessShell or active~=receipt.witnessActive then return false end
   end
   if rollback then
-    usedArt[tonumber(records[rollback.index].sprite_sheet:match("generated_slot_(%d%d)"))]=nil
+    usedArt[tonumber(records[rollback.index].sprite_sheet:match("generated_slot_(%d+)"))]=nil
     records[rollback.index],runtime[rollback.index],accepted[rollback.id]=nil,nil,nil
     creator.deliveries[rollback.id]=nil
   end
@@ -437,7 +496,7 @@ end
 local function validateProfile(profile, id)
   if not text(id,1,100) then return false, "request identity" end
   if not allowedKeys(profile, { active=true, version = true, generated_at = true, bridge_request_id = true, metadata = true, affects_stats = true, systems = true, stats = true, tear_profile = true, visuals = true, rules = true, familiar = true, aura = true, on_kill = true, tear_impact = true, collision = true, tear_update = true, bomb = true, laser = true, knife = true, sprite_sheet = true, familiar_sprite_sheet = true, familiar_animation = true, familiar_animation_sheet = true }) then return false, "profile keys" end
-  if profile.version ~= 1 or profile.bridge_request_id ~= id or not text(profile.generated_at, 1, 64) or not text(profile.sprite_sheet, 1, 256) or not profile.sprite_sheet:match("^gfx/items/collectibles/generated_slot_[0-9][0-9]%.png$") then return false, "profile identity" end
+  if profile.version ~= 1 or profile.bridge_request_id ~= id or not text(profile.generated_at, 1, 64) or not text(profile.sprite_sheet, 1, 256) or not profile.sprite_sheet:match("^gfx/items/collectibles/generated_slot_[0-9][0-9]?[0-9]?%.png$") then return false, "profile identity" end
   local metadata = profile.metadata
   if not allowedKeys(metadata, { display_name = true, description = true, quality = true, theme = true, balance_note = true }) then return false, "metadata keys" end
   if not text(metadata.display_name, 1, 64) then return false, "metadata display name" end
@@ -734,7 +793,6 @@ local function queueBanner(profile)
   playProfileSound(profile)
   pendingBanner = { name = profile.name, summary = profile.summary, frame = Game():GetFrameCount() }
   showBanner(profile.name, profile.summary)
-  showStatus(profile.name .. ": " .. profile.summary)
 end
 local function applyTearFlags(tear, profile)
   if not profile or profile.tearFlag == nil or profile.tearFlag == 0 then return end
@@ -862,30 +920,63 @@ local function capacity()
   if blocked then return blocked end
   if not running then return "Start or continue a run before generating." end
   if not selectedSaveSlot then return "Save-slot identity unavailable. Select a save slot and fully restart Isaac." end
-  if #records>=64 then return "Item limit reached: 64/64. Finish this run to free item slots." end
+  if #records>=GENERATED_ITEM_CAPACITY then return "Item limit reached: "..GENERATED_ITEM_CAPACITY.."/"..GENERATED_ITEM_CAPACITY..". Finish this run to free item slots." end
   local count=0
   for _ in pairs(usedArt) do count=count+1 end
-  if count>=64 then return "Artwork limit reached: 64/64. Restart Isaac; continued-run artwork stays reserved." end
+  if count>=GENERATED_ITEM_CAPACITY then return "Artwork limit reached: "..GENERATED_ITEM_CAPACITY.."/"..GENERATED_ITEM_CAPACITY..". Restart Isaac; continued-run artwork stays reserved." end
   for _,id in ipairs(ids) do if id<=0 then return "Generated IDs missing. Install updated mod and restart Isaac." end end
 end
 local function context()
   local slots={}
-  for slot=0,63 do if usedArt[slot] then slots[#slots+1]=slot end end
+  for slot=0,GENERATED_ITEM_CAPACITY-1 do if usedArt[slot] then slots[#slots+1]=slot end end
   local runSlots={}
-  for _,record in ipairs(records) do runSlots[#runSlots+1]=tonumber(record.sprite_sheet:match("generated_slot_(%d%d)")) end
+  for _,record in ipairs(records) do runSlots[#runSlots+1]=tonumber(record.sprite_sheet:match("generated_slot_(%d+)")) end
   local pending={}
   local activeCount,activeAvailable=0,true
   for _,record in ipairs(records) do if record.active then activeCount=activeCount+1 end end
   for _,id in ipairs(creator.activeIds) do if id<=0 then activeAvailable=false end end
   if promptUi.pendingKind=="generate" then pending[#pending+1]=promptUi.pending end
   for id in pairs(creator.requests) do if id~=promptUi.pending then pending[#pending+1]=id end end
-  return {session=session,run=runToken,used=slots,run_used=runSlots,count=#records,blocked=capacity(),runtime_contract=12,save_slot=selectedSaveSlot,fresh_run=freshRun,ended_run=endedRun,pending=pending,blanks=creator.count(creator.player(creator.owner)),active_count=activeCount,active_available=activeAvailable,art_count=creator.globalArtUsed}
+  return {session=session,run=runToken,used=slots,run_used=runSlots,count=#records,blocked=capacity(),runtime_contract=13,save_slot=selectedSaveSlot,fresh_run=freshRun,ended_run=endedRun,pending=pending,blanks=creator.count(creator.player(creator.owner)),active_count=activeCount,active_available=activeAvailable,art_count=creator.globalArtUsed}
 end
 promptUi.getContext=context
 local function publishState()
   if not running then return end
   Isaac.DebugString("[NebiusBridge] state "..bridgeJson.encode(context()))
   lastStateTime=Isaac.GetTime()
+end
+function creator.startGenerator(player, quality, itemType, collectible)
+  if not running or blocked or not player or creator.generatorIds[quality]~=collectible then return end
+  if itemType~="passive" and itemType~="active" then itemType="passive" end
+  if promptUi.pending or next(creator.requests) then
+    if #creator.generatorQueue>=16 then showStatus("Generator queue is full."); return end
+    creator.generatorQueue[#creator.generatorQueue+1]={owner=tostring(player.InitSeed),quality=quality,itemType=itemType,collectible=collectible}
+    saveRun()
+    return
+  end
+  creator.handoff(player)
+  promptUi.sequence=(promptUi.sequence or 0)+1
+  local owner=tostring(player.InitSeed)
+  local id=tostring(runToken).."_"..tostring(Random()).."_"..tostring(promptUi.sequence)
+  creator.requests[id]={mode="generator",owner=owner,itemType=itemType,quality=quality,collectible=collectible}
+  promptUi.pending,promptUi.pendingKind,promptUi.started=id,"generate",Isaac.GetTime()
+  promptUi.phase,promptUi.status,promptUi.quality,promptUi.itemType,promptUi.suppressOpen="generating","Inventing an idea...",quality,itemType,true
+  promptUi.requested=false
+  if not saveRun() then
+    creator.requests[id]=nil
+    promptUi.pending,promptUi.pendingKind,promptUi.suppressOpen=nil,nil,false
+    return
+  end
+  local payload={id=id,auto=true,quality=quality,item_type=itemType,delivery={mode="generator",owner=owner,quality=quality}}
+  publishState()
+  Isaac.DebugString("[NebiusBridge] generate "..bridgeJson.encode(payload))
+end
+function creator.serviceGenerators()
+  if not running or blocked or promptUi.pending or next(creator.requests) or #creator.generatorQueue==0 then return end
+  local nextRequest=table.remove(creator.generatorQueue,1)
+  local player=creator.player(nextRequest.owner)
+  if not player or not player.GetCollectibleNum or player:GetCollectibleNum(nextRequest.collectible)<1 then saveRun(); return end
+  creator.startGenerator(player,nextRequest.quality,nextRequest.itemType,nextRequest.collectible)
 end
 local function reject(id,message)
   if text(id,1,100) then Isaac.DebugString("[NebiusBridge] rejected "..bridgeJson.encode({id=id,reason=tostring(message):sub(1,500)})) end
@@ -909,8 +1000,18 @@ local function pollNativeProfile(allowApply)
   end
   if envelope.type=="hello" then return end
   if envelope.type=="status" then
-    if envelope.status=="capacity" and envelope.id==runToken.."_capacity" and number(tonumber(envelope.detail),0,64,true) then creator.globalArtUsed=tonumber(envelope.detail); return end
-    if envelope.status=="error" and creator.requests[envelope.id] then creator.cancelled[envelope.id]=true; creator.requests[envelope.id]=nil; saveRun() end
+    if envelope.status=="capacity" and envelope.id==runToken.."_capacity" and number(tonumber(envelope.detail),0,GENERATED_ITEM_CAPACITY,true) then creator.globalArtUsed=tonumber(envelope.detail); return end
+    if envelope.status=="error" and creator.requests[envelope.id] then
+      local request=creator.requests[envelope.id]
+      creator.cancelled[envelope.id]=true; creator.requests[envelope.id]=nil; saveRun()
+      if request.mode=="generator" then
+        if promptUi.pending==envelope.id then
+          promptUi.pending,promptUi.pendingKind,promptUi.suppressOpen,promptUi.requested=nil,nil,false,false
+          promptUi.phase,promptUi.status="editing","Generator kept."
+        end
+        return
+      end
+    end
     if text(envelope.id,1,100) and text(envelope.detail,1,500) then promptUi:receive(envelope.id,envelope.status,envelope.detail,envelope.error_code) end
     return
   end
@@ -924,18 +1025,27 @@ local function pollNativeProfile(allowApply)
   if not allowApply then pendingProfileEnvelope=envelope; return end
   local full=capacity()
   if full then reject(envelope.id,full); return end
-  local slot=tonumber(envelope.profile.sprite_sheet:match("generated_slot_(%d%d)"))
-  if not slot or slot>=64 or usedArt[slot] then reject(envelope.id,"Artwork slot invalid or reserved."); return end
+  local slot=tonumber(envelope.profile.sprite_sheet:match("generated_slot_(%d+)"))
+  if not slot or slot>=GENERATED_ITEM_CAPACITY or usedArt[slot] then reject(envelope.id,"Artwork slot invalid or reserved."); return end
   local index=#records+1
-  if not creator.assignShell(index,envelope.profile) then reject(envelope.id,"Active shell limit reached (8), or generated shell missing."); return end
+  if not creator.assignShell(index,envelope.profile) then reject(envelope.id,"Active shell limit reached ("..GENERATED_ACTIVE_CAPACITY.."), or generated shell missing."); return end
   local player=Isaac.GetPlayer(0)
   local request=creator.requests[envelope.id]
   local activeSlot=0
+  local token=creator.blank
   if envelope.delivery or request then
-    if not request or not allowedKeys(envelope.delivery,{mode=true,owner=true}) or envelope.delivery.mode~="blank" or envelope.delivery.owner~=request.owner then reject(envelope.id,"Blank request identity mismatch."); return end
-    if (envelope.profile.active~=nil)~=((request.itemType or "passive")=="active") then reject(envelope.id,"Item type differs from the saved blank request."); return end
+    if request and request.mode=="generator" then
+      if not allowedKeys(envelope.delivery,{mode=true,owner=true,quality=true}) or envelope.delivery.mode~="generator" or envelope.delivery.owner~=request.owner or envelope.delivery.quality~=request.quality or request.collectible~=creator.generatorIds[request.quality] then reject(envelope.id,"Generator request identity mismatch."); return end
+      token=request.collectible
+    elseif request and request.mode=="singularity" then
+      if not allowedKeys(envelope.delivery,{mode=true,owner=true,quality=true}) or envelope.delivery.mode~="singularity" or envelope.delivery.owner~=request.owner or envelope.delivery.quality~=request.quality or envelope.profile.active~=nil then reject(envelope.id,"Singularity request identity mismatch."); return end
+    elseif not request or not allowedKeys(envelope.delivery,{mode=true,owner=true}) or envelope.delivery.mode~="blank" or envelope.delivery.owner~=request.owner then reject(envelope.id,"Blank request identity mismatch."); return end
+    if request.mode~="singularity" and (envelope.profile.active~=nil)~=((request.itemType or "passive")=="active") then reject(envelope.id,"Item type differs from the saved request."); return end
     player=creator.player(request.owner)
-    if creator.count(player)<1 or not player.AddCollectible or not player.RemoveCollectible then reject(envelope.id,"The requesting player needs their AI Item."); return end
+    local held=player and player.GetCollectibleNum and player:GetCollectibleNum(token) or 0
+    if request.mode=="singularity" then
+      if not player or not player.AddCollectible then reject(envelope.id,"The Singularity owner is unavailable."); return end
+    elseif held<1 or not player.AddCollectible or not player.RemoveCollectible then reject(envelope.id,request.mode=="generator" and "The requesting player needs their Generator." or "The requesting player needs their AI Item."); return end
     if envelope.profile.active then
       if not player.GetActiveItem then reject(envelope.id,"Active inventory is unavailable."); return end
       if player:GetActiveItem(0)~=0 then
@@ -956,9 +1066,11 @@ local function pollNativeProfile(allowApply)
   rebuildSystems()
   usedArt[slot]=true
   if request then
-    local before=creator.count(player)
+    local before=player:GetCollectibleNum(token)
     local generatedBefore=player:GetCollectibleNum(ids[index])
-    local receipt={phase="prepared",owner=request.owner,index=index,shell=ids[index],slot=activeSlot,active=envelope.profile.active~=nil,beforeBlank=before,afterBlank=before-1,beforeShell=generatedBefore,afterShell=generatedBefore+1,beforeActive=envelope.profile.active and player:GetActiveItem(activeSlot) or 0,witnessBlank=before,witnessShell=generatedBefore,witnessActive=envelope.profile.active and player:GetActiveItem(activeSlot) or 0}
+    local label=request.mode=="generator" and "Generator" or request.mode=="singularity" and "Singularity Terminal" or "AI Item"
+    local singularity=request.mode=="singularity"
+    local receipt={phase="prepared",owner=request.owner,index=index,shell=ids[index],slot=activeSlot,active=envelope.profile.active~=nil,collectible=token,beforeBlank=before,afterBlank=singularity and before or before-1,beforeShell=generatedBefore,afterShell=generatedBefore+1,beforeActive=envelope.profile.active and player:GetActiveItem(activeSlot) or 0,witnessBlank=before,witnessShell=generatedBefore,witnessActive=envelope.profile.active and player:GetActiveItem(activeSlot) or 0}
     creator.deliveries[envelope.id]=receipt
     if not saveRun() then
       creator.deliveries[envelope.id]=nil
@@ -966,38 +1078,38 @@ local function pollNativeProfile(allowApply)
       reject(envelope.id,blocked); return
     end
     creator.exchanging=true
-    local ok=pcall(function() player:RemoveCollectible(creator.blank); player:AddCollectible(ids[index],0,true,activeSlot) end)
+    local ok=pcall(function() if not singularity then player:RemoveCollectible(token) end; player:AddCollectible(ids[index],0,true,activeSlot) end)
     creator.exchanging=false
-    if not ok or creator.count(player)~=before-1 or player:GetCollectibleNum(ids[index])~=generatedBefore+1 or (envelope.profile.active and player:GetActiveItem(activeSlot)~=ids[index]) then
+    if not ok or player:GetCollectibleNum(token)~=receipt.afterBlank or player:GetCollectibleNum(ids[index])~=generatedBefore+1 or (envelope.profile.active and player:GetActiveItem(activeSlot)~=ids[index]) then
       creator.exchanging=true
       if player:GetCollectibleNum(ids[index])>generatedBefore then pcall(player.RemoveCollectible,player,ids[index]) end
-      if creator.count(player)<before then pcall(player.AddCollectible,player,creator.blank,0,false) end
+      if not singularity and player:GetCollectibleNum(token)<before then pcall(player.AddCollectible,player,token,0,false) end
       creator.exchanging=false
-      if creator.count(player)~=before or player:GetCollectibleNum(ids[index])~=generatedBefore or (receipt.active and player:GetActiveItem(activeSlot)~=receipt.beforeActive) then
-        blocked="AI Item exchange rollback is ambiguous. Continue with the saved transaction before retrying."; creator.recoveryBlocked=true
+      if player:GetCollectibleNum(token)~=before or player:GetCollectibleNum(ids[index])~=generatedBefore or (receipt.active and player:GetActiveItem(activeSlot)~=receipt.beforeActive) then
+        blocked=label.." exchange rollback is ambiguous. Continue with the saved transaction before retrying."; creator.recoveryBlocked=true
         reject(envelope.id,blocked); return
       end
       creator.deliveries[envelope.id]=nil
       records[index],runtime[index],usedArt[slot]=nil,nil,nil; rebuildSystems()
       saveRun()
-      reject(envelope.id,"Could not exchange the AI Item. Retry after checking inventory."); return
+      reject(envelope.id,"Could not exchange the "..label..". Retry after checking inventory."); return
     end
     receipt.phase="committed"
     creator.requests[envelope.id]=nil
     creator.noticed[request.owner]=0
+    if request.mode=="generator" then promptUi.suppressOpen,promptUi.requested=false,false end
   end
   if not saveRun() then
     if pickup and pickup.Remove then pickup:Remove() end
-    if request then creator.exchanging=true; player:RemoveCollectible(ids[index]); player:AddCollectible(creator.blank,0,false); creator.exchanging=false; creator.requests[envelope.id]=request; creator.deliveries[envelope.id]=nil end
+    if request then creator.exchanging=true; player:RemoveCollectible(ids[index]); player:AddCollectible(token,0,false); creator.exchanging=false; creator.requests[envelope.id]=request; creator.deliveries[envelope.id]=nil end
     records[index],runtime[index],usedArt[slot]=nil,nil,nil; rebuildSystems(); refreshStats(player)
     reject(envelope.id,blocked); return
   end
   accepted[envelope.id]=true
   promptUi.details=runtime[index].name..": "..runtime[index].summary
   if request then Demo:onPostAddCollectible(ids[index],nil,true,nil,nil,player) end
-  promptUi:receive(envelope.id,"accepted","Accepted: "..runtime[index].name.." ("..#records.."/64)")
+  promptUi:receive(envelope.id,"accepted","Accepted: "..runtime[index].name.." ("..#records.."/"..GENERATED_ITEM_CAPACITY..")")
   local ackOk,queued=pcall(NebiusBridge.Ack,envelope.id)
-  showStatus(runtime[index].name..": "..runtime[index].summary)
   Isaac.DebugString("[Live Sprite Swap Demo] PROFILE ACCEPTED: "..runtime[index].name.."; "..(ackOk and queued and "ACK queued" or "ACK unavailable"))
   publishState()
 end
@@ -1038,7 +1150,7 @@ function Demo:onGameStarted(isContinued)
   records,runtime,accepted={},{},{}
   roomStatGrants={}
   promptUi:reset()
-  creator.requests,creator.cancelled,creator.deliveries,creator.noticed,creator.replacements,creator.owner={},{},{},{},{},nil
+  creator.requests,creator.cancelled,creator.deliveries,creator.noticed,creator.replacements,creator.generatorQueue,creator.touch,creator.owner={},{},{},{},{},{},{},nil
   creator.recoveryBlocked=false
   if self:HasData() then
     local ok,prior=pcall(function() return bridgeJson.decode(self:LoadData()) end)
@@ -1055,7 +1167,7 @@ function Demo:onGameStarted(isContinued)
       if not self:HasData() then error("Missing save") end
       return bridgeJson.decode(self:LoadData())
     end)
-    if not ok or type(saved)~="table" or (saved.version~=2 and saved.version~=3) or not array(saved.records,0,64) or type(saved.ruleStates)~="table" or (saved.version==3 and type(saved.cooldowns)~="table") then
+    if not ok or type(saved)~="table" or (saved.version~=2 and saved.version~=3) or not array(saved.records,0,GENERATED_ITEM_CAPACITY) or type(saved.ruleStates)~="table" or (saved.version==3 and type(saved.cooldowns)~="table") then
       blocked="Generated-item save missing or invalid. Generation blocked to protect this run."
     else
       if saved.saveSlot~=nil and saved.saveSlot~=selectedSaveSlot then blocked="Generated-item save belongs to another save slot." end
@@ -1067,9 +1179,9 @@ function Demo:onGameStarted(isContinued)
       local restored={}
       for index,record in ipairs(saved.records) do
         local valid=type(record)=="table" and validateProfile(record,record.bridge_request_id)
-        local slot=valid and tonumber(record.sprite_sheet:match("generated_slot_(%d%d)"))
+        local slot=valid and tonumber(record.sprite_sheet:match("generated_slot_(%d+)"))
         local state=saved.ruleStates[index] or {}
-        if not valid or not slot or slot>=64 or restored[slot] or type(state)~="table" then blocked="Invalid generated-item save."; break end
+        if not valid or not slot or slot>=GENERATED_ITEM_CAPACITY or restored[slot] or type(state)~="table" then blocked="Invalid generated-item save."; break end
         for key,value in pairs(state) do if not text(key,1,200) or value~=true then blocked="Invalid saved rule state."; break end end
         if blocked then break end
         restored[slot],usedArt[slot]=true,true
@@ -1102,8 +1214,24 @@ function Demo:onGameStarted(isContinued)
   end
   rebuildSystems()
   for p=0,Game():GetNumPlayers()-1 do refreshStats(Isaac.GetPlayer(p)) end
+  if freshRun and creator.singularity>0 then
+    for p=0,Game():GetNumPlayers()-1 do
+      local player=Isaac.GetPlayer(p)
+      if creator.isAIsaac(player) and player.GetActiveItem and player.AddCollectible and player:GetActiveItem(0)~=creator.singularity then
+        pcall(player.AddCollectible,player,creator.singularity,12,true,0)
+      end
+      if creator.isAIsaac(player) and player.GetActiveItem and player.SetActiveCharge and player:GetActiveItem(0)==creator.singularity then
+        player:SetActiveCharge(12,0)
+        Isaac.DebugString("[Live Sprite Swap Demo] granted fully charged Singularity Terminal to AIsaac")
+      end
+    end
+  elseif freshRun then
+    Isaac.DebugString("[Live Sprite Swap Demo] Singularity Terminal ID is unavailable; restart Isaac after syncing items.xml")
+  end
   local owner=creator.player(creator.owner); if owner then creator.handoff(owner) end
+  for playerIndex=0,Game():GetNumPlayers()-1 do creator.applyAIsaac(Isaac.GetPlayer(playerIndex)) end
   creator.serviceBlanks()
+  creator.serviceGenerators()
   publishState()
 end
 function Demo:onPreGameExit(shouldSave)
@@ -1132,6 +1260,7 @@ function Demo:onPostUpdate()
     pendingBanner = nil
   end
   creator.serviceBlanks()
+  creator.serviceGenerators()
   promptUi:updateInput(); pollNativeProfile(true); self:updatePassiveEffects()
   if running and Isaac.GetTime()-lastStateTime>1000 then publishState() end
 end
@@ -2104,11 +2233,54 @@ function Demo:onPostEntityRemove(entity)
     if stored == familiar then profile.familiarEntities[key] = nil end
   end
 end
+function Demo:onPostPlayerInit(player)
+  creator.applyAIsaac(player)
+end
+function Demo:onPrePickupCollision(pickup,collider)
+  if not pickup or pickup.Variant~=PickupVariant.PICKUP_COLLECTIBLE or not collider or not collider.ToPlayer then return end
+  local player=collider:ToPlayer()
+  if not player then return end
+  if creator.anyAIsaac() then self:onPickupUpdate(pickup) end
+  local quality=creator.generatorIdSet[pickup.SubType]
+  if quality==nil then return end
+  local data=pickup.GetData and pickup:GetData() or {}
+  creator.touch[tostring(player.InitSeed)]={quality=data.nebiusGeneratorQuality or quality,itemType=data.nebiusGeneratorItemType or "passive",collectible=pickup.SubType}
+end
 function Demo:onPostAddCollectible(collectibleType,_,firstTime,_,_,player)
-  if collectibleType==creator.blank and firstTime~=false and not creator.exchanging and not promptUi.open and not promptUi.requested and not promptUi.pending and not next(creator.requests) then
+  local generatorQuality=creator.generatorIdSet[collectibleType]
+  if generatorQuality~=nil and firstTime~=false and not creator.exchanging then
+    local touch=creator.touch[tostring(player.InitSeed)]
+    local itemType,quality="passive",generatorQuality
+    if touch and touch.collectible==collectibleType then itemType,quality=touch.itemType or "passive",touch.quality or quality; creator.touch[tostring(player.InitSeed)]=nil end
+    creator.pendingGenerator=nil
+    creator.startGenerator(player,quality,itemType,collectibleType)
+  end
+  if collectibleType==creator.blank and not creator.isAIsaac(player) and firstTime~=false and not creator.exchanging and not promptUi.open and not promptUi.requested and not promptUi.pending and not next(creator.requests) then
     creator.handoff(player); creator.noticed[creator.owner]=creator.count(player); promptUi.requested=true
   end
   if creator.exchanging then return end
+  if creator.isAIsaac(player) and firstTime~=false and collectibleType~=creator.singularity and generatorQuality==nil and not slotById[collectibleType] then
+    local quest,quality,itemType=false,0,"passive"
+    if Isaac.GetItemConfig and ItemConfig and ItemConfig.TAG_QUEST then
+      local item=Isaac.GetItemConfig():GetCollectible(collectibleType)
+      if item then
+        if type(item.Tags)=="number" and (item.Tags & ItemConfig.TAG_QUEST)~=0 then quest=true end
+        if type(item.Quality)=="number" then quality=math.max(0,math.min(4,math.floor(item.Quality))) end
+        if ItemType and item.Type==ItemType.ITEM_ACTIVE then itemType="active" end
+      end
+    end
+    local replacement=not quest and creator.generatorIds[quality] or nil
+    if replacement and replacement>0 and player and player.RemoveCollectible and player.AddCollectible then
+      creator.pendingGenerator={player=player,quality=quality,itemType=itemType,collectible=replacement}
+      creator.exchanging=true
+      pcall(function() player:RemoveCollectible(collectibleType); player:AddCollectible(replacement,0,false) end)
+      creator.exchanging=false
+      local pending=creator.pendingGenerator
+      creator.pendingGenerator=nil
+      if pending then creator.startGenerator(pending.player,pending.quality,pending.itemType,pending.collectible) end
+      return
+    end
+  end
   local index=slotById[collectibleType]
   local profile=index and runtime[index]
   if not profile or firstTime==false then return end
@@ -2149,6 +2321,13 @@ function creator.activeReady(item,player,flags,slot)
   return profile,key,targets
 end
 function Demo:onPreUseItem(item,_,player,flags,slot)
+  if item==creator.singularity then
+    if not running or blocked or not creator.isAIsaac(player) or not player.GetActiveItem or player:GetActiveItem(slot)~=item or promptUi.pending or next(creator.requests) then return {Discharge=false,ShowAnim=false,Remove=false} end
+    local charge=player.GetActiveCharge and player:GetActiveCharge(slot) or 0
+    local battery=player.GetBatteryCharge and player:GetBatteryCharge(slot) or 0
+    if charge+battery<12 then return {Discharge=false,ShowAnim=false,Remove=false} end
+    return
+  end
   if not creator.activeIdSet[item] then return end
   if not creator.activeReady(item,player,flags,slot) then return {Discharge=false,ShowAnim=false,Remove=false} end
 end
@@ -2169,6 +2348,14 @@ function Demo:onUseCard(_, player)
   if player then runProfileRules("card_use", player, {owner=player, position=player.Position}) end
 end
 function Demo:onUseItem(item,_,player,flags,slot)
+  if item==creator.singularity then
+    if UseFlag and UseFlag.USE_CARBATTERY and ((flags or 0) & UseFlag.USE_CARBATTERY)~=0 then return {Discharge=false,ShowAnim=false,Remove=false} end
+    local charge=player and player.GetActiveCharge and player:GetActiveCharge(slot) or 0
+    local battery=player and player.GetBatteryCharge and player:GetBatteryCharge(slot) or 0
+    if not creator.isAIsaac(player) or not player.GetActiveItem or player:GetActiveItem(slot)~=item or promptUi.pending or next(creator.requests) or charge+battery<12 then return {Discharge=false,ShowAnim=false,Remove=false} end
+    if not creator.startSingularity(player,slot) then return {Discharge=false,ShowAnim=false,Remove=false} end
+    return {Discharge=true,ShowAnim=true,Remove=false}
+  end
   if not creator.activeIdSet[item] then
     if player then runProfileRules("active_use", player, {owner=player, position=player.Position}) end
     return
@@ -2181,37 +2368,76 @@ function Demo:onUseItem(item,_,player,flags,slot)
   if hits==0 then profile.cooldowns[key]=nil end
   return {Discharge=hits>0,ShowAnim=hits>0,Remove=false}
 end
+function Demo:onPickupInit(pickup)
+  self:onPickupUpdate(pickup)
+end
+function creator.rollQuality()
+  return Random() % 5
+end
+function creator.startSingularity(player,slot)
+  if not running or blocked or not creator.isAIsaac(player) or creator.singularity<=0 or not player.GetActiveItem or player:GetActiveItem(slot)~=creator.singularity then return end
+  if promptUi.pending or next(creator.requests) then return end
+  creator.handoff(player)
+  promptUi.sequence=(promptUi.sequence or 0)+1
+  local id=tostring(runToken).."_singularity_"..tostring(Random()).."_"..tostring(promptUi.sequence)
+  local quality=creator.rollQuality()
+  creator.requests[id]={mode="singularity",owner=tostring(player.InitSeed),quality=quality,slot=slot}
+  promptUi.pending,promptUi.pendingKind,promptUi.started=id,"generate",Isaac.GetTime()
+  promptUi.phase,promptUi.status,promptUi.quality,promptUi.itemType,promptUi.suppressOpen="generating","Spinning the Singularity Terminal...",quality,"passive",true
+  if not saveRun() then creator.requests[id]=nil; promptUi.pending,promptUi.pendingKind,promptUi.suppressOpen=nil,nil,false; return end
+  Isaac.DebugString("[NebiusBridge] generate "..bridgeJson.encode({id=id,auto=true,quality=quality,item_type="passive",delivery={mode="singularity",owner=tostring(player.InitSeed),quality=quality}}))
+  return true
+end
 function Demo:onPickupUpdate(pickup)
-  if not running or blocked or creator.blank<=0 or not creator.settings.replacePassives or pickup.Variant~=PickupVariant.PICKUP_COLLECTIBLE or not pickup.GetData then return end
+  if not pickup or pickup.Variant~=PickupVariant.PICKUP_COLLECTIBLE or not pickup.GetData then return end
+  local aisaac=creator.anyAIsaac()
+  if not aisaac then
+    if not running or blocked then return end
+    if creator.blank<=0 or not creator.settings.replacePassives then return end
+    local character=false
+    for p=0,Game():GetNumPlayers()-1 do if creator.isCharacter(Isaac.GetPlayer(p)) then character=true; break end end
+    if not character then return end
+  end
   local data=pickup:GetData()
-  if data.nebiusReplaced then return end
+  if data.nebiusMorphing then return end
+  if not aisaac and data.nebiusReplaced then return end
   local identity=type(pickup.InitSeed)=="number" and roomStamp()..":"..tostring(pickup.InitSeed) or nil
-  if identity and creator.replacements[identity] then return end
-  if identity then
+  if not aisaac and identity and creator.replacements[identity] then return end
+  if not aisaac and identity then
     local count=0; for _ in pairs(creator.replacements) do count=count+1 end
     if count>=2048 then return end
   end
-  if pickup.GetCollectibleCycle then
+  if not aisaac and pickup.GetCollectibleCycle then
     local ok,cycle=pcall(pickup.GetCollectibleCycle,pickup)
     if not ok or type(cycle)~="table" or #cycle>1 then return end
   end
-  if pickup.HasFlipData then local ok,flip=pcall(pickup.HasFlipData,pickup); if not ok or flip then return end end
-  if pickup.GetFlipCollectible then local ok,flip=pcall(pickup.GetFlipCollectible,pickup); if not ok or (flip~=nil and flip~=0) then return end end
-  if data.nebiusCheckedSubtype==pickup.SubType then return end
-  data.nebiusCheckedSubtype=pickup.SubType
-  if pickup.SubType<=0 or pickup.SubType==creator.blank or slotById[pickup.SubType] or pickup.Touched or (pickup.Price or 0)<0 or (pickup.VarData or 0)~=0 or not pickup.Morph then return end
-  local character=false
-  for p=0,Game():GetNumPlayers()-1 do if creator.isCharacter(Isaac.GetPlayer(p)) then character=true; break end end
-  if not character or not Isaac.GetItemConfig or not ItemType or not ItemConfig or not ItemConfig.TAG_QUEST then return end
+  if not aisaac and pickup.HasFlipData then local ok,flip=pcall(pickup.HasFlipData,pickup); if not ok or flip then return end end
+  if not aisaac and pickup.GetFlipCollectible then local ok,flip=pcall(pickup.GetFlipCollectible,pickup); if not ok or (flip~=nil and flip~=0) then return end end
+  if not aisaac and data.nebiusCheckedSubtype==pickup.SubType then return end
+  if not aisaac then data.nebiusCheckedSubtype=pickup.SubType end
+  if pickup.SubType<=0 or pickup.SubType==creator.singularity or creator.generatorIdSet[pickup.SubType]~=nil or slotById[pickup.SubType] or not pickup.Morph then return end
+  if not aisaac and (pickup.SubType==creator.blank or pickup.Touched or (pickup.VarData or 0)~=0) then return end
+  if not aisaac and (pickup.Price or 0)<0 then return end
+  if not Isaac.GetItemConfig or not ItemType or not ItemConfig or not ItemConfig.TAG_QUEST then return end
   local item=Isaac.GetItemConfig():GetCollectible(pickup.SubType)
-  if not item or (item.Type~=ItemType.ITEM_PASSIVE and item.Type~=ItemType.ITEM_FAMILIAR) or type(item.Tags)~="number" or (item.Tags & ItemConfig.TAG_QUEST)~=0 then return end
+  if not item or type(item.Tags)~="number" or (item.Tags & ItemConfig.TAG_QUEST)~=0 then return end
+  local passive=item.Type==ItemType.ITEM_PASSIVE or item.Type==ItemType.ITEM_FAMILIAR
+  local active=aisaac and item.Type==ItemType.ITEM_ACTIVE
+  if not passive and not active then return end
+  local quality=type(item.Quality)=="number" and math.max(0,math.min(4,math.floor(item.Quality))) or 0
+  local target=aisaac and creator.generatorIds[quality] or creator.blank
+  if not target or target<=0 then return end
   local price,shop,options,auto,wait=pickup.Price,pickup.ShopItemId,pickup.OptionsPickupIndex,pickup.AutoUpdatePrice,pickup.Wait
-  pickup:Morph(EntityType.ENTITY_PICKUP,PickupVariant.PICKUP_COLLECTIBLE,creator.blank,true,true,true)
+  data.nebiusMorphing=true
+  pickup:Morph(EntityType.ENTITY_PICKUP,PickupVariant.PICKUP_COLLECTIBLE,target,true,true,true)
+  data.nebiusMorphing=nil
   pickup.Price,pickup.ShopItemId,pickup.OptionsPickupIndex,pickup.AutoUpdatePrice,pickup.Wait=price,shop,options,auto,wait
-  data.nebiusCheckedSubtype=creator.blank
-  if pickup.SubType==creator.blank then
+  data.nebiusCheckedSubtype=target
+  data.nebiusGeneratorQuality=quality
+  data.nebiusGeneratorItemType=active and "active" or "passive"
+  if pickup.SubType==target then
     data.nebiusReplaced=true
-    if identity then creator.replacements[identity]=true; saveRun() end
+    if not aisaac and identity then creator.replacements[identity]=true; saveRun() end
   end
 end
 function Demo:onExecuteCmd(command,parameters)
@@ -2221,9 +2447,13 @@ function Demo:onExecuteCmd(command,parameters)
   local replacement=parameters:match("^replace (on)$") or parameters:match("^replace (off)$")
   if replacement then creator.settings.replacePassives=replacement=="on"; saveRun(); showStatus("Creator passive replacement: "..replacement); return end
   if parameters=="cancel" then
+    local kept=promptUi.suppressOpen and "Request cancelled. Generator kept." or "Request cancelled. AI Item kept."
+    for _,request in pairs(creator.requests) do if request.mode=="generator" then kept="Request cancelled. Generator kept." end end
     for id in pairs(creator.requests) do creator.cancelled[id]=true; Isaac.DebugString("[NebiusBridge] cancel "..bridgeJson.encode({id=id})); creator.requests[id]=nil end
     if promptUi.pendingKind=="generate" then creator.cancelled[promptUi.pending]=true; Isaac.DebugString("[NebiusBridge] cancel "..bridgeJson.encode({id=promptUi.pending})) end
-    promptUi.pending,promptUi.pendingKind=nil,nil; promptUi.phase,promptUi.status="editing","Request cancelled. AI Item kept."; saveRun(); return
+    promptUi.pending,promptUi.pendingKind,promptUi.suppressOpen,promptUi.requested=nil,nil,false,false
+    promptUi.phase,promptUi.status="editing",kept
+    saveRun(); return
   end
   showStatus("nebius hotkey KEY_8 | nebius replace on/off | nebius cancel")
 end
@@ -2282,12 +2512,6 @@ function Demo:onPickupRender(pickup)
     local good,destination=pcall(DestinationQuad.NewFromRectangle,position+Vector((32-size)/2,(32-size)/2),size,size)
     if good and destination then pcall(function() nativePedestalImage:Render(profile.quad,destination,KColor(1,1,1,1)) end) end
   end
-  Isaac.RenderText(profile.name, position.X, position.Y - 14, 1, 1, 1, 1)
-  local lines = wrapLines(profile.summary, 32)
-  for lineIndex, line in ipairs(lines) do
-    if lineIndex > 3 then break end
-    Isaac.RenderText(line, position.X - 8, position.Y + 34 + (lineIndex - 1) * 10, 0.9, 0.9, 0.75, 1)
-  end
 end
 function Demo:onPostHudRender()
   if promptUi:shouldHideGameOverlays() then return end
@@ -2314,12 +2538,13 @@ local callbacks={
  MC_POST_FIRE_BOMB="onPostFireBomb",MC_POST_LASER_UPDATE="onPostLaserUpdate",
  MC_POST_KNIFE_UPDATE="onPostKnifeUpdate",MC_PRE_PROJECTILE_COLLISION="onPreProjectileCollision",
  MC_POST_ENTITY_REMOVE="onPostEntityRemove",
- MC_POST_PICKUP_UPDATE="onPickupUpdate",MC_EXECUTE_CMD="onExecuteCmd",
+ MC_POST_PICKUP_INIT="onPickupInit",MC_POST_PICKUP_UPDATE="onPickupUpdate",MC_EXECUTE_CMD="onExecuteCmd",
  MC_PRE_USE_ITEM="onPreUseItem",MC_USE_ITEM="onUseItem",
  MC_POST_ENTITY_TAKE_DMG="onPostEntityTakeDamage",
  MC_POST_BOMB_UPDATE="onPostBombUpdate",MC_USE_PILL="onUsePill",MC_USE_CARD="onUseCard",
  MC_POST_PLAYER_DEATH="onPostPlayerDeath",
+ MC_POST_PLAYER_INIT="onPostPlayerInit",MC_PRE_PICKUP_COLLISION="onPrePickupCollision",
 }
 for callback,method in pairs(callbacks) do if ModCallbacks[callback] then Demo:AddCallback(ModCallbacks[callback],Demo[method]) end end
 Demo:AddCallback(ModCallbacks.MC_POST_PICKUP_RENDER,Demo.onPickupRender,PickupVariant.PICKUP_COLLECTIBLE)
-Isaac.DebugString("[Live Sprite Swap Demo] v1.13.2 loaded; familiar sprites draw at double size")
+Isaac.DebugString("[Live Sprite Swap Demo] v1.14.1 loaded; AIsaac replaces non-quest collectibles with quality-matched Generators")

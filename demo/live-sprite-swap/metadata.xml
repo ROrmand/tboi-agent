@@ -4,7 +4,7 @@
   <directory>live_sprite_swap_demo</directory>
   <id>900001</id>
   <description>64 independent JSON-driven passive collectibles. The model marks which systems each item uses.</description>
-  <version>1.13.2</version>
+  <version>1.14.1</version>
   <visibility>Private</visibility>
   <tag id="Lua" />
   <tag id="Items" />

@@ -6,6 +6,7 @@ import { atomicWrite, makeIcon, makeSpriteSheet, validateSchema, toLua } from '.
 import { assertComfyUiReady, generateComfyImage } from "./comfyui.mjs";
 import { chatCompletionPayload, requestTextModel } from "./network.mjs";
 import { buildDesignPrompt, isUnderspecifiedIdea } from "./idea.mjs";
+import { requestRandomSentence } from "./sentence.mjs";
 import { artSlotName, familiarArtSlotName, familiarAnimationResource, familiarSheetResource } from '../native/ipc/art-slots.mjs';
 import { applyRegion, applySystems, repairActiveShell, repairNote, repairProfile, sanitizeProfile } from './prompt-features.mjs';
 import { assertCatalogWeights, fitWeightBudget, profileWeight } from './weights.mjs';
@@ -32,12 +33,17 @@ const requestId = readOption("--request-id");
 const requestedArtSlot = readOption("--art-slot");
 const requestedQuality = Number(readOption("--quality") || 3);
 const requestedItemType = readOption("--item-type") || "passive";
+const auto = args.includes("--auto");
+const designOnly = args.includes("--design-only");
+const renderOnly = args.includes("--render-only");
+const designOut = readOption("--design-out");
+const designIn = readOption("--design-in");
 if (!["passive", "active"].includes(requestedItemType)) fail("Item type must be passive or active.");
 
-if (isMain && !prompt && !dryRun) {
+if (isMain && !prompt && !dryRun && !(auto && designOnly) && !renderOnly) {
   fail('Usage: npm run generate -- --prompt "A cursed nail that poisons enemies"');
 }
-if (isMain && !dryRun && requestedArtSlot === '') {
+if (isMain && !dryRun && !designOnly && requestedArtSlot === '') {
   fail('Use npm run ipc:generate -- --prompt "..." with the bridge and a run open, so artwork is safely reserved.');
 }
 if (!Number.isInteger(requestedQuality) || requestedQuality < 0 || requestedQuality > 4) {
@@ -283,16 +289,68 @@ const fixture = {
   rules: [{ trigger: "room_clear", conditions: [{ type: "chance", chance: 0.2 }, { type: "once_per_room" }], actions: [{ type: "spawn_pickup", pickup_type: "coin", amount: 1 }] }],
 };
 
+export async function designUntilValid({ ideas, design, quality, itemType, maxAttempts = 8 } = {}) {
+  if (typeof ideas !== "function" || typeof design !== "function") fail("Auto generation needs an idea source and a designer.");
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 8) fail("Auto generation allows 1–8 ideas.");
+  const seen = new Set();
+  let lastError = "No valid item was produced.";
+  let tried = 0;
+  for (let index = 0; index < maxAttempts; index += 1) {
+    progress(index === 0 ? "idea" : "retry");
+    let idea;
+    try { idea = await ideas(); }
+    catch (error) { lastError = error.message || String(error); continue; }
+    const trimmed = typeof idea === "string" ? idea.trim() : "";
+    if (trimmed.length < 12 || trimmed.length > 180 || seen.has(trimmed)) {
+      lastError = "The random idea was unusable.";
+      continue;
+    }
+    seen.add(trimmed);
+    tried += 1;
+    try {
+      const profile = await design(trimmed);
+      validateProfile(profile);
+      if (profile.metadata?.quality !== quality) throw Error("Generated quality did not match the generator.");
+      if (Boolean(profile.active) !== (itemType === "active")) throw Error("The generated item type does not match the requested type.");
+      return { profile, idea: trimmed, attempts: tried };
+    } catch (error) {
+      lastError = error.message || String(error);
+    }
+  }
+  throw Error(`Item design was invalid after ${maxAttempts} ideas: ${lastError}`);
+}
+
 if (isMain) try {
-  await preflightImageBackend();
-  const activeFixture={region:"passive",systems:["active"],affects_stats:false,metadata:{...fixture.metadata,display_name:"Ashen Pulse",description:"A radial burst of damage"},visuals:fixture.visuals,rules:[],active:{effect:"radial_burst",charges:6,targeting:"self",damage:4,radius:100}};
-  const profile = dryRun ? (requestedItemType === "active" ? activeFixture : fixture) : await generateProfile(prompt);
-  validateProfile(profile);
-  if (dryRun) {
-    await mkdir(outputDirectory, {recursive:true});
-    await atomicWrite(path.join(outputDirectory, 'validated-fixture.json'), JSON.stringify(profile,null,2));
-  } else await writeOutputs(profile, noImage);
-  console.log(`Generated ${profile.metadata.display_name}. The bridge delivers requested profiles through native IPC.`);
+  if (renderOnly) {
+    await preflightImageBackend();
+    const profile = JSON.parse(await readFile(designIn, "utf8"));
+    validateProfile(profile);
+    if (profile.metadata?.quality !== requestedQuality) fail("Generated quality did not match the generator.");
+    if (Boolean(profile.active) !== (requestedItemType === "active")) fail("The generated item type does not match the requested type.");
+    await writeOutputs(profile, noImage);
+    console.log(`Generated ${profile.metadata.display_name}. The bridge delivers requested profiles through native IPC.`);
+  } else if (auto && designOnly) {
+    if (!designOut) fail("Auto design requires --design-out.");
+    const { profile, attempts } = await designUntilValid({
+      ideas: () => requestRandomSentence(env),
+      design: (idea) => generateProfile(idea),
+      quality: requestedQuality,
+      itemType: requestedItemType,
+    });
+    await mkdir(path.dirname(designOut), { recursive: true });
+    await atomicWrite(designOut, JSON.stringify(profile));
+    console.log(`Designed ${profile.metadata.display_name} after ${attempts} idea(s).`);
+  } else {
+    await preflightImageBackend();
+    const activeFixture={region:"passive",systems:["active"],affects_stats:false,metadata:{...fixture.metadata,display_name:"Ashen Pulse",description:"A radial burst of damage"},visuals:fixture.visuals,rules:[],active:{effect:"radial_burst",charges:6,targeting:"self",damage:4,radius:100}};
+    const profile = dryRun ? (requestedItemType === "active" ? activeFixture : fixture) : await generateProfile(prompt);
+    validateProfile(profile);
+    if (dryRun) {
+      await mkdir(outputDirectory, {recursive:true});
+      await atomicWrite(path.join(outputDirectory, 'validated-fixture.json'), JSON.stringify(profile,null,2));
+    } else await writeOutputs(profile, noImage);
+    console.log(`Generated ${profile.metadata.display_name}. The bridge delivers requested profiles through native IPC.`);
+  }
 } catch(error) { console.error(`Generation failed: ${error.message}`); process.exitCode = 1; }
 
 function progress(stage) { console.log('@stage ' + stage); }

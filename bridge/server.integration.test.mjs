@@ -183,7 +183,7 @@ test('queued delivery rejects unsolicited ACK and waits for its save slot and un
 test('capacity-full runs can replay a lost application ACK without treating publication as applied', async t => {
   const envelope = { version: 1, type: 'profile', id: 'test_run_last', profile: { bridge_request_id: 'test_run_last' } };
   const f = await fixture(t, [{ id: envelope.id, run: 'test_run', saveSlot: 1, state: 'queued', envelope }]);
-  await f.state({ count: 64, blocked: 'Item limit reached: 64/64. Finish this run to free item slots.' });
+  await f.state({ count: 128, blocked: 'Item limit reached: 128/128. Finish this run to free item slots.' });
   await until(async () => (await f.poll())?.id === envelope.id, 'full-run receipt replay');
   assert.equal((await f.get(envelope.id)).state, 'queued');
   assert.equal((await pipeRequest(f.pipe, { version: 1, type: 'ack', id: envelope.id })).ok, true);
@@ -224,4 +224,92 @@ test('late generation requests are rejected rather than renamed into the current
   assert.equal(rejection.error_code, 'STALE_RUN');
   assert.equal(await f.get('test_run_old_run_request'), null);
   assert.equal(new JobStore(path.join(f.output, 'job-journal.json')).records.size, 0);
+});
+
+const fakeGenerator = `
+import { writeSync } from 'node:fs';
+import { writeFile as writeFileAsync } from 'node:fs/promises';
+import path from 'node:path';
+const args = process.argv.slice(2);
+const flag = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
+const stage = (name) => writeSync(1, '@stage ' + name + '\\n');
+if (args.includes('--design-only')) {
+  stage('idea');
+  if (process.env.AUTO_DESIGN_FAIL === '1') {
+    console.error('Item design was invalid after 8 ideas: schema');
+    process.exit(1);
+  }
+  if (process.env.AUTO_DESIGN_HOLD === '1') await new Promise(resolve => setTimeout(resolve, 60000));
+  stage('retry');
+  await writeFileAsync(flag('--design-out'), JSON.stringify({ version: 1, bridge_request_id: flag('--request-id') }));
+  process.exit(0);
+}
+if (args.includes('--render-only')) {
+  const slot = String(flag('--art-slot')).padStart(2, '0');
+  await writeFileAsync(path.join(process.env.NEBIUS_OUTPUT_DIRECTORY, 'item-profile.json'), JSON.stringify({
+    version: 1, bridge_request_id: flag('--request-id'), sprite_sheet: 'gfx/items/collectibles/generated_slot_' + slot + '.png',
+  }));
+  process.exit(0);
+}
+process.exit(1);
+`;
+
+async function generatorFixture(t, overrides) {
+  const scriptDir = await mkdtemp(path.join(os.tmpdir(), 'nebius-generator-'));
+  const script = path.join(scriptDir, 'fake-generator.mjs');
+  await writeFile(script, fakeGenerator);
+  t.after(() => rm(scriptDir, { recursive: true, force: true }));
+  return fixture(t, [], { IMAGE_BACKEND: 'nebius', NEBIUS_GENERATOR_SCRIPT: script, ...overrides });
+}
+
+test('auto generation reserves one art slot only after a valid design', async t => {
+  const f = await generatorFixture(t);
+  await f.state({ active_count: 0, active_available: true });
+  const delivery = { mode: 'generator', owner: '11', quality: 2 };
+  await appendFile(f.log, '[NebiusBridge] generate ' + JSON.stringify({ id: 'test_run_auto', auto: true, quality: 2, item_type: 'passive', delivery }) + '\n');
+  const job = await until(async () => { const value = await f.get('test_run_auto'); return value?.state === 'queued' && value; }, 'auto profile');
+  assert.equal(job.artSlot, 0);
+  assert.equal(job.prompt, undefined);
+  assert.equal(job.delivery.mode, 'generator');
+  const ledger = JSON.parse(await readFile(path.join(f.mod, 'art-reservations.json'), 'utf8'));
+  assert.deepEqual(ledger.manifests['1'].used, [0]);
+  const published = await f.poll();
+  assert.equal(published.type, 'profile');
+  assert.equal(published.delivery.quality, 2);
+});
+
+test('Terminal generation carries a bounded singularity delivery through IPC', async t => {
+  const f = await generatorFixture(t);
+  await f.state({ active_count: 0, active_available: true });
+  const delivery = { mode: 'singularity', owner: '11', quality: 3 };
+  await appendFile(f.log, '[NebiusBridge] generate ' + JSON.stringify({ id: 'test_run_singularity', auto: true, quality: 3, item_type: 'passive', delivery }) + '\n');
+  const job = await until(async () => { const value = await f.get('test_run_singularity'); return value?.state === 'queued' && value; }, 'Terminal profile');
+  assert.equal(job.quality, 3);
+  assert.deepEqual(job.delivery, delivery);
+  const published = await f.poll();
+  assert.deepEqual(published.delivery, delivery);
+});
+
+test('an invalid auto design reserves no artwork', async t => {
+  const f = await generatorFixture(t, { AUTO_DESIGN_FAIL: '1' });
+  await f.state();
+  await appendFile(f.log, '[NebiusBridge] generate ' + JSON.stringify({ id: 'test_run_auto_fail', auto: true, quality: 0, item_type: 'passive', delivery: { mode: 'generator', owner: '11', quality: 0 } }) + '\n');
+  const job = await until(async () => { const value = await f.get('test_run_auto_fail'); return value?.state === 'failed' && value; }, 'failed auto design');
+  assert.equal(job.artSlot, undefined);
+  assert.equal(job.errorCode, 'INVALID_OUTPUT');
+  const ledger = JSON.parse(await readFile(path.join(f.mod, 'art-reservations.json'), 'utf8'));
+  assert.deepEqual(ledger.manifests['1'].used, []);
+});
+
+test('cancelling an auto design keeps the generator and reserves nothing', async t => {
+  const f = await generatorFixture(t, { AUTO_DESIGN_HOLD: '1' });
+  await f.state({ active_count: 0, active_available: true });
+  await appendFile(f.log, '[NebiusBridge] generate ' + JSON.stringify({ id: 'test_run_auto_hold', auto: true, quality: 4, item_type: 'active', delivery: { mode: 'generator', owner: '11', quality: 4 } }) + '\n');
+  await until(async () => (await f.get('test_run_auto_hold'))?.stage === 'idea', 'design started');
+  await appendFile(f.log, '[NebiusBridge] cancel ' + JSON.stringify({ id: 'test_run_auto_hold' }) + '\n');
+  const job = await until(async () => { const value = await f.get('test_run_auto_hold'); return value?.errorCode === 'CANCELLED' && value; }, 'auto cancellation');
+  assert.equal(job.artSlot, undefined);
+  assert.match(job.error, /Generator kept/);
+  const ledger = JSON.parse(await readFile(path.join(f.mod, 'art-reservations.json'), 'utf8'));
+  assert.deepEqual(ledger.manifests['1'].used, []);
 });

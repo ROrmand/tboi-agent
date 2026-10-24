@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { ART_SLOT_COUNT, prepareArtSlots, familiarAnimationFile, familiarSheetFile } from './art-slots.mjs';
 import { makeSpriteSheet } from '../../bridge/runtime.mjs';
 
-test('prepare writes 64 familiar animation slots without replacing an existing sheet', async () => {
+test('prepare writes 128 familiar animation slots without replacing an existing sheet', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'isaac-anim-'));
   const portraits = path.join(directory, 'resources', 'gfx', 'items', 'collectibles');
   await mkdir(portraits, { recursive: true });
@@ -32,7 +32,7 @@ test('prepare writes 64 familiar animation slots without replacing an existing s
   assert.match(animation, /familiars\/generated_familiar_sheet_63\.png/);
   assert.match(animation, /XScale="200"/);
   assert.ok(animation.split(/\r?\n/).every((line) => line.length < 400));
-  assert.equal(ART_SLOT_COUNT, 64);
+  assert.equal(ART_SLOT_COUNT, 128);
   const source = await sharp({ create: { width: 64, height: 64, channels: 4, background: 'white' } }).png().toBuffer();
   const sheet = await sharp(await makeSpriteSheet(source)).metadata();
   assert.equal(sheet.width, 256);
