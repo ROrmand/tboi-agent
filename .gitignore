@@ -9,6 +9,7 @@ ResourceExtractor_log.txt
 Thumbs.db
 .reference-repentogon/
 runtime/generated/
+runtime/setup/
 runtime/mod-backup-*/
 runtime/*.err
 work/*

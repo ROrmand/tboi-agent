@@ -14,7 +14,7 @@ import { POWER_CONTRACT_VERSION } from '../content-contract/powers.mjs';
 const emptyPowerContext={version:POWER_CONTRACT_VERSION,accepted_count:0,power_usage:{},power_history:[],recent_power_fingerprints:[]};
 
 // All model traffic and output stay in a local test server and temporary mod.
-async function runPlannedResponse({ prompt, seed, quality, source = 'Creator', mutate, reject = false, inspect }) {
+async function runPlannedResponse({ prompt, seed, quality, source = 'Creator', mutate, reject = false, inspect, imageBackend }) {
  const directory=await mkdtemp(path.join(tmpdir(),'isaac-planned-schema-'));
  const profile=buildPowerDesignBrief(prompt,emptyPowerContext,{quality,source,seed}).skeleton.profile;
  const invalid=structuredClone(profile);mutate(invalid);
@@ -32,8 +32,8 @@ async function runPlannedResponse({ prompt, seed, quality, source = 'Creator', m
   await sharp({create:{width:32,height:32,channels:4,background:'white'}}).png().toFile(path.join(artDirectory,'ember_orb.png'));
   await prepareArtSlots(directory);
   const result=await new Promise(resolve=>{
-   const child=spawn(process.execPath,['bridge/generate.mjs','--power-context',JSON.stringify(emptyPowerContext),'--prompt',prompt,'--request-id',seed,'--generation-source',source,'--quality',String(quality),'--art-slot','0','--no-image'],{
-    env:{...process.env,ISAAC_MOD_DIRECTORY:directory,NEBIUS_OUTPUT_DIRECTORY:path.join(directory,'diagnostics'),NEBIUS_BASE_URL:'http://127.0.0.1:'+server.address().port+'/v1/',NEBIUS_API_KEY:'test',NEBIUS_TEXT_MODEL:'test'},stdio:['ignore','pipe','pipe'],
+   const child=spawn(process.execPath,['bridge/generate.mjs','--power-context',JSON.stringify(emptyPowerContext),'--prompt',prompt,'--request-id',seed,'--generation-source',source,'--quality',String(quality),'--art-slot','0',...(imageBackend ? [] : ['--no-image'])],{
+    env:{...process.env,...(imageBackend ? { IMAGE_BACKEND: imageBackend } : {}),ISAAC_MOD_DIRECTORY:directory,NEBIUS_OUTPUT_DIRECTORY:path.join(directory,'diagnostics'),NEBIUS_BASE_URL:'http://127.0.0.1:'+server.address().port+'/v1/',NEBIUS_API_KEY:'test',NEBIUS_TEXT_MODEL:'test'},stdio:['ignore','pipe','pipe'],
    });
    let output='';child.stdout.on('data',chunk=>output+=chunk);child.stderr.on('data',chunk=>output+=chunk);
    child.on('close',code=>resolve({code,output}));
@@ -71,6 +71,11 @@ test('outgoing model schema requires the selected kill burst on initial and repa
    assert.match(body.messages[0].content,/do not choose different systems/);
   },
  });
+});
+
+test('placeholder backend completes generation without an image endpoint or no-image flag', async () => {
+ await runPlannedResponse({prompt:'When an enemy dies, deal a small burst.',seed:'placeholder-art',quality:2,imageBackend:'placeholder',
+  mutate:profile=>{delete profile.on_kill;profile.systems=profile.systems.filter(system=>system!=='on_kill');}});
 });
 
 test('familiar generation is refused before any model response is needed', async t => {

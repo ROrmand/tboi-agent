@@ -60,7 +60,7 @@ async function writeIfMissing(target, contents) {
   }
 }
 
-export async function prepareArtSlots(modDirectory) {
+export async function prepareArtSlots(modDirectory, { preserveExisting = false } = {}) {
   const directory = path.join(modDirectory, 'resources', 'gfx', 'items', 'collectibles');
   const familiarDirectory = path.join(modDirectory, 'resources', 'gfx', 'familiars');
   const seed = path.join(directory, 'ember_orb.png');
@@ -69,7 +69,8 @@ export async function prepareArtSlots(modDirectory) {
   await mkdir(familiarDirectory, { recursive: true });
   const blankSheet = await transparentSheet();
   await writeIfMissing(path.join(familiarDirectory, 'generated_familiar_blank.png'), blankSheet);
-  await writeFile(path.join(familiarDirectory, 'generated_familiar_blank.anm2'), familiarAnimationXml('familiars/generated_familiar_blank.png'));
+  const writeAnimation = preserveExisting ? writeIfMissing : writeFile;
+  await writeAnimation(path.join(familiarDirectory, 'generated_familiar_blank.anm2'), familiarAnimationXml('familiars/generated_familiar_blank.png'));
   await Promise.all(Array.from({ length: ART_SLOT_COUNT }, async (_, slot) => {
     for (const name of [artSlotName(slot), familiarArtSlotName(slot)]) {
       const target = path.join(directory, name);
@@ -80,7 +81,7 @@ export async function prepareArtSlots(modDirectory) {
       }
     }
     await writeIfMissing(path.join(familiarDirectory, familiarSheetFile(slot)), blankSheet);
-    await writeFile(
+    await writeAnimation(
       path.join(familiarDirectory, familiarAnimationFile(slot)),
       familiarAnimationXml(`familiars/${familiarSheetFile(slot)}`),
     );

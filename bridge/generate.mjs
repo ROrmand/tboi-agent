@@ -523,6 +523,7 @@ function parseModelJson(content) {
 }
 
 async function writeOutputs(profile, skipImage) {
+  skipImage ||= (env.IMAGE_BACKEND || '').toLowerCase() === 'placeholder';
   delete profile.region;
   await mkdir(outputDirectory, { recursive: true });
   await mkdir(path.join(modDirectory, "resources", "gfx", "items", "collectibles"), { recursive: true });

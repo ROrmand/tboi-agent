@@ -1,0 +1,85 @@
+name: Build custom REPENTOGON preview
+on:
+  workflow_dispatch:
+    inputs:
+      fork_repository:
+        description: Public fork with the exact binding committed (owner/repository)
+        required: true
+      fork_commit:
+        description: Full 40-character fork commit SHA
+        required: true
+      upstream_commit:
+        description: Full tested upstream commit SHA
+        required: true
+      runtime_version:
+        description: Native runtime version, without v prefix
+        required: true
+      isaac_sha256:
+        description: SHA-256 of the tested Isaac executable (lowercase; game is not uploaded)
+        required: true
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate source selection
+        shell: pwsh
+        env:
+          FORK: ${{ inputs.fork_repository }}
+          COMMIT: ${{ inputs.fork_commit }}
+          UPSTREAM: ${{ inputs.upstream_commit }}
+          RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          GAME_HASH: ${{ inputs.isaac_sha256 }}
+        run: |
+          if ($env:FORK -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or $env:COMMIT -notmatch '^[a-f0-9]{40}$' -or $env:UPSTREAM -notmatch '^[a-f0-9]{40}$' -or $env:GAME_HASH -notmatch '^[a-f0-9]{64}$' -or $env:RUNTIME_VERSION -notmatch '^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid immutable source selection.' }
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.fork_repository }}
+          ref: ${{ inputs.fork_commit }}
+          path: native-source
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify fork contains the reviewed binding
+        shell: pwsh
+        env:
+          UPSTREAM: ${{ inputs.upstream_commit }}
+        run: |
+          git -C native-source merge-base --is-ancestor $env:UPSTREAM HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream commit is not an ancestor of selected fork.' }
+          foreach ($name in @('NebiusBridge.cpp', 'NebiusBridge.h')) {
+            $expected = (Get-FileHash "native/repentogon-binding/$name" -Algorithm SHA256).Hash
+            $actual = (Get-FileHash "native-source/repentogon/LuaInterfaces/$name" -Algorithm SHA256).Hash
+            if ($actual -ne $expected) { throw "Fork binding differs: $name" }
+          }
+      - run: cmake -S native-source -B native-build -G "Visual Studio 17 2022" -A Win32 -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build native-build --config Release
+      - name: Package binary and complete source
+        shell: pwsh
+        env:
+          FORK: ${{ inputs.fork_repository }}
+          COMMIT: ${{ inputs.fork_commit }}
+          UPSTREAM: ${{ inputs.upstream_commit }}
+          RUNTIME_VERSION: ${{ inputs.runtime_version }}
+          GAME_HASH: ${{ inputs.isaac_sha256 }}
+        run: |
+          $binaryUrl = "https://github.com/$env:FORK/releases/download/v$env:RUNTIME_VERSION/tboi-agent-repentogon-$env:RUNTIME_VERSION-windows.zip"
+          $sourceUrl = "https://github.com/$env:FORK/tree/$env:COMMIT"
+          node scripts/package-runtime.mjs --build-directory native-build/Release --isaac-sha256 $env:GAME_HASH --version $env:RUNTIME_VERSION --url $binaryUrl --source-url $sourceUrl --upstream-commit $env:UPSTREAM
+          if ($LASTEXITCODE -ne 0) { throw 'Native packaging failed.' }
+          tar --exclude=.git -czf dist/native-corresponding-source.tar.gz -C native-source .
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed.' }
+          Copy-Item native-source/LICENSE dist/REPENTOGON-LICENSE.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: custom-repentogon-preview
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error
