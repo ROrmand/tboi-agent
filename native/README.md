@@ -1,5 +1,9 @@
 # Native runtime milestones
 
+For the current IPC binding's source-overlay/build/install workflow, see
+[repentogon-binding/README.md](repentogon-binding/README.md). REPENTOGON source
+and builds stay external; `work/` is disposable scratch, not a client checkout.
+
 Stage 1 uses the native renderer already provided by REPENTOGON, rather than
 injecting another DLL or replacing the installed engine. This is an intentional
 architecture correction: current REPENTOGON exposes procedural images,

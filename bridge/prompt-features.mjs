@@ -1,4 +1,6 @@
 import capabilities from "../content-contract/capabilities.json" with { type: "json" };
+import { conditionParams } from '../content-contract/conditions.mjs';
+import { expandedActionTypes } from './expanded-effects.mjs';
 
 // The model chooses the region and the systems. These helpers only make the
 // optional blocks match that choice, so a passive item cannot keep a familiar
@@ -46,15 +48,15 @@ function statFromBrief(prompt) {
 
 function sanitizeCondition(condition) {
   if (!condition || typeof condition !== "object") return;
-  const params = new Set(capabilities.condition_params[condition.type] || []);
-  if (!params.has("chance")) delete condition.chance;
-  if (!params.has("luck_scale")) delete condition.luck_scale;
-  if (!params.has("amount")) delete condition.amount;
-  if (!params.has("room")) delete condition.room;
+  const params = new Set(Object.hasOwn(conditionParams, condition.type) ? conditionParams[condition.type] : []);
+  for (const parameter of new Set(Object.values(conditionParams).flat())) {
+    if (!params.has(parameter)) delete condition[parameter];
+  }
 }
 
 function sanitizeAction(action, fallbackStat) {
   if (!action || typeof action !== "object") return;
+  if (expandedActionTypes.includes(action.type)) return;
   if (action.type !== "convert_resource") {
     delete action.input_resource;
     delete action.output_resource;
@@ -348,7 +350,8 @@ function relocateMisplacedCombat(profile) {
     }
     const rest = [];
     for (const action of rule.actions) {
-      const cooldown = Math.max(30, Number.isInteger(rule.cooldown) ? rule.cooldown : 30);
+      const minimum = capabilities.combat_effects[action?.type]?.minimum_cooldown ?? 30;
+      const cooldown = Math.max(minimum, Number.isInteger(rule.cooldown) ? rule.cooldown : minimum);
       if (action?.type === "damage_burst" && !DAMAGE_BURST_TRIGGERS.has(rule.trigger)) {
         ensureSystem(profile, "on_kill");
         if (procMissing(profile.on_kill)) profile.on_kill = { conditions: rule.conditions || [], cooldown, actions: [action] };
@@ -371,7 +374,8 @@ function ensureCombatFields(entry) {
   if (!entry || !Array.isArray(entry.actions)) return;
   const combat = entry.actions.filter((action) => ["damage_burst", "apply_status", "retaliate"].includes(action?.type));
   if (!combat.length) return;
-  if (!Number.isInteger(entry.cooldown) || entry.cooldown < 30) entry.cooldown = 30;
+  const minimum = Math.max(...combat.map(action => capabilities.combat_effects[action.type].minimum_cooldown));
+  if (!Number.isInteger(entry.cooldown) || entry.cooldown < minimum) entry.cooldown = minimum;
   for (const action of combat) {
     if (action.type === "damage_burst" && !(action.radius >= 40 && action.radius <= 120)) action.radius = 80;
     if (action.type === "apply_status") {
@@ -387,6 +391,7 @@ function completeStats(existing, patch) {
     for (const key of STAT_KEYS) if (existing[key] != null) stats[key] = existing[key];
     if (existing.damage_multiplier != null) stats.damage_multiplier = existing.damage_multiplier;
     if (typeof existing.flying === "boolean") stats.flying = existing.flying;
+    if (typeof existing.explosion_immunity === "boolean") stats.explosion_immunity = existing.explosion_immunity;
   }
   for (const [key, value] of Object.entries(patch)) {
     if (stats[key] == null || stats[key] === 0) stats[key] = value;

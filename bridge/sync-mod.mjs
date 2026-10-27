@@ -1,5 +1,7 @@
 import { copyFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { checkConditionHandlers, checkConditionMetadata } from '../scripts/generate-condition-metadata.mjs';
+import { checkEffectMetadata } from '../scripts/generate-effect-metadata.mjs';
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -7,6 +9,15 @@ const root = path.resolve(import.meta.dirname, "..");
 // installed mod directory and are not part of this copy.
 export const MOD_FILES = [
   "main.lua",
+  "condition_metadata.lua",
+  "effect_metadata.lua",
+  "expanded_effects.lua",
+  "expanded_conditions.lua",
+  "event_context.lua",
+  "power_ledger.lua",
+  "vanilla_audit.lua",
+  "pickup_probe.lua",
+  "pickup_capture.lua",
   "nebius_prompt.lua",
   "metadata.xml",
   "content/items.xml",
@@ -39,6 +50,9 @@ export const MOD_FILES = [
 export async function syncMod(source, target) {
   const from = path.resolve(source);
   const to = path.resolve(target);
+  await checkConditionMetadata(path.join(from, 'condition_metadata.lua'));
+  checkConditionHandlers(await readFile(path.join(from, 'main.lua'), 'utf8'));
+  await checkEffectMetadata(path.join(from, 'effect_metadata.lua'));
   if (from.toLowerCase() === to.toLowerCase()) return { copied: [], skipped: true };
   const copied = [];
   for (const relative of MOD_FILES) {

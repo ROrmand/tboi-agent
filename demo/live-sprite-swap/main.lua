@@ -1,6 +1,9 @@
 local Demo = RegisterMod("Live Sprite Swap Demo", 1)
 local bridgeJson = require("json")
 local promptUi = include("nebius_prompt").new(bridgeJson)
+local vanillaAudit = include("vanilla_audit")
+local pickupCaptureModule = include("pickup_capture")
+local pickupProbeModule = include("pickup_probe")
 local GENERATED_ITEM_CAPACITY, GENERATED_ACTIVE_CAPACITY = 128, 8
 local ids, slotById = {}, {}
 for slot = 0, GENERATED_ITEM_CAPACITY-1 do
@@ -11,6 +14,7 @@ local records, runtime, usedArt, accepted = {}, {}, {}, {}
 local roomStatGrants = {}
 local playerDeathSeen = {}
 local combat = {depth=0,effects={damage_burst={on_kill=true,player_hurt=true,collision=true},apply_status={tear_impact=true,collision=true,on_kill=true,enemy_hit=true},retaliate={collision=true,player_hurt=true}}}
+combat.powerLedger = include("power_ledger")
 local function roomStamp()
   local level = Game():GetLevel()
   return tostring(level:GetAbsoluteStage()) .. ":" .. tostring(level:GetCurrentRoomIndex())
@@ -19,6 +23,15 @@ local session = tostring(Random()) .. "_" .. tostring(Isaac.GetTime())
 local serial, runToken, running, blocked = 0, nil, false, nil
 local selectedSaveSlot,freshRun,endedRun=nil,false,false
 local creator={blank=Isaac.GetItemIdByName("AI Item"),singularity=Isaac.GetItemIdByName("Singularity Terminal"),requests={},cancelled={},deliveries={},noticed={},replacements={},generatorQueue={},touch={},owner=nil,settings={hotkey="KEY_8",replacePassives=false}}
+function combat.powerRecords()
+  local result={}
+  for _,record in ipairs(records) do
+    local receipt=creator.deliveries[record.bridge_request_id]
+    local mode=receipt and receipt.mode
+    result[#result+1]={profile=record,source=mode=="generator" and "Generator" or mode=="singularity" and "Singularity" or "Creator"}
+  end
+  return result
+end
 creator.passiveIds,creator.activeIds,creator.generatorIds,creator.generatorIdSet={},{},{},{}
 for index,id in ipairs(ids) do creator.passiveIds[index]=id end
 for slot=0,GENERATED_ACTIVE_CAPACITY-1 do creator.activeIds[slot+1]=Isaac.GetItemIdByName(string.format("Generated Active %02d",slot)) end
@@ -256,8 +269,11 @@ local ruleTriggers = { room_enter = true, room_clear = true, pickup = true, new_
 local hitTriggers = { enemy_hit = true, player_hurt = true }
 local systemNames = { active=true, stats = true, tears = true, rules = true, familiar = true, aura = true, on_hit = true, on_kill = true, tear_impact = true, collision = true, tear_update = true, bomb = true, laser = true, knife = true }
 local tearUpdateBehaviors = { home = true, pulse = true, shrink = true, spiral = true, accelerate = true }
-local conditions = { chance = true, once_per_room = true, once_per_floor = true, once_per_run = true, once_per_target = true, luck_chance = true, hearts_at_most = true, hearts_at_least = true, room_kind = true, while_flying = true }
-local conditionParams = { chance = { chance = true }, luck_chance = { chance = true, luck_scale = true }, hearts_at_most = { amount = true }, hearts_at_least = { amount = true }, room_kind = { room = true }, once_per_room = {}, once_per_floor = {}, once_per_run = {}, once_per_target = {}, while_flying = {} }
+local conditionCatalog = include("condition_metadata")
+combat.conditionQueries = include("expanded_conditions").new(conditionCatalog)
+combat.eventContext = include("event_context")
+combat.expandedModule = include("expanded_effects")
+combat.expandedCatalog = include("effect_metadata")
 local roomKinds = { boss = 5, secret = 7, super_secret = 8, shop = 2, devil = 14, angel = 15, planetarium = 24, library = 12, curse = 10 }
 -- Fixed heart reward catalog: amount is an integer from 1 to 4.
 local heartRewards = {
@@ -290,8 +306,8 @@ local pickups = { coin = true, key = true, bomb = true, heart = true, pill = tru
 local pickupSubtypes = {coin={penny=1,nickel=2,dime=3,sticky=5,lucky=6,golden=7},key={normal=1,golden=2,charged=4},bomb={normal=1,double=2,troll=3,golden=4,mega=7},heart={full=1,half=2,soul=3,eternal=4,double=5,black=6,gold=7,half_soul=8,blended=10,bone=11,rotten=12}}
 local subtypeWeights = {penny=1,nickel=5,dime=10,normal=2,full=2,half=2,soul=8,sticky=1,lucky=4,golden=6,charged=4,double=3,troll=1,mega=6,eternal=5,black=4,gold=3,half_soul=4,blended=4,bone=4,rotten=2}
 local friendlies = { attack_fly = true, spider = true, pooter = true, dip = true, minisaac = true }
-local friendlySpawn = { attack_fly = { kind = "npc", type = 18 }, spider = { kind = "npc", type = 85 }, pooter = { kind = "npc", type = 14 }, dip = { kind = "npc", type = 217 }, minisaac = { kind = "familiar", type = 3, variant = 228 } }
-local creepVariants = { red = 22, green = 23, yellow = 24, black = 26 }
+local friendlySpawn = { attack_fly = { kind = "familiar", type = 3, variant = 43 }, spider = { kind = "familiar", type = 3, variant = 73 }, pooter = { kind = "npc", type = 14 }, dip = { kind = "npc", type = 217 }, minisaac = { kind = "familiar", type = 3, variant = 228 } }
+local creepVariants = { red = 46, green = 53, yellow = 32, black = 45 }
 local tearFlagsByName = { homing = true, spectral = true, piercing = true, poison = true, burn = true, slow = true, fear = true, charm = true, bounce = true, split = true, orbit = true, glow = true, explosive = true, confusion = true, knockback = true, continuum = true, boomerang = true, grow = true, shrink = true, sticky = true, wiggle = true, slowing_creep = true }
 local familiarTypes = { sentry = true, melee = true, normal = true, shield = true, orbit_contact = true }
 local rangedFamiliars = { sentry = true, normal = true }
@@ -368,6 +384,7 @@ end
 
 local roomStatNames = { damage = true, tears = true, luck = true, speed = true, range = true, shot_speed = true }
 local function validAction(action,trigger,cooldown)
+  if type(action)=="table" and combat.expandedCatalog.actions[action.type] then return combat.expandedModule.validate(action,trigger,combat.expandedCatalog) end
   local amountMax = action.type=="refill_charge" and 6 or 4
   if not allowedKeys(action, { type = true, amount = true, pickup_type = true, stat = true, friendly_type = true, duration=true, stack_limit=true, pickup_subtype=true,status=true,radius=true,target_mode=true,input_resource=true,output_resource=true,cost=true,creep=true }) or not actions[action.type] or not number(action.amount, 1, amountMax, true) then return false end
   if trigger=="player_death" and not deathActions[action.type] then return false end
@@ -380,7 +397,7 @@ local function validAction(action,trigger,cooldown)
   elseif action.input_resource~=nil or action.output_resource~=nil or action.cost~=nil then return false end
   if action.type=="activate_aura" and (action.amount~=1 or not number(action.duration,15,1800,true) or not number(cooldown,30,1800,true)) then return false end
   if combat.effects[action.type] then
-    if not combat.effects[action.type][trigger] or not number(cooldown,30,1800,true) or not number(action.amount,1,action.type=="apply_status" and 2 or 3,true) then return false end
+    if not combat.effects[action.type][trigger] or not number(cooldown,action.type=="apply_status" and 0 or 30,1800,true) or not number(action.amount,1,action.type=="apply_status" and 2 or 3,true) then return false end
     if action.stat~=nil or action.pickup_type~=nil or action.friendly_type~=nil then return false end
     if action.type=="apply_status" then return ({slow=true,burn=true,fear=true,poison=true,charm=true,confusion=true,freeze=true})[action.status]==true and number(action.duration,15,120,true) and action.radius==nil and action.creep==nil end
     if action.status~=nil or action.duration~=nil or action.creep~=nil then return false end
@@ -437,12 +454,14 @@ local function profileWeight(profile)
       end
     end
     if profile.stats.flying then total = total + 8 end
+    if profile.stats.explosion_immunity then total = total + 8 end
   end
   for name, weight in pairs(systemWeights) do if marked(profile, name) then total = total + weight end end
   local roomStats = {}
   local function spend(action)
     if type(action) ~= "table" then return end
-    if action.type == "spawn_pickup" then total = total + (action.pickup_subtype and subtypeWeights[action.pickup_subtype] or pickupWeights[action.pickup_type] or 0) * (action.amount or 1)
+    if combat.expandedCatalog.actions[action.type] then total=total+combat.expandedModule.weight(action,combat.expandedCatalog)
+    elseif action.type == "spawn_pickup" then total = total + (action.pickup_subtype and subtypeWeights[action.pickup_subtype] or pickupWeights[action.pickup_type] or 0) * (action.amount or 1)
     elseif action.type == "spawn_friendly" then total = total + (friendlyWeights[action.friendly_type] or 0) * (action.amount or 1)
     elseif heartWeights[action.type] then total = total + heartWeights[action.type] * (action.amount or 1)
     elseif combat.effects[action.type] then total=total+6+action.amount+math.ceil((action.radius or 0)/60)+math.ceil((action.duration or 0)/60)+(action.type=="retaliate" and action.target_mode=="nearby" and 6 or 0)
@@ -472,23 +491,43 @@ local function validAura(aura)
   if aura.type == "burn" or aura.type == "poison" then return number(aura.damage,0.25,2,false) end
   return aura.damage == nil
 end
-local function validCondition(condition)
-  local params = conditionParams[condition.type]
-  if not allowedKeys(condition, { type = true, chance = true, luck_scale = true, amount = true, room = true }) or not params then return false end
-  if condition.chance ~= nil and not params.chance then return false end
-  if condition.luck_scale ~= nil and not params.luck_scale then return false end
-  if condition.amount ~= nil and not params.amount then return false end
-  if condition.room ~= nil and not params.room then return false end
-  if params.chance and not number(condition.chance, 0, 1, false) then return false end
-  if params.luck_scale and not number(condition.luck_scale, 0, 0.25, false) then return false end
-  if params.amount and not number(condition.amount, 1, 12, true) then return false end
-  if params.room and not roomKinds[condition.room] then return false end
+local function validCondition(condition, context, location)
+  location=(location or "condition").." ("..tostring(context).."): "
+  local definition=type(condition)=="table" and conditionCatalog.conditions[condition.type]
+  if not definition then return false,location.."unsupported condition" end
+  local compatible=false
+  for _,name in ipairs(definition.contexts) do if name==context then compatible=true end end
+  if not compatible then return false,location..condition.type.." requires "..table.concat(definition.requires,", ") end
+  for parameter in pairs(condition) do
+    if parameter~="type" and not definition.params[parameter] then return false,location..parameter.." is unsupported for "..condition.type end
+  end
+  for parameter,specification in pairs(definition.params) do
+    local value=condition[parameter]
+    if value~=nil or specification.required then
+      local valid=false
+      if specification.type=="string" then
+        for _,allowed in ipairs(specification.enum) do if value==allowed then valid=true end end
+      else valid=number(value,specification.minimum,specification.maximum,specification.type=="integer") end
+      if not valid then return false,location..parameter.." is invalid for "..condition.type end
+    end
+  end
   return true
+end
+function combat.validCooldown(entry)
+  if entry.cooldown==nil then return true end
+  local minimum=0
+  for _,action in ipairs(entry.actions or {}) do
+    if action.type~="apply_status" and action.type~="spawn_creep" and action.type~="spawn_friendly" then minimum=15; break end
+  end
+  return number(entry.cooldown,minimum,1800,true)
 end
 local function validProc(proc,name)
   if not allowedKeys(proc, { conditions = true, actions = true, cooldown=true }) or not array(proc.conditions, 0, 2) or not array(proc.actions, 1, 2) then return false end
-  if proc.cooldown~=nil and not number(proc.cooldown,15,1800,true) then return false end
-  for _, condition in ipairs(proc.conditions) do if not validCondition(condition) then return false end end
+  if not combat.validCooldown(proc) then return false end
+  for index, condition in ipairs(proc.conditions) do
+    local valid,reason=validCondition(condition,name,name..".conditions["..index.."]")
+    if not valid then return false,reason end
+  end
   for _, action in ipairs(proc.actions) do if not validAction(action,name,proc.cooldown) then return false end end
   return true
 end
@@ -496,7 +535,8 @@ end
 local function validateProfile(profile, id)
   if not text(id,1,100) then return false, "request identity" end
   if not allowedKeys(profile, { active=true, version = true, generated_at = true, bridge_request_id = true, metadata = true, affects_stats = true, systems = true, stats = true, tear_profile = true, visuals = true, rules = true, familiar = true, aura = true, on_kill = true, tear_impact = true, collision = true, tear_update = true, bomb = true, laser = true, knife = true, sprite_sheet = true, familiar_sprite_sheet = true, familiar_animation = true, familiar_animation_sheet = true }) then return false, "profile keys" end
-  if profile.version ~= 1 or profile.bridge_request_id ~= id or not text(profile.generated_at, 1, 64) or not text(profile.sprite_sheet, 1, 256) or not profile.sprite_sheet:match("^gfx/items/collectibles/generated_slot_[0-9][0-9]?[0-9]?%.png$") then return false, "profile identity" end
+  local slot=text(profile.sprite_sheet,1,256) and tonumber(profile.sprite_sheet:match("^gfx/items/collectibles/generated_slot_(%d+)%.png$")) or nil
+  if profile.version ~= 1 or profile.bridge_request_id ~= id or not text(profile.generated_at, 1, 64) or not number(slot,0,GENERATED_ITEM_CAPACITY-1,true) or profile.sprite_sheet~=string.format("gfx/items/collectibles/generated_slot_%02d.png",slot) then return false, "profile identity" end
   local metadata = profile.metadata
   if not allowedKeys(metadata, { display_name = true, description = true, quality = true, theme = true, balance_note = true }) then return false, "metadata keys" end
   if not text(metadata.display_name, 1, 64) then return false, "metadata display name" end
@@ -517,10 +557,11 @@ local function validateProfile(profile, id)
   elseif profile.active~=nil then return false,"active system" end
   if profile.affects_stats ~= marked(profile, "stats") then return false, "affects_stats" end
   if marked(profile, "stats") then
-    if not allowedKeys(profile.stats, { damage = true, damage_multiplier = true, tears = true, shot_speed = true, range = true, speed = true, luck = true, soul_hearts = true, flying = true }) then return false, "stat keys" end
+    if not allowedKeys(profile.stats, { damage = true, damage_multiplier = true, tears = true, shot_speed = true, range = true, speed = true, luck = true, soul_hearts = true, flying = true, explosion_immunity = true }) then return false, "stat keys" end
     for name, bounds in pairs(statBounds) do if not number(profile.stats[name], bounds[1], bounds[2], name == "soul_hearts") then return false, "stat " .. name end end
     if profile.stats.damage_multiplier ~= nil and not number(profile.stats.damage_multiplier, 0.5, 2, false) then return false, "damage multiplier" end
     if profile.stats.flying ~= nil and type(profile.stats.flying) ~= "boolean" then return false, "flying" end
+    if profile.stats.explosion_immunity ~= nil and type(profile.stats.explosion_immunity) ~= "boolean" then return false, "explosion immunity" end
   elseif profile.stats ~= nil then return false, "stats" end
   local tear = profile.tear_profile
   if marked(profile, "tears") then
@@ -541,9 +582,9 @@ local function validateProfile(profile, id)
     if rangedFamiliars[familiar.type] then
       if not validFamiliarAttack(familiar.attack) then return false,"familiar attack" end
     elseif familiar.attack~=nil then return false,"familiar attack" end
-    if not text(profile.familiar_sprite_sheet,1,256) or not profile.familiar_sprite_sheet:match("^gfx/items/collectibles/generated_familiar_slot_[0-9][0-9]%.png$") then return false,"familiar sprite" end
-    if not text(profile.familiar_animation,1,256) or not profile.familiar_animation:match("^gfx/familiars/generated_familiar_anim_[0-9][0-9]%.anm2$") then return false,"familiar animation" end
-    if not text(profile.familiar_animation_sheet,1,256) or not profile.familiar_animation_sheet:match("^gfx/familiars/generated_familiar_sheet_[0-9][0-9]%.png$") then return false,"familiar animation sheet" end
+    if profile.familiar_sprite_sheet~=string.format("gfx/items/collectibles/generated_familiar_slot_%02d.png",slot) then return false,"familiar sprite" end
+    if profile.familiar_animation~=string.format("gfx/familiars/generated_familiar_anim_%02d.anm2",slot) then return false,"familiar animation" end
+    if profile.familiar_animation_sheet~=string.format("gfx/familiars/generated_familiar_sheet_%02d.png",slot) then return false,"familiar animation sheet" end
   elseif profile.familiar_sprite_sheet~=nil or profile.familiar_animation~=nil or profile.familiar_animation_sheet~=nil then return false,"unexpected familiar sprite" end
   if marked(profile, "aura") then
     if profile.aura == nil then return false, "aura" end
@@ -554,7 +595,8 @@ local function validateProfile(profile, id)
   end
   for _, name in ipairs({ "on_kill", "tear_impact", "collision" }) do
     if marked(profile, name) then
-      if not validProc(profile[name],name) then return false, name end
+      local valid,reason=validProc(profile[name],name)
+      if not valid then return false,reason or name end
     elseif profile[name] ~= nil then return false, name end
   end
   if marked(profile, "tear_update") then
@@ -575,13 +617,18 @@ local function validateProfile(profile, id)
   elseif profile.bomb ~= nil then return false, "bomb" end
   for _, name in ipairs({ "laser", "knife" }) do
     if marked(profile, name) then
-      if not allowedKeys(profile[name], { damage = true }) or not number(profile[name].damage, 0.5, 3, false) then return false, name end
+      if not allowedKeys(profile[name], { damage = true, color = true }) or not number(profile[name].damage, 0.5, 3, false) then return false, name end
+      local color=profile[name].color
+      if color~=nil then
+        if not allowedKeys(color,{r=true,g=true,b=true,a=true}) then return false,name.." color keys" end
+        for _,channel in ipairs({"r","g","b","a"}) do if not number(color[channel],0,1,false) then return false,name.." color" end end
+      end
     elseif profile[name] ~= nil then return false, name end
   end
   local sawRule, sawHit = false, false
-  for _, rule in ipairs(profile.rules) do
+  for ruleIndex, rule in ipairs(profile.rules) do
     if not allowedKeys(rule, { trigger = true, conditions = true, actions = true, cooldown=true }) or not triggers[rule.trigger] or not array(rule.conditions, 0, 2) or not array(rule.actions, 1, 2) then return false, "rule" end
-    if rule.cooldown~=nil and not number(rule.cooldown,15,1800,true) then return false,"cooldown" end
+    if not combat.validCooldown(rule) then return false,"cooldown" end
     if ruleTriggers[rule.trigger] then
       if not marked(profile, "rules") then return false, "rules" end
       sawRule = true
@@ -589,7 +636,10 @@ local function validateProfile(profile, id)
       if not marked(profile, "on_hit") then return false, "on_hit" end
       sawHit = true
     else return false, "rule" end
-    for _, condition in ipairs(rule.conditions) do if not validCondition(condition) then return false, "condition" end end
+    for index, condition in ipairs(rule.conditions) do
+      local valid,reason=validCondition(condition,rule.trigger,"rules["..ruleIndex.."].conditions["..index.."]")
+      if not valid then return false,reason end
+    end
     for _, action in ipairs(rule.actions) do if not validAction(action,rule.trigger,rule.cooldown) then return false, "action" end end
   end
   if marked(profile, "rules") and not sawRule then return false, "rules" end
@@ -648,15 +698,16 @@ end
 local function actionPhrase(action, chance)
   local amount = action.amount or 1
   local lead = chance and "sometimes " or ""
+  if combat.expandedCatalog.actions[action.type] then return lead..combat.expandedModule.summary(action,combat.expandedCatalog) end
   if action.type=="damage_burst" then return lead.."deals "..amount.." damage in a "..action.radius.." radius (max 8 enemies)" end
   if action.type=="apply_status" then return lead.."applies "..action.status.." for "..action.duration.." frames"..((action.status=="burn" or action.status=="poison") and (" at "..amount.." damage") or "") end
-  if action.type=="spawn_creep" then return lead.."spawns "..(action.creep or "red").." creep" end
+  if action.type=="spawn_creep" then return lead.."spawns "..amount.." player-safe "..(action.creep or "red").." creep ("..(action.creep=="black" and "slows enemies" or "1 contact damage").."; "..(action.radius/40).."x size; "..action.duration.." frames; max 4 per color per owner/item)" end
   if action.type=="refill_charge" then return lead.."refills "..amount.." charge"..(amount==1 and "" or "s") end
   if action.type=="retaliate" then return lead.."retaliates for "..amount.." damage"..(action.target_mode=="nearby" and " within "..action.radius.." radius, max 8 enemies" or " against the attacker") end
   if action.type=="convert_resource" then return lead.."trades "..action.cost.." "..action.input_resource.." for "..amount.." "..action.output_resource end
   if action.type=="activate_aura" then return lead.."activates its aura for "..action.duration.." frames" end
   if action.type == "grant_soul_hearts" then
-    return lead .. "grants " .. (amount == 1 and "a soul heart" or (amount .. " soul hearts"))
+    return lead .. "grants " .. amount .. " half-soul-heart" .. (amount==1 and "" or "s")
   end
   if action.type == "grant_stat" then
     local duration=action.duration and (" for "..action.duration.." frames or this room") or " for this room"
@@ -664,8 +715,8 @@ local function actionPhrase(action, chance)
     return lead .. "grants +" .. amount .. " " .. action.stat .. duration .. stacks
   end
   if action.type == "spawn_friendly" then
-    local names = { attack_fly = "attack fly", spider = "spider", pooter = "pooter", dip = "dip", minisaac = "minisaac" }
-    return lead .. "spawns a friendly " .. (names[action.friendly_type] or "enemy")
+    local names = { attack_fly = "blue attack fly", spider = "blue spider", pooter = "pooter", dip = "dip", minisaac = "minisaac" }
+    return lead .. "spawns a friendly " .. (names[action.friendly_type] or "enemy") .. " (accumulates; max 32 summons per owner/item, 256 total)"
   end
   local reward = heartRewards[action.type]
   if reward then return lead .. "grants " .. amount .. " " .. reward.label .. (amount == 1 and "" or "s") end
@@ -676,18 +727,31 @@ end
 local function timedClause(entry, trigger)
   if not entry then return nil end
   local chance = false
+  local requirements={}
   for _, condition in ipairs(entry.conditions or {}) do
-    if (condition.type == "chance" or condition.type == "luck_chance") and (condition.chance or 1) < 1 then chance = true end
+    local definition=conditionCatalog.conditions[condition.type]
+    if definition and definition.category=="probability" and (condition.chance or 1)<1 then chance=true end
+    if definition and definition.summary then
+      requirements[#requirements+1]=definition.summary:gsub("{(%w+)}",function(parameter) return tostring(condition[parameter]) end)
+    end
   end
   local actions = {}
   for _, action in ipairs(entry.actions or {}) do actions[#actions + 1] = actionPhrase(action, chance) end
   local body = clauseList(actions)
   if not body then return nil end
-  return body .. " " .. (whenText[trigger] or "sometimes") .. (entry.cooldown and ("; "..entry.cooldown.." frame cooldown") or "")
+  return body .. " " .. (whenText[trigger] or "sometimes") .. (#requirements>0 and ("; "..table.concat(requirements,", ")) or "") .. (entry.cooldown and entry.cooldown>0 and ("; "..entry.cooldown.." frame cooldown") or "")
+end
+function combat.explosionProtected(generated)
+  if generated.stats and generated.stats.explosion_immunity==true then return true end
+  for _,shot in pairs({generated.tear_profile or {},generated.familiar and generated.familiar.attack or {}}) do
+    for _,flag in ipairs(shot.flags or {}) do if flag=="explosive" then return true end end
+  end
+  return false
 end
 local function effectSummary(generated)
   if generated.active then return "Use: "..generated.active.damage.." radial damage within "..generated.active.radius.."; max 8 enemies; 6 charges" end
   local parts = {}
+  if combat.explosionProtected(generated) then parts[#parts+1]="explosion immunity" end
   local stats = generated.stats
   if generated.affects_stats and stats then
     local up, down = {}, {}
@@ -705,8 +769,7 @@ local function effectSummary(generated)
       parts[#parts + 1] = "damage x" .. string.format("%.1f", stats.damage_multiplier)
     end
     local hearts = stats.soul_hearts or 0
-    if hearts > 0 then parts[#parts + 1] = "grants " .. hearts .. " soul heart" .. (hearts == 1 and "" or "s") end
-    if hearts < 0 then parts[#parts + 1] = "removes " .. -hearts .. " soul heart" .. (hearts == -1 and "" or "s") end
+    if hearts > 0 then parts[#parts + 1] = "grants " .. hearts .. " half-soul-heart" .. (hearts == 1 and "" or "s") end
     if stats.flying == true then parts[#parts + 1] = "grants flight" end
   end
   local tear = generated.tear_profile
@@ -746,9 +809,13 @@ local function effectSummary(generated)
     local limits=update.behavior=="home" and "; max 1 target within 240" or "; scale bounded to 0.5-2"
     parts[#parts + 1] = updateText[update.behavior].." (strength "..update.strength.."; combined cap 2"..limits..")"
   end
-  if generated.bomb then parts[#parts + 1] = generated.bomb.flags and #generated.bomb.flags > 0 and "stronger bombs" or "stronger bombs" end
-  if generated.laser then parts[#parts + 1] = "stronger lasers" end
-  if generated.knife then parts[#parts + 1] = "stronger knives" end
+  if generated.bomb then
+    local bomb=generated.bomb
+    parts[#parts + 1] = "existing bombs: +"..bomb.damage.." explosion damage; radius at least "..bomb.radius..(#(bomb.flags or {})>0 and ("; "..table.concat(bomb.flags,", ")) or "").." (does not grant bombs)"
+  end
+  for _,weapon in ipairs({"laser","knife"}) do
+    if generated[weapon] then parts[#parts + 1] = "existing "..(weapon=="laser" and "lasers" or "knives")..": +"..generated[weapon].damage.." damage (requires that weapon; does not grant it)" end
+  end
   return effectSentence(parts, generated.metadata and generated.metadata.description)
 end
 
@@ -767,6 +834,7 @@ local function makeProfile(generated)
     tearColor = Color(color.r or 1, color.g or 1, color.b or 1, color.a or 1, 0, 0, 0),
     tearFlag = tearFlags, tearFlagNames = tear and tear.flags or {}, tearScale = tear and tear.scale or 1,
     affectsStats = generated.affects_stats == true,
+    explosionImmune = combat.explosionProtected(generated),
     active=generated.active,
     sound=generated.visuals.sound,animation=generated.visuals.animation,
     damage = stats.damage or 0, damageMultiplier = stats.damage_multiplier or 1, fireDelay = -(stats.tears or 0),
@@ -841,6 +909,76 @@ local function eachOwned(list, player, visit)
   if not list or #list == 0 then return end
   for _, index in ipairs(list) do if owned(player, index) then visit(index, runtime[index]) end end
 end
+combat.expandedEffects=combat.expandedModule.new({
+  frame=function() return Game():GetFrameCount() end,
+  owns=function(source,player)
+    local index=tonumber(source)
+    if not running or blocked or not index or not runtime[index] or not owned(player,index) then return false end
+    for playerIndex=0,Game():GetNumPlayers()-1 do if Isaac.GetPlayer(playerIndex)==player then return true end end
+    return false
+  end,
+  vector=function(horizontal,vertical) return Vector(horizontal,vertical) end,
+  entityRef=function(player) return EntityRef(player) end,
+  spawn=function(entityType,variant,subtype,position,velocity,spawner)
+    return Game():Spawn(entityType,variant,position,velocity,spawner,subtype,math.max(1,Random()))
+  end,
+  enums={tear=EntityType.ENTITY_TEAR,blueTear=TearVariant.BLUE,pooter=EntityType.ENTITY_POOTER,primarySlot=ActiveSlot and ActiveSlot.SLOT_PRIMARY or 0,
+    friendly=EntityFlag and EntityFlag.FLAG_FRIENDLY,charm=EntityFlag and EntityFlag.FLAG_CHARM},
+  isEnemy=function(entity)
+    if not entity or not entity.ToNPC or not entity:ToNPC() or not entity.IsVulnerableEnemy or not entity:IsVulnerableEnemy() then return false end
+    if not EntityFlag or not EntityFlag.FLAG_FRIENDLY or not entity.HasEntityFlags then return false end
+    if entity:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) then return false end
+    return not EntityFlag.FLAG_CHARM or not entity:HasEntityFlags(EntityFlag.FLAG_CHARM)
+  end,
+  projectiles=function() return Isaac.FindByType(EntityType.ENTITY_PROJECTILE) end,
+  isHostileProjectile=function(entity)
+    if not entity or entity.Type~=EntityType.ENTITY_PROJECTILE or not ProjectileFlags or not ProjectileFlags.CANT_HIT_PLAYER or not entity.HasProjectileFlags then return false end
+    if entity:HasProjectileFlags(ProjectileFlags.CANT_HIT_PLAYER) or combat.expandedEffects:suppressed(entity,true) or combat.owner(entity,true) then return false end
+    local spawner=entity.SpawnerEntity or entity.Parent
+    if spawner and spawner.ToNPC and spawner:ToNPC() then
+      if not EntityFlag or not EntityFlag.FLAG_FRIENDLY or not spawner.HasEntityFlags then return false end
+      if spawner:HasEntityFlags(EntityFlag.FLAG_FRIENDLY) or (EntityFlag.FLAG_CHARM and spawner:HasEntityFlags(EntityFlag.FLAG_CHARM)) then return false end
+    end
+    return true
+  end,
+  chargeLimit=function(item)
+    if not ChargeType or ChargeType.NORMAL==nil or not ItemType or not ItemType.ITEM_ACTIVE or not Isaac.GetItemConfig then return nil end
+    local config=Isaac.GetItemConfig():GetCollectible(item)
+    if config and config.Type==ItemType.ITEM_ACTIVE and config.ChargeType==ChargeType.NORMAL then return config.MaxCharges end
+  end,
+  withGuard=function(callback)
+    combat.depth=combat.depth+1
+    local ok,result=pcall(callback)
+    combat.depth=combat.depth-1
+    if not ok then error(result) end
+    return result
+  end,
+},combat.expandedCatalog)
+function combat.expandedEvent(action,player,event)
+  local normalized={}
+  for key,value in pairs(event or {}) do normalized[key]=value end
+  normalized.owner=normalized.owner or player
+  if normalized.trigger=="active_use" then
+    local getter=action.type=="dash" and player.GetMovementInput or player.GetShootingInput
+    normalized.velocity=getter and getter(player) or nil
+  end
+  return normalized
+end
+function combat.nativeSecondary(entity,creepOnly)
+  if not combat.nativeSecondaryActive then return false end
+  local seen={}
+  local function secondary(candidate,depth)
+    if not candidate or depth>=8 or seen[candidate] then return false end
+    seen[candidate]=true
+    local data=candidate.GetData and candidate:GetData()
+    if data and (data.nebiusCreep or (not creepOnly and data.nebiusFriendlyItem)) then return true end
+    return secondary(candidate.SpawnerEntity,depth+1) or secondary(candidate.Parent,depth+1)
+  end
+  return secondary(entity,0)
+end
+function combat.secondary(entity)
+  return (combat.expandedActive and combat.expandedEffects:suppressed(entity)) or combat.nativeSecondary(entity)
+end
 local function pruneRoomStats()
   if #roomStatGrants==0 then return end
   local players,changed={},{}
@@ -872,7 +1010,7 @@ local function saveRun()
         receipt.witnessBlank,receipt.witnessShell,receipt.witnessActive=blanks,shells,active
       end
     end
-    local saved = {version=3,records=records,ruleStates=states,cooldowns={},runId=runToken,saveSlot=selectedSaveSlot,creator=creator.snapshot(),settings=creator.settings}
+    local saved = {version=3,records=records,ruleStates=states,cooldowns={},expandedCooldowns=combat.expandedEffects:snapshot(),runId=runToken,saveSlot=selectedSaveSlot,creator=creator.snapshot(),settings=creator.settings}
     for index,profile in ipairs(runtime) do
       local cooldowns={}
       for key,ready in pairs(profile.cooldowns) do
@@ -907,7 +1045,16 @@ end
 promptUi.persist=function() if running then return saveRun() end return true end
 promptUi.requestFailed=function(id) creator.cancelled[id]=true; creator.requests[id]=nil; if running then saveRun() end end
 promptUi.getHotkey=function() return creator.settings.hotkey end
-promptUi.getItems=function() return runtime end
+promptUi.getItems=function()
+  local ledger=combat.powerLedger.details(combat.powerRecords())
+  for index,profile in ipairs(runtime) do
+    local entry=ledger.entries[index]
+    local details={}
+    for _,key in ipairs(entry and entry.power_keys or {}) do details[#details+1]=key.." x"..tostring(ledger.power_usage[key]) end
+    profile.powerSummary=(#details>0 and table.concat(details,", ") or "no distinctive power").."; #"..tostring(index).." "..tostring(entry and entry.source or "unknown")
+  end
+  return runtime
+end
 promptUi.selectOwner=function(player)
   if promptUi.open or promptUi.pending or next(creator.requests) then
     local owner=creator.player(creator.owner); if owner then creator.handoff(owner) end
@@ -940,7 +1087,7 @@ local function context()
   for _,id in ipairs(creator.activeIds) do if id<=0 then activeAvailable=false end end
   if promptUi.pendingKind=="generate" then pending[#pending+1]=promptUi.pending end
   for id in pairs(creator.requests) do if id~=promptUi.pending then pending[#pending+1]=id end end
-  return {session=session,run=runToken,used=slots,run_used=runSlots,count=#records,blocked=capacity(),runtime_contract=13,save_slot=selectedSaveSlot,fresh_run=freshRun,ended_run=endedRun,pending=pending,blanks=creator.count(creator.player(creator.owner)),active_count=activeCount,active_available=activeAvailable,art_count=creator.globalArtUsed}
+  return {session=session,run=runToken,used=slots,run_used=runSlots,count=#records,blocked=capacity(),runtime_contract=18,power_ledger=combat.powerLedger.snapshot(combat.powerRecords()),save_slot=selectedSaveSlot,fresh_run=freshRun,ended_run=endedRun,pending=pending,blanks=creator.count(creator.player(creator.owner)),active_count=activeCount,active_available=activeAvailable,art_count=creator.globalArtUsed}
 end
 promptUi.getContext=context
 local function publishState()
@@ -1012,10 +1159,12 @@ local function pollNativeProfile(allowApply)
           promptUi.pending,promptUi.pendingKind,promptUi.suppressOpen,promptUi.requested=nil,nil,false,false
           promptUi.phase,promptUi.status="editing","Generator kept."
         end
+        pcall(NebiusBridge.Ack,envelope.id)
         return
       end
     end
     if text(envelope.id,1,100) and text(envelope.detail,1,500) then promptUi:receive(envelope.id,envelope.status,envelope.detail,envelope.error_code) end
+    if envelope.status=="error" and text(envelope.id,1,100) then pcall(NebiusBridge.Ack,envelope.id) end
     return
   end
   if not allowedKeys(envelope,{version=true,type=true,id=true,profile=true,delivery=true}) or envelope.version~=1 or envelope.type~="profile" or not text(envelope.id,1,100) then return end
@@ -1147,6 +1296,10 @@ local function restoreRoomStats(saved)
   return true
 end
 function Demo:onGameStarted(isContinued)
+  if combat.pickupCapture then combat.pickupCapture:stop("game_started") end
+  combat.expandedEffects:cleanup()
+  combat.expandedActive=false
+  combat.nativeSecondaryActive=false
   for index,id in ipairs(ids) do slotById[id]=nil; ids[index]=creator.passiveIds[index]; slotById[ids[index]]=index end
   combat.childProfiles,combat.childCount={},0
   freshRun,endedRun=not isContinued,false
@@ -1181,7 +1334,15 @@ function Demo:onGameStarted(isContinued)
       end
       local restored={}
       for index,record in ipairs(saved.records) do
-        local valid=type(record)=="table" and validateProfile(record,record.bridge_request_id)
+        local valid,reason=false,"record must be a table"
+        if type(record)=="table" then valid,reason=validateProfile(record,record.bridge_request_id) end
+        if not valid then
+          local identity=type(record)=="table" and tostring(record.bridge_request_id) or "unknown"
+          local diagnostic="Saved generated item #"..index.." ["..identity.."] rejected: "..tostring(reason)
+          Isaac.DebugString("[Live Sprite Swap Demo] "..diagnostic)
+          blocked="Saved generated item #"..index.." is incompatible. Generation blocked; see log. Original save preserved."
+          break
+        end
         local slot=valid and tonumber(record.sprite_sheet:match("generated_slot_(%d+)"))
         local state=saved.ruleStates[index] or {}
         if not valid or not slot or slot>=GENERATED_ITEM_CAPACITY or restored[slot] or type(state)~="table" then blocked="Invalid generated-item save."; break end
@@ -1204,6 +1365,11 @@ function Demo:onGameStarted(isContinued)
         applyIdentity(index, runtime[index])
       end
       if not blocked and not restoreRoomStats(saved.roomStats) then blocked="Invalid saved room stats." end
+      if not blocked then
+        local expanded=saved.expandedCooldowns
+        if expanded==nil then expanded={} end
+        if not combat.expandedEffects:restore(expanded,function(seed) return creator.player(tostring(seed)) end) then blocked="Invalid saved expanded-effect cooldowns. Original save preserved." end
+      end
     end
   else saveRun() end
   if not blocked and isContinued and not creator.reconcile() then creator.recoveryBlocked=true; blocked="Delivery inventory does not match the saved receipt. Generation blocked; restore matching engine/mod saves before continuing. No items granted." end
@@ -1212,6 +1378,7 @@ function Demo:onGameStarted(isContinued)
     saveRun()
   end
   if blocked then
+    combat.expandedEffects:cleanup()
     if not creator.recoveryBlocked then records,runtime,accepted={},{},{}; roomStatGrants={} end
     showStatus(blocked)
   end
@@ -1238,7 +1405,9 @@ function Demo:onGameStarted(isContinued)
   publishState()
 end
 function Demo:onPreGameExit(shouldSave)
+  if combat.pickupCapture then combat.pickupCapture:stop("game_exit") end
   if shouldSave and running then saveRun() end
+  combat.expandedEffects:cleanup()
   endedRun=not shouldSave and running or false
   running=false; pendingProfileEnvelope=nil
   promptUi:reset()
@@ -1246,10 +1415,13 @@ function Demo:onPreGameExit(shouldSave)
 end
 function Demo:onSaveSlotLoaded(saveSlot,isSelected,rawSlot)
   if isSelected then
+    if combat.pickupCapture then combat.pickupCapture:stop("save_slot_changed") end
     selectedSaveSlot=number(saveSlot,1,3,true) and number(rawSlot,1,3,true) and saveSlot or nil
   end
 end
 function Demo:onPostUpdate()
+  if combat.pickupCapture and combat.pickupCapture:enabled() then combat.pickupCapture:tick(self:pickupProbeContext()) end
+  combat.expandedEffects:tick()
   if running and not blocked then pruneRoomStats() end
   if running and not blocked and combat.pruneChildren then combat.pruneChildren() end
   if pendingStatPlayer then
@@ -1315,7 +1487,10 @@ function combat.pruneChildren()
   end
   combat.childCount=count
 end
-function combat.owner(entity)
+function combat.owner(entity,inspectGuarded)
+  if inspectGuarded then
+    if combat.expandedEffects:suppressed(entity,true) then return nil end
+  elseif combat.secondary(entity) then return nil end
   local seen={}
   for depth=1,8 do
     if not entity or seen[entity] then return nil end
@@ -1364,18 +1539,21 @@ local function applyStatus(enemy, player, status, duration, amount)
   elseif status=="fear" and enemy.AddFear then enemy:AddFear(ref, duration)
   elseif status=="charm" and enemy.AddCharmed then enemy:AddCharmed(ref, duration)
   elseif status=="confusion" and enemy.AddConfusion then enemy:AddConfusion(ref, duration, false)
-  elseif status=="freeze" and enemy.AddFreeze then enemy:AddFreeze(ref, duration) end
+  elseif status=="freeze" and enemy.AddFreeze then enemy:AddFreeze(ref, duration)
+  else return false end
+  return true
 end
 function combat.apply(action,player,event)
   if not event or event.owner~=player or combat.depth>0 then return end
   local enemy=combat.enemy(event.target)
+  local succeeded=false
   if action.type=="damage_burst" then
     if not event.position or not Isaac.FindInRadius or not EntityPartition then return end
     local targets=Isaac.FindInRadius(event.position,action.radius,EntityPartition.ENEMY)
     local count=0
     for _,target in ipairs(targets or {}) do
       if target~=event.target and combat.enemy(target) then
-        combat.damage(target,action.amount,player)
+        if combat.damage(target,action.amount,player) then succeeded=true end
         count=count+1
         if count>=8 then break end
       end
@@ -1391,17 +1569,21 @@ function combat.apply(action,player,event)
           local horizontal,vertical=position.X-player.Position.X,position.Y-player.Position.Y
           if horizontal*horizontal+vertical*vertical<=action.radius*action.radius then
             seen[target]=true
-            combat.damage(target,action.amount,player)
+            if combat.damage(target,action.amount,player) then succeeded=true end
             count=count+1
             if count>=8 then break end
           end
         end
       end
-    elseif event.trigger=="collision" then combat.damage(event.target,action.amount,player)
-    else combat.damage(combat.attacker(event.target),action.amount,player) end
+    elseif event.trigger=="collision" then succeeded=combat.damage(event.target,action.amount,player)==true
+    else succeeded=combat.damage(combat.attacker(event.target),action.amount,player)==true end
   elseif action.type=="apply_status" and enemy then
-    applyStatus(enemy, player, action.status, action.duration, action.amount)
+    combat.depth=combat.depth+1
+    local ok,applied=pcall(applyStatus,enemy,player,action.status,action.duration,action.amount)
+    combat.depth=combat.depth-1
+    succeeded=ok and applied==true
   end
+  return succeeded
 end
 function combat.convert(player,action)
   local input,output=combat.resources[action.input_resource],combat.resources[action.output_resource]
@@ -1593,7 +1775,6 @@ local familiarPlace = {
   end,
   shield = function(familiar, _, player, index)
     moveOrbit(familiar, player, index, 2, 24)
-    if familiar.CanBlockProjectiles ~= nil then familiar.CanBlockProjectiles = true end
     blockShots(familiar)
   end,
   normal = function(familiar, _, player)
@@ -1768,10 +1949,161 @@ local function grantRoomStat(profile, player, action, effectKey)
   refreshStats(player)
   return true
 end
-local function ruleMayRun(profile, rule, ruleIndex, player, cooldownIdentity, event)
+local function conditionCount(player, getter, slot)
+  if not player or type(player[getter])~="function" then return nil end
+  local ok,count=pcall(player[getter],player,slot)
+  if not ok or type(count)~="number" or count~=count or count<0 or count>=math.huge or count%1~=0 then return nil end
+  return count
+end
+local conditionActiveSlots={primary=0,secondary=1,pocket=2,pocket2=3}
+local conditionHandlers = {
+  first_visit = function(condition,context)
+    return combat.conditionQueries.handlers.first_visit(condition,context)
+  end,
+  room_clear_state = function(condition,context)
+    return combat.conditionQueries.handlers.room_clear_state(condition,context)
+  end,
+  stage_at_most = function(condition,context)
+    return combat.conditionQueries.handlers.stage_at_most(condition,context)
+  end,
+  stage_at_least = function(condition,context)
+    return combat.conditionQueries.handlers.stage_at_least(condition,context)
+  end,
+  difficulty_kind = function(condition,context)
+    return combat.conditionQueries.handlers.difficulty_kind(condition,context)
+  end,
+  curse_active = function(condition,context)
+    return combat.conditionQueries.handlers.curse_active(condition,context)
+  end,
+  while_moving = function(condition,context)
+    return combat.conditionQueries.handlers.while_moving(condition,context)
+  end,
+  while_firing = function(condition,context)
+    return combat.conditionQueries.handlers.while_firing(condition,context)
+  end,
+  while_grounded = function(condition,context)
+    return combat.conditionQueries.handlers.while_grounded(condition,context)
+  end,
+  character_kind = function(condition,context)
+    return combat.conditionQueries.handlers.character_kind(condition,context)
+  end,
+  has_collectible = function(condition,context)
+    return combat.conditionQueries.handlers.has_collectible(condition,context)
+  end,
+  has_familiar = function(condition,context)
+    return combat.conditionQueries.handlers.has_familiar(condition,context)
+  end,
+  target_is_boss = function(condition,context)
+    return combat.conditionQueries.handlers.target_is_boss(condition,context)
+  end,
+  target_is_champion = function(condition,context)
+    return combat.conditionQueries.handlers.target_is_champion(condition,context)
+  end,
+  target_health_at_most = function(condition,context)
+    return combat.conditionQueries.handlers.target_health_at_most(condition,context)
+  end,
+  target_health_at_least = function(condition,context)
+    return combat.conditionQueries.handlers.target_health_at_least(condition,context)
+  end,
+  target_has_status = function(condition,context)
+    return combat.conditionQueries.handlers.target_has_status(condition,context)
+  end,
+  damage_at_least = function(condition,context)
+    return combat.conditionQueries.handlers.damage_at_least(condition,context)
+  end,
+  weapon_kind = function(condition,context)
+    return combat.conditionQueries.handlers.weapon_kind(condition,context)
+  end,
+  chance = function(condition)
+    return number(condition.chance,0,1,false) and math.random()<=condition.chance
+  end,
+  luck_chance = function(condition,context)
+    if not number(condition.chance,0,1,false) or not number(condition.luck_scale,0,0.25,false) then return false end
+    return math.random()<=math.max(0,math.min(1,condition.chance+condition.luck_scale*(context.player.Luck or 0)))
+  end,
+  once_per_room = function(_,context)
+    return true,context.prefix.."room:"..tostring(context.roomIndex)
+  end,
+  once_per_floor = function(_,context)
+    return true,context.prefix.."floor"
+  end,
+  once_per_run = function(_,context)
+    return true,tostring(context.player.InitSeed)..":"..tostring(context.ruleIndex)..":run"
+  end,
+  once_per_target = function(_,context)
+    local target=context.event and context.event.target
+    if not target or target.InitSeed==nil then return false end
+    return true,tostring(context.player.InitSeed)..":"..tostring(context.ruleIndex)..":target:"..tostring(target.InitSeed)
+  end,
+  hearts_at_most = function(condition,context)
+    local player=context.player
+    return ((player.GetHearts and player:GetHearts() or 0)+(player.GetSoulHearts and player:GetSoulHearts() or 0))<=condition.amount
+  end,
+  hearts_at_least = function(condition,context)
+    local player=context.player
+    return ((player.GetHearts and player:GetHearts() or 0)+(player.GetSoulHearts and player:GetSoulHearts() or 0))>=condition.amount
+  end,
+  red_hearts_at_most = function(condition,context)
+    local count=conditionCount(context.player,"GetHearts")
+    return count~=nil and count<=condition.amount
+  end,
+  red_hearts_at_least = function(condition,context)
+    local count=conditionCount(context.player,"GetHearts")
+    return count~=nil and count>=condition.amount
+  end,
+  soul_hearts_at_most = function(condition,context)
+    local count=conditionCount(context.player,"GetSoulHearts")
+    return count~=nil and count<=condition.amount
+  end,
+  soul_hearts_at_least = function(condition,context)
+    local count=conditionCount(context.player,"GetSoulHearts")
+    return count~=nil and count>=condition.amount
+  end,
+  empty_red_hearts_at_least = function(condition,context)
+    local capacity=conditionCount(context.player,"GetEffectiveMaxHearts")
+    local filled=conditionCount(context.player,"GetHearts")
+    return capacity~=nil and filled~=nil and math.max(0,capacity-filled)>=condition.amount
+  end,
+  active_charge_at_least = function(condition,context)
+    local slot=conditionActiveSlots[condition.slot]
+    if slot==nil then return false end
+    local item=conditionCount(context.player,"GetActiveItem",slot)
+    if not item or item==0 then return false end
+    local normal=conditionCount(context.player,"GetActiveCharge",slot)
+    local battery=conditionCount(context.player,"GetBatteryCharge",slot)
+    return normal~=nil and battery~=nil and normal+battery>=condition.amount
+  end,
+  room_kind = function(condition)
+    local room=Game():GetRoom()
+    return room and room.GetType and room:GetType()==roomKinds[condition.room] or false
+  end,
+  resource_at_most = function(condition,context)
+    local resource=combat.resources[condition.resource]
+    if not resource or not context.player[resource.read] then return false end
+    local count=context.player[resource.read](context.player)
+    return type(count)=="number" and count<=condition.amount
+  end,
+  resource_at_least = function(condition,context)
+    local resource=combat.resources[condition.resource]
+    if not resource or not context.player[resource.read] then return false end
+    local count=context.player[resource.read](context.player)
+    return type(count)=="number" and count>=condition.amount
+  end,
+  while_flying = function(_,context)
+    local player=context.player
+    return player.CanFly==true or (player.IsFlying and player:IsFlying()) or false
+  end,
+}
+for name in pairs(conditionCatalog.conditions) do assert(conditionHandlers[name],"Missing condition handler: "..name) end
+for name in pairs(conditionHandlers) do assert(conditionCatalog.conditions[name],"Unregistered condition handler: "..name) end
+
+local function ruleMayRun(profile, rule, ruleIndex, player, cooldownIdentity, event, reservedStateKey, deferCommit)
   local needs={}
-  for _,action in ipairs(rule.actions or {}) do
+  local effectPrefix=type(ruleIndex)=="number" and "rule:"..ruleIndex or tostring(ruleIndex)
+  for actionIndex,action in ipairs(rule.actions or {}) do
     if action.type=="convert_resource" then needs[action.input_resource]=(needs[action.input_resource] or 0)+action.cost end
+    if action.type=="coins_to_charge" then needs.coin=(needs.coin or 0)+action.cost end
+    if combat.expandedCatalog.actions[action.type] and not combat.expandedEffects.canRun(profile,player,action,effectPrefix..":"..actionIndex,combat.expandedEvent(action,player,event)) then return false end
   end
   for resource,cost in pairs(needs) do
     local read=combat.resources[resource].read
@@ -1791,49 +2123,41 @@ local function ruleMayRun(profile, rule, ruleIndex, player, cooldownIdentity, ev
   end
   local prefix = tostring(player.InitSeed) .. ":" .. tostring(ruleIndex) .. ":" .. tostring(floorIndex) .. ":"
   local pendingKeys = {}
-  for _, condition in ipairs(rule.conditions or {}) do
-    if condition.type == "chance" and math.random() > (condition.chance or 0) then
-      return false
-    elseif condition.type == "once_per_room" then
-      local key = prefix .. "room:" .. tostring(roomIndex)
-      if profile.ruleState[key] then return false end
-      pendingKeys[#pendingKeys + 1] = key
-    elseif condition.type == "once_per_floor" then
-      local key = prefix .. "floor"
-      if profile.ruleState[key] then return false end
-      pendingKeys[#pendingKeys + 1] = key
-    elseif condition.type == "once_per_run" then
-      local key = tostring(player.InitSeed) .. ":" .. tostring(ruleIndex) .. ":run"
-      if profile.ruleState[key] then return false end
-      pendingKeys[#pendingKeys + 1] = key
-    elseif condition.type == "once_per_target" then
-      local target = event and event.target
-      if not target or target.InitSeed == nil then return false end
-      local key = tostring(player.InitSeed) .. ":" .. tostring(ruleIndex) .. ":target:" .. tostring(target.InitSeed)
-      if profile.ruleState[key] then return false end
-      pendingKeys[#pendingKeys + 1] = key
-    elseif condition.type == "luck_chance" then
-      local luck = player.Luck or 0
-      local chance = math.max(0, math.min(1, (condition.chance or 0) + (condition.luck_scale or 0) * luck))
-      if math.random() > chance then return false end
-    elseif condition.type == "hearts_at_most" or condition.type == "hearts_at_least" then
-      local hearts = (player.GetHearts and player:GetHearts() or 0) + (player.GetSoulHearts and player:GetSoulHearts() or 0)
-      if condition.type == "hearts_at_most" and hearts > condition.amount then return false end
-      if condition.type == "hearts_at_least" and hearts < condition.amount then return false end
-    elseif condition.type == "room_kind" then
-      local room = Game():GetRoom()
-      if not room or not room.GetType or room:GetType() ~= roomKinds[condition.room] then return false end
-    elseif condition.type == "while_flying" then
-      local flying = player.CanFly == true or (player.IsFlying and player:IsFlying())
-      if not flying then return false end
+  local pendingKeySet={}
+  if reservedStateKey then pendingKeys[#pendingKeys+1]=reservedStateKey; pendingKeySet[reservedStateKey]=true end
+  local context={player=player,event=event,prefix=prefix,roomIndex=roomIndex,ruleIndex=ruleIndex}
+  local ordered={}
+  for _,condition in ipairs(rule.conditions or {}) do
+    if not conditionCatalog.conditions[condition.type] or not conditionHandlers[condition.type] then return false end
+    ordered[#ordered+1]=condition
+  end
+  table.sort(ordered,function(left,right)
+    if left.type~=right.type then return left.type<right.type end
+    if left.chance~=right.chance then return (left.chance or 0)<(right.chance or 0) end
+    return (left.luck_scale or 0)<(right.luck_scale or 0)
+  end)
+  for _,category in ipairs({"pure","latch"}) do
+    for _,condition in ipairs(ordered) do
+      if conditionCatalog.conditions[condition.type].category==category then
+        local passed,key=conditionHandlers[condition.type](condition,context)
+        if not passed or (key and profile.ruleState[key]) then return false end
+        if key and not pendingKeySet[key] then pendingKeys[#pendingKeys+1]=key; pendingKeySet[key]=true end
+      end
     end
   end
   if #pendingKeys>0 then
     local count=0; for _ in pairs(profile.ruleState) do count=count+1 end
     if count+#pendingKeys>4096 then return false end
   end
-  for _, key in ipairs(pendingKeys) do profile.ruleState[key] = true end
-  if rule.cooldown then profile.cooldowns[cooldownKey]=frame+rule.cooldown end
+  for _,condition in ipairs(ordered) do
+    if conditionCatalog.conditions[condition.type].category=="probability" and not conditionHandlers[condition.type](condition,context) then return false end
+  end
+  local function commit()
+    for _, key in ipairs(pendingKeys) do profile.ruleState[key] = true end
+    if rule.cooldown then profile.cooldowns[cooldownKey]=frame+rule.cooldown end
+  end
+  if deferCommit then return commit end
+  commit()
   return true
 end
 
@@ -1847,27 +2171,18 @@ local pickupVariants = {
 local friendlyTypes = {
   attack_fly = EntityType.ENTITY_ATTACKFLY, spider = EntityType.ENTITY_SPIDER, pooter = EntityType.ENTITY_POOTER,
 }
-local function friendlyAlive(token, entityType)
-  local found = Isaac.FindByType(entityType)
-  if type(found) ~= "table" then return false end
-  for _, entity in ipairs(found) do
-    local data = entity.GetData and entity:GetData()
-    if data and data.nebiusFriendlyItem == token and (not entity.Exists or entity:Exists()) then return true end
-  end
-  return false
-end
-local function runAction(profile, player, action, effectKey, event)
+local function runLegacyAction(profile, player, action, effectKey, event)
   if event and event.trigger=="player_death" and not deathActions[action.type] then return end
-  if action.type=="convert_resource" then combat.convert(player,action); return end
-  if action.type=="activate_aura" then local key=tostring(player.InitSeed); profile.cooldowns["aura:"..key]=Game():GetFrameCount()+action.duration; profile.auraOwners[key]=true; return end
-  if combat.effects[action.type] then combat.apply(action,player,event); return end
+  if action.type=="convert_resource" then return combat.convert(player,action) end
+  if action.type=="activate_aura" then local key=tostring(player.InitSeed); profile.cooldowns["aura:"..key]=Game():GetFrameCount()+action.duration; profile.auraOwners[key]=true; return true end
+  if combat.effects[action.type] then return combat.apply(action,player,event) end
   if action.type=="refill_charge" then
     if not player.GetActiveItem or not player.SetActiveCharge then return end
     local slot = ActiveSlot and ActiveSlot.SLOT_PRIMARY or 0
     if player:GetActiveItem(slot)==0 then return end
     local current = player.GetActiveCharge and player:GetActiveCharge(slot) or 0
     player:SetActiveCharge(current + action.amount, slot)
-    return
+    return not player.GetActiveCharge or player:GetActiveCharge(slot)>current
   end
   if action.type=="spawn_creep" then
     local variant = creepVariants[action.creep]
@@ -1883,79 +2198,124 @@ local function runAction(profile, player, action, effectKey, event)
       end
     end
     local room = Game():GetRoom()
+    local before=live
     for _ = 1, action.amount or 1 do
       if live>=4 then break end
       local position = room and room.FindFreePickupSpawnPosition and room:FindFreePickupSpawnPosition(player.Position, 0, true) or player.Position
-      local creep = Isaac.Spawn(effectType, variant, 0, position, Vector.Zero, player)
+      local entity = Isaac.Spawn(effectType, variant, 0, position, Vector.Zero, player)
+      local creep = entity and entity.ToEffect and entity:ToEffect()
       if creep then
+        combat.nativeSecondaryActive=true
         if creep.GetData then creep:GetData().nebiusCreep=token end
-        if creep.SetTimeout then pcall(creep.SetTimeout, creep, action.duration) end
-        if creep.SpriteScale and Vector then creep.SpriteScale=Vector(action.radius/40, action.radius/40)
-        elseif creep.Scale then creep.Scale=action.radius/40 end
+        creep:SetTimeout(action.duration)
+        creep.LifeSpan=action.duration
+        creep.CollisionDamage=action.creep=="black" and 0 or 1
+        creep.Scale=action.radius/40
         live=live+1
+      elseif entity and entity.Remove then entity:Remove()
       end
     end
-    return
+    return live>before
   end
-  if grantRoomStat(profile, player, action, effectKey) or grantHeartReward(player, action) then return end
+  if grantRoomStat(profile, player, action, effectKey) or grantHeartReward(player, action) then return true end
   if action.type == "spawn_pickup" then
     local variant = pickupVariants[action.pickup_type]
     if not variant then return end
+    local succeeded=false
     for _ = 1, action.amount or 1 do
       local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 0, true)
       local subtype=action.pickup_subtype and pickupSubtypes[action.pickup_type][action.pickup_subtype] or 0
-      Isaac.Spawn(EntityType.ENTITY_PICKUP, variant, subtype, position, Vector.Zero, player)
+      if Isaac.Spawn(EntityType.ENTITY_PICKUP,variant,subtype,position,Vector.Zero,player) then succeeded=true end
     end
+    return succeeded
   elseif action.type == "spawn_friendly" then
     local spec = friendlySpawn[action.friendly_type]
-    local named = ({ attack_fly = EntityType.ENTITY_ATTACKFLY, spider = EntityType.ENTITY_SPIDER, pooter = EntityType.ENTITY_POOTER, dip = EntityType.ENTITY_DIP })[action.friendly_type]
+    local named = ({ pooter = EntityType.ENTITY_POOTER, dip = EntityType.ENTITY_DIP })[action.friendly_type]
     local entityType = (type(named)=="number" and named>0) and named or (spec and spec.type) or friendlyTypes[action.friendly_type]
     local variant = spec and spec.variant or 0
     local owner=tostring(player.InitSeed)
     local token=profile.friendlyToken..":"..owner
-    local childKey=owner..":"..tostring(entityType)..":"..tostring(variant)
-    if spec and spec.kind=="familiar" then
-      local existing=profile.ownedChildren[childKey] and profile.ownedChildren[childKey].entity
-      if existing and (not existing.Exists or existing:Exists()) then return end
-    elseif not entityType or friendlyAlive(token, entityType) then return end
+    combat.pruneChildren()
+    local ownerCount=0
+    for _,child in pairs(profile.ownedChildren) do if child.owner==owner then ownerCount=ownerCount+1 end end
+    if ownerCount>=32 then return end
     if not entityType or combat.childCount>=256 then return end
     local position = Game():GetRoom():FindFreePickupSpawnPosition(player.Position, 40, true)
     local npc = Isaac.Spawn(entityType, variant, 0, position, Vector.Zero, player)
     if not npc then return end
+    if spec and spec.kind=="familiar" then
+      local familiar=npc.ToFamiliar and npc:ToFamiliar()
+      if not familiar then if npc.Remove then npc:Remove() end; return end
+      familiar.Player=player
+    end
     if npc.GetData then npc:GetData().nebiusFriendlyItem=token; npc:GetData().nebiusFriendlyOwner=player end
+    combat.nativeSecondaryActive=true
+    profile.childSequence=(profile.childSequence or 0)+1
+    local childKey=owner..":"..profile.childSequence
     profile.ownedChildren[childKey]={entity=npc,owner=owner}
     combat.childProfiles[profile.index]=true
     combat.childCount=combat.childCount+1
     if (not spec or spec.kind=="npc") and npc.AddCharmed then npc:AddCharmed(EntityRef(player), -1) end
+    return true
   end
 end
+local function runAction(profile,player,action,effectKey,event,strictSuccess)
+  if combat.expandedCatalog.actions[action.type] then
+    combat.expandedActive=true
+    return combat.expandedEffects:run(profile,player,action,effectKey,combat.expandedEvent(action,player,event))
+  end
+  local result=runLegacyAction(profile,player,action,effectKey,event)
+  return not strictSuccess or result==true
+end
 local function runOneRuleSet(triggerName, player, profile, event)
+  local succeeded=false
   for ruleIndex, rule in ipairs(profile.rules or {}) do
     local eligible=true
+    local strictSuccess=false
+    for _,action in ipairs(rule.actions or {}) do if combat.expandedCatalog.actions[action.type] then strictSuccess=true end end
+    local requiresDamage=false
+    for _,condition in ipairs(rule.conditions or {}) do if condition.type=="damage_at_least" then requiresDamage=true end end
     if triggerName=="player_hurt" then
       local hasCombat=false
-      for _,action in ipairs(rule.actions or {}) do if combat.effects[action.type] then hasCombat=true end end
-      eligible=hasCombat==(event and event.confirmed==true or false)
+      for _,action in ipairs(rule.actions or {}) do if combat.effects[action.type] or action.type=="block_projectiles" or action.type=="reflect_projectiles" then hasCombat=true end end
+      eligible=(hasCombat or requiresDamage)==(event and event.confirmed==true or false)
+    elseif triggerName=="enemy_hit" then
+      local execution=false
+      for _,action in ipairs(rule.actions or {}) do if action.type=="execute_enemy" then execution=true end end
+      eligible=(requiresDamage or execution)==(event and event.confirmed==true or false)
     end
-    if eligible and rule.trigger == triggerName and ruleMayRun(profile, rule, ruleIndex, player, nil, event) then
-      for actionIndex, action in ipairs(rule.actions or {}) do runAction(profile, player, action,"rule:"..ruleIndex..":"..actionIndex,event) end
-      playProfileSound(profile, 0.45)
+    if eligible and rule.trigger == triggerName then
+      local commit=ruleMayRun(profile, rule, ruleIndex, player, nil, event, nil, true)
+      if commit then
+        local applied=false
+        for actionIndex, action in ipairs(rule.actions or {}) do if runAction(profile,player,action,"rule:"..ruleIndex..":"..actionIndex,event,strictSuccess) then applied=true end end
+        if applied then commit(); succeeded=true; playProfileSound(profile,0.45) end
+      end
     end
   end
+  return succeeded
 end
 
 
 local function runActions(profile, player, list, effectPrefix, event)
-  for actionIndex, action in ipairs(list or {}) do runAction(profile, player, action,(effectPrefix or "proc")..":"..actionIndex,event) end
-  playProfileSound(profile, 0.45)
+  local succeeded=false
+  local strictSuccess=false
+  for _,action in ipairs(list or {}) do if combat.expandedCatalog.actions[action.type] then strictSuccess=true end end
+  for actionIndex, action in ipairs(list or {}) do if runAction(profile,player,action,(effectPrefix or "proc")..":"..actionIndex,event,strictSuccess) then succeeded=true end end
+  if succeeded then playProfileSound(profile,0.45) end
+  return succeeded
 end
 local function runProfileRules(trigger,player,event)
   if not running or blocked then return end
-  if event then event.trigger=trigger end
-  eachOwned(byTrigger[trigger], player, function(_, profile) runOneRuleSet(trigger, player, profile,event) end)
+  event=event or {owner=player,position=player.Position}
+  event.trigger=trigger
+  local succeeded=false
+  eachOwned(byTrigger[trigger], player, function(_,profile) if runOneRuleSet(trigger,player,profile,event) then succeeded=true end end)
+  return succeeded
 end
 local function runSystemProc(systemName, player, latchKey, event, onlyIndex)
   if not running or blocked then return end
+  local succeeded=false
   if event then event.trigger=systemName end
   eachOwned(members[systemName], player, function(index, profile)
     if onlyIndex and index~=onlyIndex then return end
@@ -1967,25 +2327,30 @@ local function runSystemProc(systemName, player, latchKey, event, onlyIndex)
     end
     if hasCombat and not hasReward and (not event or event.owner~=player) then return end
     profile.ruleState = profile.ruleState or {}
+    local latchTable,pendingLatch
     if latchKey and not (systemName=="collision" and hasCombat) then
       local playerLatch=tostring(player.InitSeed)..":"..latchKey
       if profile.ruleState[playerLatch] then return end
       if event and event.latches then
         local key=tostring(index)..":"..playerLatch
         if event.latches[key] then return end
-        event.latches[key]=true
+        latchTable,pendingLatch=event.latches,key
       else
         local count=0; for _ in pairs(profile.ruleState) do count=count+1 end
         if count>=4096 then return end
-        profile.ruleState[playerLatch] = true
+        latchTable,pendingLatch=profile.ruleState,playerLatch
       end
     end
     local cooldownIdentity=systemName
     if systemName=="collision" and hasCombat and event and event.target then cooldownIdentity="contact:"..roomStamp()..":"..tostring(event.target.InitSeed or 0) end
-    if ruleMayRun(profile, proc, systemName, player, cooldownIdentity, event) then
-      runActions(profile, player, proc.actions, systemName, event)
+    local commit=ruleMayRun(profile,proc,systemName,player,cooldownIdentity,event,latchTable==profile.ruleState and pendingLatch or nil,true)
+    if commit and runActions(profile,player,proc.actions,systemName,event) then
+      commit()
+      if latchTable then latchTable[pendingLatch]=true end
+      succeeded=true
     end
   end)
+  return succeeded
 end
 local function isEnemy(entity)
   if not entity or (entity.ToPlayer and entity:ToPlayer()) then return false end
@@ -1996,6 +2361,7 @@ local function isEnemy(entity)
   return true
 end
 function Demo:onPostFireTear(tear)
+  if combat.secondary(tear) then return end
   local player=tear.SpawnerEntity and tear.SpawnerEntity:ToPlayer()
   if not player then return end
   if #members.tears == 0 and #members.tear_update == 0 and not byTrigger.tear_fire then return end
@@ -2018,12 +2384,14 @@ function Demo:onPostFireTear(tear)
       if profile.tear_update then data.generatedTearSources[index] = profile.tear_update end
     end)
   end
-  runProfileRules("tear_fire",player)
+  runProfileRules("tear_fire",player,{owner=player,source=tear,velocity=tear.Velocity,position=tear.Position,weapon_kind=combat.eventContext.weapon(tear)})
 end
 local function forPlayers(trigger)
   for p=0,Game():GetNumPlayers()-1 do runProfileRules(trigger,Isaac.GetPlayer(p)) end
 end
 function Demo:onPostNewRoom()
+  if combat.pickupCapture then combat.pickupCapture:stop("new_room") end
+  combat.expandedEffects:clearActors()
   for _,profile in ipairs(runtime) do for key in pairs(profile.cooldowns) do if key:sub(1,5)=="aura:" then profile.cooldowns[key]=nil end end end
   local hadGrants=#roomStatGrants>0
   roomStatGrants={}
@@ -2034,7 +2402,24 @@ function Demo:onPostNewRoom()
 end
 function Demo:onPreSpawnCleanAward() forPlayers("room_clear") end
 function Demo:onPostNewLevel() forPlayers("new_floor") end
-function Demo:onEntityTakeDamage(entity,_,_,source)
+function Demo:onEntityTakeDamage(entity,amount,flags,source,_,extraSource)
+  if combat.nativeSecondaryActive and entity and entity.ToPlayer and entity:ToPlayer()
+    and combat.nativeSecondary(extraSource and extraSource.Entity or source and source.Entity,true) then return false end
+  if (#members.stats>0 or #members.tears>0 or #members.familiar>0) and DamageFlag and type(DamageFlag.DAMAGE_EXPLOSION)=="number" and type(flags)=="number"
+    and math.type(flags)=="integer" and (flags & DamageFlag.DAMAGE_EXPLOSION)~=0 then
+    local player=entity and entity.ToPlayer and entity:ToPlayer()
+    if player then
+      local protected=false
+      for _,list in ipairs({members.stats,members.tears,members.familiar}) do
+        eachOwned(list,player,function(_,profile) if profile.explosionImmune then protected=true end end)
+      end
+      if protected then return false end
+    end
+  end
+  if combat.secondary(extraSource and extraSource.Entity or source and source.Entity) then
+    if entity and entity.GetData then entity:GetData().generatedDamageOwner=nil;entity:GetData().generatedSecondaryDamage=true end
+    return
+  end
   if combat.depth>0 or (#members.familiar==0 and #members.on_kill==0 and not byTrigger.player_hurt and not byTrigger.enemy_hit) then return end
   local player=entity:ToPlayer()
   if player then
@@ -2051,14 +2436,21 @@ function Demo:onEntityTakeDamage(entity,_,_,source)
   local owner=combat.owner(source and source.Entity)
   if entity.GetData and (#members.on_kill>0 or #members.on_hit>0) then
     entity:GetData().generatedDamageOwner=owner
+    entity:GetData().generatedSecondaryDamage=nil
     entity:GetData().generatedDamageFrame=Game():GetFrameCount()
   end
-  if owner then runProfileRules("enemy_hit",owner,{owner=owner,target=entity,position=entity.Position}) end
+  if owner then runProfileRules("enemy_hit",owner,{owner=owner,target=entity,position=entity.Position,weapon_kind=combat.eventContext.weapon(extraSource and extraSource.Entity or source and source.Entity)}) end
 end
-function Demo:onPostEntityTakeDamage(entity,_,_,source)
-  if not byTrigger.player_hurt or combat.depth>0 then return end
+function Demo:onPostEntityTakeDamage(entity,amount,flags,source,_,extraSource)
+  if combat.secondary(extraSource and extraSource.Entity or source and source.Entity) then return end
+  if combat.depth>0 then return end
   local player=entity and entity.ToPlayer and entity:ToPlayer()
-  if player then runProfileRules("player_hurt",player,{owner=player,target=source and source.Entity,position=player.Position,confirmed=true}) end
+  if player then
+    if byTrigger.player_hurt then runProfileRules("player_hurt",player,{owner=player,target=source and source.Entity,position=player.Position,confirmed=true,damage=combat.eventContext.damage(amount,flags)}) end
+  elseif byTrigger.enemy_hit then
+    local owner=combat.owner(source and source.Entity)
+    if owner then runProfileRules("enemy_hit",owner,{owner=owner,target=entity,position=entity.Position,confirmed=true,damage=combat.eventContext.damage(amount,flags),weapon_kind=combat.eventContext.weapon(extraSource and extraSource.Entity or source and source.Entity)}) end
+  end
 end
 local function runPlayerDeath(player)
   if not player then return end
@@ -2071,6 +2463,7 @@ function Demo:onPostPlayerDeath(player)
   runPlayerDeath(player and player.ToPlayer and player:ToPlayer() or player)
 end
 function Demo:onPostEntityKill(entity,killSource)
+  if combat.secondary(killSource and killSource.Entity) then return end
   local player=entity and entity.ToPlayer and entity:ToPlayer()
   if player then runPlayerDeath(player); return end
   if not isEnemy(entity) then return end
@@ -2078,16 +2471,18 @@ function Demo:onPostEntityKill(entity,killSource)
   if #members.on_kill==0 and not (boss and byTrigger.boss_kill) then return end
   local latch="on_kill:" .. tostring(Game():GetLevel():GetCurrentRoomIndex()) .. ":" .. tostring(entity.InitSeed or 0)
   local data=entity.GetData and entity:GetData()
+  if not killSource and data and data.generatedSecondaryDamage then return end
   local owner=data and data.generatedDamageOwner
   if data and data.generatedDamageFrame and Game():GetFrameCount()-data.generatedDamageFrame>300 then owner=nil end
   if killSource then owner=combat.owner(killSource.Entity) end
   if combat.depth>0 then owner=nil end
   if data then data.generatedProcLatches=data.generatedProcLatches or {} end
-  local event={owner=owner,target=entity,position=entity.Position,latches=data and data.generatedProcLatches}
+  local event={owner=owner,target=entity,position=entity.Position,latches=data and data.generatedProcLatches,weapon_kind=combat.eventContext.weapon(killSource and killSource.Entity)}
   if #members.on_kill>0 then for p=0,Game():GetNumPlayers()-1 do runSystemProc("on_kill", Isaac.GetPlayer(p), latch,event) end end
-  if boss and owner then runProfileRules("boss_kill", owner, {owner=owner, target=entity, position=entity.Position}) end
+  if boss and owner then runProfileRules("boss_kill", owner, {owner=owner, target=entity, position=entity.Position,weapon_kind=event.weapon_kind}) end
 end
 function Demo:onPreTearCollision(tear, collider)
+  if combat.secondary(tear) then return end
   if #members.tear_impact == 0 or not isEnemy(collider) then return end
   local player=combat.owner(tear)
   if not player or not tear.GetData then return end
@@ -2095,8 +2490,7 @@ function Demo:onPreTearCollision(tear, collider)
   data.impacted=data.impacted or {}
   eachOwned(members.tear_impact, player, function(index)
     if data.impacted[index] then return end
-    data.impacted[index]=true
-    runSystemProc("tear_impact", player, nil,{owner=player,target=collider,position=collider.Position},index)
+    if runSystemProc("tear_impact", player, nil,{owner=player,target=collider,position=collider.Position,weapon_kind=combat.eventContext.weapon(tear)},index) then data.impacted[index]=true end
   end)
 end
 function Demo:onPrePlayerCollision(player, collider)
@@ -2109,6 +2503,7 @@ function Demo:onPrePlayerCollision(player, collider)
   runSystemProc("collision", player, latch,{owner=player,target=collider,position=collider.Position,latches=data and data.generatedProcLatches})
 end
 function Demo:onPostTearUpdate(tear)
+  if combat.secondary(tear) then return end
   if #members.tears==0 and #members.tear_update==0 then return end
   if not tear or not tear.GetData then return end
   local data = tear:GetData()
@@ -2161,6 +2556,7 @@ function Demo:onPostTearUpdate(tear)
   end
 end
 function Demo:onPostFireBomb(bomb)
+  if combat.secondary(bomb) then return end
   if #members.bomb == 0 or not bomb then return end
   if bomb.GetData and bomb:GetData().generatedBombApplied then return end
   local player = bomb.SpawnerEntity and bomb.SpawnerEntity.ToPlayer and bomb.SpawnerEntity:ToPlayer()
@@ -2183,14 +2579,17 @@ function Demo:onPostFireBomb(bomb)
   end
 end
 local function addWeaponDamage(listName, field, entity)
+  if combat.secondary(entity) then return end
   if #members[listName] == 0 or not entity or not entity.GetData then return end
   local data = entity:GetData()
   local spawner = entity.SpawnerEntity or entity.Parent
   local player = combat.owner(spawner)
   local added = 0
+  local tint
   eachOwned(members[listName], player, function(_, profile)
-    if profile[field] then added = added + profile[field].damage end
+    if profile[field] then added = added + profile[field].damage; tint=profile[field].color or tint end
   end)
+  if tint and entity.SetColor then entity:SetColor(Color(tint.r,tint.g,tint.b,tint.a,0,0,0),2,1,false,false) end
   local current=entity.CollisionDamage or 0
   local previous=data.generatedWeapon
   local base=current
@@ -2226,6 +2625,7 @@ function Demo:onPreProjectileCollision(projectile, collider)
   end
 end
 function Demo:onPostEntityRemove(entity)
+  combat.expandedEffects:removeEntity(entity)
   if #members.familiar==0 then return end
   local familiar = entity and entity.ToFamiliar and entity:ToFamiliar()
   if not familiar or not familiar.GetData then return end
@@ -2239,7 +2639,15 @@ end
 function Demo:onPostPlayerInit(player)
   creator.applyAIsaac(player)
 end
+function Demo:pickupProbeContext()
+  if not running or blocked or (selectedSaveSlot~=2 and selectedSaveSlot~=3) then return nil end
+  return {session=session,run=runToken,room=roomStamp(),frame=Game():GetFrameCount(),save_slot=selectedSaveSlot}
+end
+function Demo:onPostPickupCollision(pickup,collider)
+  if combat.pickupCapture and combat.pickupCapture:enabled() then combat.pickupCapture:after(pickup,collider,self:pickupProbeContext()) end
+end
 function Demo:onPrePickupCollision(pickup,collider)
+  if combat.pickupCapture and combat.pickupCapture:enabled() then combat.pickupCapture:before(pickup,collider,self:pickupProbeContext()) end
   if not pickup or pickup.Variant~=PickupVariant.PICKUP_COLLECTIBLE or not collider or not collider.ToPlayer then return end
   local player=collider:ToPlayer()
   if not player then return end
@@ -2288,7 +2696,7 @@ function Demo:onPostAddCollectible(collectibleType,_,firstTime,_,_,player)
   local profile=index and runtime[index]
   if not profile or firstTime==false then return end
   if profile.affectsStats then
-    if profile.soulHearts~=0 then player:AddSoulHearts(profile.soulHearts) end
+    if profile.soulHearts>0 then player:AddSoulHearts(profile.soulHearts) end
     refreshStats(player)
     pendingStatPlayer = player
   end
@@ -2325,16 +2733,17 @@ function creator.activeReady(item,player,flags,slot)
 end
 function Demo:onPreUseItem(item,_,player,flags,slot)
   if item==creator.singularity then
-    if not running or blocked or not creator.isAIsaac(player) or not player.GetActiveItem or player:GetActiveItem(slot)~=item or promptUi.pending or next(creator.requests) then return {Discharge=false,ShowAnim=false,Remove=false} end
+    if not running or blocked or not creator.isAIsaac(player) or not player.GetActiveItem or player:GetActiveItem(slot)~=item or promptUi.pending or next(creator.requests) then return {Discharge=false} end
     local charge=player.GetActiveCharge and player:GetActiveCharge(slot) or 0
     local battery=player.GetBatteryCharge and player:GetBatteryCharge(slot) or 0
-    if charge+battery<12 then return {Discharge=false,ShowAnim=false,Remove=false} end
+    if charge+battery<12 then return {Discharge=false} end
     return
   end
   if not creator.activeIdSet[item] then return end
-  if not creator.activeReady(item,player,flags,slot) then return {Discharge=false,ShowAnim=false,Remove=false} end
+  if not creator.activeReady(item,player,flags,slot) then return {Discharge=false} end
 end
 function Demo:onPostBombUpdate(bomb)
+  if combat.secondary(bomb) then return end
   if not bomb or not bomb.GetData then return end
   local data=bomb:GetData()
   if data.nebiusBombProc then return end
@@ -2342,7 +2751,7 @@ function Demo:onPostBombUpdate(bomb)
   if not exploding then return end
   data.nebiusBombProc=true
   local owner=combat.owner(bomb.SpawnerEntity or bomb.Parent)
-  if owner then runProfileRules("bomb_explode", owner, {owner=owner, target=bomb, position=bomb.Position}) end
+  if owner then runProfileRules("bomb_explode", owner, {owner=owner, target=bomb, position=bomb.Position,weapon_kind=combat.eventContext.weapon(bomb)}) end
 end
 function Demo:onUsePill(_, player)
   if player then runProfileRules("pill_use", player, {owner=player, position=player.Position}) end
@@ -2445,6 +2854,48 @@ function Demo:onPickupUpdate(pickup)
 end
 function Demo:onExecuteCmd(command,parameters)
   if command~="nebius" then return end
+  local function probeStatus(message)
+    showStatus(message)
+    if Isaac.ConsoleOutput then Isaac.ConsoleOutput(message.."\n") end
+  end
+  if parameters=="probe pickups on" then
+    local context=self:pickupProbeContext()
+    if not context then probeStatus("Pickup capture requires an active run on Save File 2 or 3.");return end
+    local available=type(ModCallbacks.MC_PRE_PICKUP_COLLISION)=="number" and type(ModCallbacks.MC_POST_PICKUP_COLLISION)=="number"
+    if not available then probeStatus("Pickup pre/post collision callbacks are unavailable.");return end
+    if not combat.pickupCapture then
+      if type(pickupCaptureModule)~="table" or type(pickupCaptureModule.new)~="function"
+        or type(pickupProbeModule)~="table" or type(pickupProbeModule.new)~="function" then
+        probeStatus("Pickup capture modules unavailable. Restart Isaac after mod sync.");return
+      end
+      combat.pickupCapture=pickupCaptureModule.new(pickupProbeModule.new(),function(packet)
+        Isaac.DebugString("[Pickup Probe] "..bridgeJson.encode(packet))
+      end)
+    end
+    local _,message=combat.pickupCapture:start(context,available)
+    probeStatus(message)
+    return
+  end
+  if parameters=="probe pickups off" then
+    if combat.pickupCapture then combat.pickupCapture:stop("operator") end
+    probeStatus("Pickup capture disabled.");return
+  end
+  if parameters=="probe pickups status" then
+    local status=combat.pickupCapture and combat.pickupCapture:status() or {enabled=false,recorded=0,recordLimit=128}
+    probeStatus(status.enabled and "Pickup capture active: "..tostring(status.recorded).."/128 records." or "Pickup capture disabled.")
+    return
+  end
+  if parameters=="audit vanilla" then
+    local snapshot=vanillaAudit.capture({
+      gameVersion="J273",
+      runtimeVersion="REPENTOGON dev v1.9.7.12",
+      capturedAt=os.date("!%Y-%m-%dT%H:%M:%SZ"),
+      environmentNotes="Live Sprite Swap Demo and External Item Descriptions enabled; capture from restarted REPENTOGON dev session"
+    })
+    Isaac.DebugString("[Vanilla Mechanic Audit] captured "..tostring(snapshot.counts.total).." items; automatic saving is disabled")
+    showStatus("Vanilla audit captured; automatic saving is disabled.")
+    return
+  end
   local key=parameters:match("^hotkey (KEY_[A-Z0-9_]+)$")
   if key and Keyboard[key] then creator.settings.hotkey=key; saveRun(); showStatus("Creator hotkey: "..key); return end
   local replacement=parameters:match("^replace (on)$") or parameters:match("^replace (off)$")
@@ -2458,7 +2909,7 @@ function Demo:onExecuteCmd(command,parameters)
     promptUi.phase,promptUi.status="editing",kept
     saveRun(); return
   end
-  showStatus("nebius hotkey KEY_8 | nebius replace on/off | nebius cancel")
+  showStatus("nebius hotkey KEY_8 | nebius replace on/off | nebius cancel | nebius audit vanilla")
 end
 function creator.loadItemArt(profile)
   if not profile then return false end
@@ -2564,6 +3015,37 @@ end
 function Demo:onPostPauseScreenRender()
   promptUi:renderPauseScreen()
 end
+function Demo:onInputAction(_,hook,action)
+  -- The library is drawn over Isaac's pause menu.  Consume menu *triggers*
+  -- while it is open so the underlying pause screen cannot also navigate,
+  -- confirm a selection, or close itself.  Held controller actions remain
+  -- available to the library; only its physical keyboard keys are suppressed
+  -- at the held-action layer.
+  if not promptUi.pauseLibrary or not InputHook or not ButtonAction then return end
+  local blocked={
+    ButtonAction.ACTION_MENUUP,ButtonAction.ACTION_MENUDOWN,
+    ButtonAction.ACTION_MENULEFT,ButtonAction.ACTION_MENURIGHT,
+    ButtonAction.ACTION_MENUCONFIRM,ButtonAction.ACTION_MENUBACK,
+    ButtonAction.ACTION_PAUSE,
+  }
+  for _,candidate in ipairs(blocked) do
+    if candidate and action==candidate then
+      if hook==InputHook.IS_ACTION_TRIGGERED then return false end
+      if hook~=InputHook.IS_ACTION_PRESSED or not Keyboard or not Input or not Input.IsButtonPressed then return end
+      local keys={
+        [ButtonAction.ACTION_MENUUP]={"KEY_UP"},[ButtonAction.ACTION_MENUDOWN]={"KEY_DOWN"},
+        [ButtonAction.ACTION_MENULEFT]={"KEY_LEFT"},[ButtonAction.ACTION_MENURIGHT]={"KEY_RIGHT"},
+        [ButtonAction.ACTION_MENUCONFIRM]={"KEY_ENTER","KEY_KP_ENTER","KEY_SPACE"},
+        [ButtonAction.ACTION_MENUBACK]={"KEY_ESCAPE"},[ButtonAction.ACTION_PAUSE]={"KEY_ESCAPE"},
+      }
+      for _,name in ipairs(keys[action] or {}) do
+        local code=Keyboard[name]
+        if code and Input.IsButtonPressed(code,0) then return false end
+      end
+      return
+    end
+  end
+end
 local callbacks={
  MC_POST_SAVESLOT_LOAD="onSaveSlotLoaded",
  MC_POST_GAME_STARTED="onGameStarted",MC_PRE_GAME_EXIT="onPreGameExit",MC_PRE_UPDATE="onPreUpdate",MC_POST_UPDATE="onPostUpdate",
@@ -2571,7 +3053,8 @@ local callbacks={
  MC_PRE_SPAWN_CLEAN_AWARD="onPreSpawnCleanAward",MC_ENTITY_TAKE_DMG="onEntityTakeDamage",
  MC_POST_NEW_LEVEL="onPostNewLevel",MC_POST_ADD_COLLECTIBLE="onPostAddCollectible",MC_POST_RENDER="onPostRender",
  MC_PRE_HISTORYHUD_RENDER="onPreHistoryHudRender",MC_POST_HISTORYHUD_RENDER="onPostHistoryHudRender",MC_POST_ENTITY_KILL="onPostEntityKill",
- MC_POST_PAUSE_SCREEN_RENDER="onPostPauseScreenRender",
+  MC_POST_PAUSE_SCREEN_RENDER="onPostPauseScreenRender",
+  MC_INPUT_ACTION="onInputAction",
  MC_PRE_TEAR_COLLISION="onPreTearCollision",MC_PRE_PLAYER_COLLISION="onPrePlayerCollision",
  MC_FAMILIAR_UPDATE="onFamiliarUpdate",MC_POST_TEAR_UPDATE="onPostTearUpdate",
  MC_POST_FIRE_BOMB="onPostFireBomb",MC_POST_LASER_UPDATE="onPostLaserUpdate",
@@ -2583,6 +3066,7 @@ local callbacks={
  MC_POST_BOMB_UPDATE="onPostBombUpdate",MC_USE_PILL="onUsePill",MC_USE_CARD="onUseCard",
  MC_POST_PLAYER_DEATH="onPostPlayerDeath",
  MC_POST_PLAYER_INIT="onPostPlayerInit",MC_PRE_PICKUP_COLLISION="onPrePickupCollision",
+ MC_POST_PICKUP_COLLISION="onPostPickupCollision",
 }
 for callback,method in pairs(callbacks) do if ModCallbacks[callback] then Demo:AddCallback(ModCallbacks[callback],Demo[method]) end end
 Demo:AddCallback(ModCallbacks.MC_POST_PICKUP_RENDER,Demo.onPickupRender,PickupVariant.PICKUP_COLLECTIBLE)

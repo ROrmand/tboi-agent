@@ -25,6 +25,14 @@ test('prepare writes 128 familiar animation slots without replacing an existing 
   const animation = await readFile(path.join(familiarDirectory, familiarAnimationFile(63)), 'utf8');
   assert.match(animation, /Name="Idle"/);
   assert.match(animation, /Name="Float"/);
+  const blankAnimation = await readFile(path.join(familiarDirectory, 'generated_familiar_blank.anm2'), 'utf8');
+  const slotAnimations = await Promise.all(Array.from({ length: ART_SLOT_COUNT }, (_, slot) =>
+    readFile(path.join(familiarDirectory, familiarAnimationFile(slot)), 'utf8')));
+  for (const source of [blankAnimation, ...slotAnimations]) {
+    for (const name of ['FloatDown', 'FloatUp', 'FloatSide']) {
+      assert.ok(source.includes(`Name="${name}"`));
+    }
+  }
   assert.match(animation, /Name="Hop"/);
   assert.match(animation, /Name="Spin"/);
   assert.match(animation, /<Nulls\/>/);

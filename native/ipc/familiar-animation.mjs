@@ -6,6 +6,9 @@ export const FAMILIAR_FRAME_SIZE = 32;
 export const FAMILIAR_CLIPS = [
   { name: "Idle", start: 0, count: 2 },
   { name: "Float", start: 2, count: 2 },
+  { name: "FloatDown", start: 2, count: 2 },
+  { name: "FloatUp", start: 2, count: 2 },
+  { name: "FloatSide", start: 2, count: 2 },
   { name: "Hop", start: 4, count: 2 },
   { name: "Spin", start: 6, count: 2 },
 ];

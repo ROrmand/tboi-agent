@@ -20,7 +20,8 @@ test('product runtime consumes native profiles without legacy generated-Lua poll
 });
 
 test('product runtime constrains generated artwork to the bridge asset namespace', () => {
-  assert.match(runtime, /generated_slot_\[0-9\]\[0-9\]%.png/);
+  assert.ok(runtime.includes('number(slot,0,GENERATED_ITEM_CAPACITY-1,true)'));
+  assert.ok(runtime.includes('profile.sprite_sheet~=string.format("gfx/items/collectibles/generated_slot_%02d.png",slot)'));
   assert.match(runtime, /Renderer\.LoadImage, nativePedestalSheet/);
   assert.match(runtime, /SourceQuad\.NewFromRectangle, Vector\(0, 0\), 32, 32, false/);
 });

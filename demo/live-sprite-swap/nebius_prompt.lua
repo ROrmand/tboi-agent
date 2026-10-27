@@ -437,11 +437,14 @@ function Prompt:editMenu()
     return
   end
   local buttons=self:menuButtons()
-  if self:keyPressed("KEY_LEFT",true) then self.menuFocus=(self.menuFocus-2)%#buttons+1 end
-  if self:keyPressed("KEY_RIGHT",true) then self.menuFocus=self.menuFocus%#buttons+1 end
-  if self:keyPressed("KEY_UP",true) then self.detailScroll=math.max(0,self.detailScroll-1) end
-  if self:keyPressed("KEY_DOWN",true) then self.detailScroll=math.min(self.maxDetailScroll or 0,self.detailScroll+1) end
-  if self:confirmPressed() then
+  -- Keep the library's keyboard controls independent of Isaac's pause-menu
+  -- action bindings.  Arrow keys and WASD are equivalent; Space and Enter
+  -- activate only the currently focused library button.
+  if self:keyPressed("KEY_LEFT",true) or self:keyPressed("KEY_A",true,false) then self.menuFocus=(self.menuFocus-2)%#buttons+1 end
+  if self:keyPressed("KEY_RIGHT",true) or self:keyPressed("KEY_D",true,false) then self.menuFocus=self.menuFocus%#buttons+1 end
+  if self:keyPressed("KEY_UP",true) or self:keyPressed("KEY_W",true,false) then self.detailScroll=math.max(0,self.detailScroll-1) end
+  if self:keyPressed("KEY_DOWN",true) or self:keyPressed("KEY_S",true,false) then self.detailScroll=math.min(self.maxDetailScroll or 0,self.detailScroll+1) end
+  if self:keyPressed("KEY_SPACE",false,false) or self:confirmPressed() then
     local button=buttons[self.menuFocus]
     if button and button.enabled~=false then button.action() end
   end
@@ -449,6 +452,7 @@ end
 
 function Prompt:descriptorLines(profile,maxChars)
   local parts={"DESCRIPTION: "..(profile.description or ""),"EFFECTS: "..(profile.summary or "No effect details available.")}
+  if profile.powerSummary then parts[#parts+1]="RUN POWERS: "..profile.powerSummary end
   local groups={
     {"SYSTEMS",profile.systems},
     {"TEAR FLAGS",profile.tearFlagNames},

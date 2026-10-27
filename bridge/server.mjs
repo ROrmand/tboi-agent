@@ -9,6 +9,7 @@ import {atomicWrite, toLua} from './runtime.mjs';
 import { NativePipeServer } from '../native/ipc/server.mjs';
 import { SlotLedger } from '../native/ipc/slot-ledger.mjs';
 import { assertRuntimeCompatible } from './compatibility.mjs';
+import { powerContextArguments, assertNoPendingPowerDelivery } from './power-context.mjs';
 import { syncMod } from './sync-mod.mjs';
 import { requestRandomSentence } from './sentence.mjs';
 import { createGenerationTimer, noteGeneratorLine } from './timing.mjs';
@@ -236,6 +237,7 @@ function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, it
   if (id === undefined) id = gameContext.run + '_' + randomUUID().slice(0, 99 - gameContext.run.length);
   if (!id.startsWith(gameContext.run + '_')) throw Error('Generation request is from another run.');
   if (jobs.has(id)) return jobs.get(id);
+  assertNoPendingPowerDelivery(jobStore.records.values(), gameContext.run);
   if (delivery !== undefined) {
     const keys = Object.keys(delivery || {});
     const ownerOk = typeof delivery?.owner === "string" && /^-?\d{1,40}$/.test(delivery.owner);
@@ -259,6 +261,7 @@ function startJob(prompt, id, writeGameStatus = false, quality = 3, delivery, it
 }
 
 function spawnGenerator(job, args, writeGameStatus, finishOnClose) {
+  args = [...args, '--generation-source', job.delivery?.mode === 'singularity' ? 'Singularity' : job.auto ? 'Generator' : 'Creator'];
   const child = spawn(process.execPath, [generator, ...args], {
     cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
   });
@@ -304,7 +307,7 @@ async function prepareJob(job, prompt, writeGameStatus) {
   assertRuntimeCompatible(gameContext);
   if (job.auto) {
     const designPath = path.join(outputDirectory, `design-${job.id}.json`);
-    await spawnGenerator(job, ["--auto", "--design-only", "--no-image", "--quality", String(job.quality), "--request-id", job.id, "--item-type", job.itemType, "--design-out", designPath], writeGameStatus, false);
+    await spawnGenerator(job, ["--auto", "--design-only", "--no-image", "--quality", String(job.quality), "--request-id", job.id, "--item-type", job.itemType, "--design-out", designPath, ...powerContextArguments(gameContext)], writeGameStatus, false);
     if (job.completedAt) return;
     if (!matchesCurrentRun(job)) throw Error('Run ended or changed before artwork reservation.');
     assertRuntimeCompatible(gameContext);
@@ -317,7 +320,7 @@ async function prepareJob(job, prompt, writeGameStatus) {
   job.artSlot = slotLedger.reserve(gameContext);
   job.state = 'reserved';
   jobStore.put(job);
-  await spawnGenerator(job, ["--prompt", prompt, "--quality", String(job.quality), "--request-id", job.id, "--art-slot", String(job.artSlot), "--item-type", job.itemType], writeGameStatus, true);
+  await spawnGenerator(job, ["--prompt", prompt, "--quality", String(job.quality), "--request-id", job.id, "--art-slot", String(job.artSlot), "--item-type", job.itemType, ...powerContextArguments(gameContext)], writeGameStatus, true);
 }
 
 async function finishJob(job, error, writeGameStatus) {

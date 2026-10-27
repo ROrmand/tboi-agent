@@ -11,8 +11,10 @@ Thumbs.db
 runtime/generated/
 runtime/mod-backup-*/
 runtime/*.err
-work/test-tmp/
-work/repentogon-v1.1.3*/
+work/*
+!work/README.md
+.test-*.txt
+**/sync-receipt.json
 demo/live-sprite-swap/generated_profile.lua
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item.png
 demo/live-sprite-swap/resources/gfx/items/collectibles/generated_item_*.png
@@ -22,3 +24,5 @@ demo/live-sprite-swap/art-reservations.json*
 
 # Reservation guard stays with the installed mod ledger.
 **/art-reservations.json.guard
+
+HACKATHON_SUBMISSION.md

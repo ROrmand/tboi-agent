@@ -1,4 +1,4 @@
-import { access, copyFile, cp, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { access, copyFile, cp, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -43,6 +43,7 @@ try {
   }
   for (const file of runtimeFiles) await copyFile(path.join(buildDirectory, file), path.join(repentogonDirectory, file));
   for (const directory of runtimeDirectories) await cp(path.join(buildDirectory, directory), path.join(repentogonDirectory, directory), { recursive: true });
+  await overlaySignedFreetype(repentogonDirectory, backupDirectory);
 } catch (error) {
   await restore(backupDirectory);
   throw error;
@@ -61,6 +62,52 @@ for (const essential of ["packed/graphics.a", "packed/config.a", "scripts/main.l
 console.log(`Restored matching NebiusBridge runtime files and resources to ${repentogonDirectory}`);
 console.log(`Previous runtime set backed up at ${backupDirectory}`);
 console.log("Start Isaac through the REPENTOGON launcher. Run this command again after a REPENTOGON update if sentence delivery stops.");
+
+async function overlaySignedFreetype(repentogonDirectory, backupDirectory) {
+  const installed = path.join(repentogonDirectory, "freetype.dll");
+  if (await authenticodeStatus(installed) === "Valid") return;
+  const signed = await findSignedFreetype(repentogonDirectory, backupDirectory);
+  if (!signed) {
+    console.log("Installed freetype.dll is unsigned; Smart App Control may block Isaac from loading REPENTOGON.");
+    return;
+  }
+  await copyFile(signed, installed);
+  if (await authenticodeStatus(installed) !== "Valid") {
+    throw Error("Signed freetype overlay failed Authenticode verification.");
+  }
+  console.log(`Overlaid Authenticode-signed freetype.dll from ${signed} so Smart App Control can load REPENTOGON.`);
+}
+
+async function findSignedFreetype(repentogonDirectory, backupDirectory) {
+  const candidates = [];
+  if (backupDirectory) candidates.push(path.join(backupDirectory, "freetype.dll"));
+  for (const entry of await readdir(repentogonDirectory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("nebius-")) continue;
+    candidates.push(path.join(repentogonDirectory, entry.name, "freetype.dll"));
+  }
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      if (await authenticodeStatus(candidate) === "Valid") return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+async function authenticodeStatus(file) {
+  const { stdout } = await execFileAsync("powershell.exe", [
+    "-NoProfile",
+    "-Command",
+    `(Get-AuthenticodeSignature -LiteralPath ${powershellLiteral(file)}).Status`,
+  ]);
+  return stdout.trim();
+}
+
+function powershellLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
 
 function containsBridgeBinding(bytes) {
   return bytes.includes(Buffer.from("NebiusBridge", "utf8"))

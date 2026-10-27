@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "exporterVersion": "1.0.0",
+  "provenance": {
+    "kind": "fixture",
+    "source": "Authored synthetic acceptance fixture; NOT a live Isaac export",
+    "gameVersion": "synthetic-fixture",
+    "runtimeVersion": "mock-runtime",
+    "capturedAt": "2026-10-24T00:00:00Z",
+    "environmentNotes": "IDs, names, qualities and descriptions are invented solely for tests."
+  },
+  "scope": {
+    "kind": "vanilla-enum-range",
+    "firstId": 1,
+    "lastId": 9,
+    "enumLimitExclusive": 10,
+    "itemConfigListSize": 12,
+    "absentIds": [6]
+  },
+  "counts": { "total": 8, "quality": { "0": 2, "1": 1, "2": 2, "3": 1, "4": 2, "other": 0 } },
+  "collectibles": [
+    { "id": 1, "name": "Fixture stat", "quality": 0, "type": 1, "tags": 0, "description": "Short ItemConfig text" },
+    { "id": 2, "name": "Fixture reusable", "quality": 1, "type": 1, "tags": 2 },
+    { "id": 3, "name": "Fixture system", "quality": 2, "type": 3, "tags": 4 },
+    { "id": 4, "name": "Fixture exclusion", "quality": 3, "type": 3, "tags": 8 },
+    { "id": 5, "name": "Fixture unknown", "quality": 4, "type": 1, "tags": 16 },
+    { "id": 7, "name": "Fixture missing", "quality": 4, "type": 1, "tags": 32, "description": "Not an EID substitute", "hidden": true },
+    { "id": 8, "name": "Fixture repeated", "quality": 2, "type": 1, "tags": 0 },
+    { "id": 9, "name": "Fixture empty", "quality": 0, "type": 1, "tags": 0 }
+  ]
+}

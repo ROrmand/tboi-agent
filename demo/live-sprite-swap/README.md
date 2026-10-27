@@ -108,9 +108,9 @@ Pedestals and explicit library previews remain independent of Extra HUD Off.
 Open Isaac's pause screen and choose the lower-right **VIEW AI ITEMS [TAB]**
 button (or press Tab). Each accepted item in this run has a page with its name,
 icon, Q0-Q4 quality, description, actual effect summary, enabled systems, and
-tear/familiar/bomb flags. PREV/NEXT page through items; UP/DOWN scroll details.
-Use the mouse, or Left/Right and Enter to activate buttons; Escape or Back
-returns to the pause screen. This viewer does not affect Creator drafts or a
+tear/familiar/bomb flags. PREV/NEXT page through items; Up/Down (or W/S) scroll
+details. Use the mouse, or Left/Right (or A/D) and Space or Enter to activate
+buttons; Escape returns to the pause screen. This viewer does not affect Creator drafts or a
 pending generation request. Continue restores descriptors from existing run
 profiles; a new run clears them.
 

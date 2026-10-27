@@ -1,0 +1,44 @@
+{
+  "version": 5,
+  "singletons": ["power.flight"],
+  "profile_sources": [
+    {"system":"stats","path":["stats","flying"],"equals":true,"powers":["power.flight"]},
+    {"system":"stats","path":["stats","explosion_immunity"],"equals":true,"powers":["power.explosion_immunity"]},
+    {"system":"tears","path":["tear_profile","flags"],"each":true,"values":{
+      "homing":["power.homing"],"spectral":["power.spectral"],"piercing":["power.piercing"],"poison":["power.poison"],"burn":["power.burn"],"slow":["power.slow"],"fear":["power.fear"],"charm":["power.charm"],"bounce":["power.bounce"],"split":["power.split"],"orbit":["power.orbit"],"glow":["power.glow"],"explosive":["power.explosive","power.explosion_immunity"],"confusion":["power.confusion"],"knockback":["power.knockback"],"continuum":["power.continuum"],"boomerang":["power.boomerang"],"grow":["power.grow"],"shrink":["power.shrink"],"sticky":["power.sticky"],"wiggle":["power.wiggle"],"slowing_creep":["power.slow"]
+    }},
+    {"system":"familiar","path":["familiar","attack","flags"],"each":true,"values":{
+      "homing":["power.homing"],"spectral":["power.spectral"],"piercing":["power.piercing"],"poison":["power.poison"],"burn":["power.burn"],"slow":["power.slow"],"fear":["power.fear"],"charm":["power.charm"],"bounce":["power.bounce"],"split":["power.split"],"orbit":["power.orbit"],"glow":["power.glow"],"explosive":["power.explosive","power.explosion_immunity"],"confusion":["power.confusion"],"knockback":["power.knockback"],"continuum":["power.continuum"],"boomerang":["power.boomerang"],"grow":["power.grow"],"shrink":["power.shrink"],"sticky":["power.sticky"],"wiggle":["power.wiggle"],"slowing_creep":["power.slow"]
+    }},
+    {"system":"familiar","path":["familiar","type"],"values":{"sentry":["power.familiar_shots"],"normal":["power.familiar_shots"],"melee":["power.contact_damage"],"orbit_contact":["power.contact_damage"],"shield":["power.contact_damage","power.projectile_blocking","power.shielding"]}},
+    {"system":"tear_update","path":["tear_update","behavior"],"values":{"home":["power.homing"],"pulse":["power.pulse"],"shrink":["power.shrink"],"spiral":["power.spiral"],"accelerate":["power.acceleration"]}},
+    {"system":"aura","path":["aura","type"],"values":{"damage":["power.damage_aura"],"slow":["power.slow"],"burn":["power.burn"],"fear":["power.fear"],"charm":["power.charm"],"poison":["power.poison"],"confusion":["power.confusion"]}},
+    {"system":"bomb","path":["bomb"],"present":true,"powers":["power.bomb_damage"]},
+    {"system":"bomb","path":["bomb","flags"],"each":true,"values":{"poison":["power.poison"],"burn":["power.burn"],"fear":["power.fear"]}},
+    {"system":"laser","path":["laser"],"present":true,"powers":["power.laser_damage"]},
+    {"system":"knife","path":["knife"],"present":true,"powers":["power.knife_damage"]},
+    {"system":"active","path":["active","effect"],"values":{"radial_burst":["power.damage_burst"]}}
+  ],
+  "action_containers": [
+    {"system":"rules","path":["rules"],"each":true,"exclude_triggers":["enemy_hit","player_hurt"]},
+    {"system":"on_hit","path":["rules"],"each":true,"include_triggers":["enemy_hit","player_hurt"]},
+    {"system":"on_kill","path":["on_kill"]},
+    {"system":"tear_impact","path":["tear_impact"]},
+    {"system":"collision","path":["collision"]}
+  ],
+  "action_sources": [
+    {"type":"apply_status","field":"status","values":{"slow":["power.slow"],"burn":["power.burn"],"fear":["power.fear"],"poison":["power.poison"],"charm":["power.charm"],"confusion":["power.confusion"],"freeze":["power.freeze"]}},
+    {"type":"spawn_creep","field":"creep","values":{"black":["power.slow"],"red":["power.creep_damage"],"green":["power.creep_damage"],"yellow":["power.creep_damage"]}},
+    {"type":"spawn_friendly","field":"friendly_type","values":{"attack_fly":["power.summon.attack_fly"],"spider":["power.summon.spider"],"pooter":["power.summon.pooter"],"dip":["power.summon.dip"],"minisaac":["power.summon.minisaac"]}},
+    {"type":"damage_burst","powers":["power.damage_burst"]},
+    {"type":"retaliate","powers":["power.retaliation"]},
+    {"type":"extra_tears","powers":["power.extra_tears"]},
+    {"type":"execute_enemy","powers":["power.execution"]},
+    {"type":"target_impulse","field":"direction","values":{"push":["power.knockback"],"pull":["power.pull"]}},
+    {"type":"block_projectiles","powers":["power.projectile_blocking"]},
+    {"type":"reflect_projectiles","powers":["power.projectile_reflection"]},
+    {"type":"dash","powers":["power.dash"]},
+    {"type":"temporary_ally","powers":["power.summon.pooter"]}
+  ],
+  "ignored_actions": ["spawn_pickup","grant_soul_hearts","grant_half_red_hearts","grant_full_red_hearts","grant_black_hearts","grant_eternal_hearts","grant_bone_hearts","grant_gold_hearts","grant_rotten_hearts","grant_heart_containers","grant_stat","convert_resource","refill_charge","activate_aura","coins_to_charge"]
+}

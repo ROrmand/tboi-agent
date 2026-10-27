@@ -211,3 +211,21 @@ test("a marked callback keeps its proc and a stats system sets the flag", () => 
   assert.equal(profile.tear_impact.actions[0].type, "spawn_pickup");
   assert.equal(profile.collision.actions[0].type, "spawn_pickup");
 });
+
+
+test("luck-based statuses keep zero cooldown during repair", () => {
+  const proc = { cooldown: 0, conditions: [{ type: "luck_chance", chance: 0.2, luck_scale: 0.05 }], actions: [{ type: "apply_status", status: "poison", amount: 1, duration: 90 }] };
+  const profile = repairProfile({ systems: ["tear_impact"], rules: [], tear_impact: structuredClone(proc) }, "A venomous shard.");
+  assert.equal(profile.tear_impact.cooldown, 0);
+  assert.deepEqual(profile.tear_impact.conditions, proc.conditions);
+  assert.deepEqual(profile.tear_impact.actions, proc.actions);
+});
+
+test("relocated statuses preserve luck and zero cooldown but burst guards remain", () => {
+  const condition = { type: "luck_chance", chance: 0.2, luck_scale: 0.05 };
+  const profile = repairProfile({ systems: ["rules"], rules: [{ trigger: "room_clear", cooldown: 0, conditions: [condition], actions: [{ type: "apply_status", status: "slow", amount: 1, duration: 90 }] }] }, "A frosty shard.");
+  assert.equal(profile.tear_impact.cooldown, 0);
+  assert.deepEqual(profile.tear_impact.conditions, [condition]);
+  const guarded = repairProfile({ systems: ["on_kill"], rules: [], on_kill: { cooldown: 0, conditions: [condition], actions: [{ type: "damage_burst", amount: 1, radius: 80 }] } }, "A volatile shard.");
+  assert.equal(guarded.on_kill.cooldown, 30);
+});

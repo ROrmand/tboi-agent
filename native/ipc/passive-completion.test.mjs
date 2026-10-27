@@ -3,9 +3,12 @@ import test from 'node:test';
 
 import { readFile } from 'node:fs/promises';
 import { LuaFactory } from 'wasmoon';
+import { familiarAnimationXml } from './familiar-animation.mjs';
 
 const mainSource = await readFile(new URL('../../demo/live-sprite-swap/main.lua', import.meta.url), 'utf8');
 const promptSource = await readFile(new URL('../../demo/live-sprite-swap/nebius_prompt.lua', import.meta.url), 'utf8');
+const conditionSource = await readFile(new URL('../../demo/live-sprite-swap/condition_metadata.lua', import.meta.url), 'utf8');
+const moduleSources = Object.fromEntries(await Promise.all(['expanded_conditions', 'event_context', 'power_ledger', 'expanded_effects', 'effect_metadata', 'vanilla_audit', 'pickup_probe', 'pickup_capture'].map(async name => [name, await readFile(new URL('../../demo/live-sprite-swap/' + name + '.lua', import.meta.url), 'utf8')])));
 const factory = new LuaFactory();
 
 const mocks = `
@@ -52,7 +55,7 @@ function Game() return { GetFrameCount=function() return frame end, GetNumPlayer
  GetHUD=function() return hud end,
  GetRoom=function() return { FindFreePickupSpawnPosition=function(_, position) return position end } end,
  GetLevel=function() return { GetCurrentRoomIndex=function() return roomIndex end, GetAbsoluteStage=function() return stage end } end } end
-Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) if name=="AI Item" then return 797 end; local generator=name:match("^Generator (%d+)$"); if generator then return 820+tonumber(generator) end; if name:match("^Generated Active") then return 798+tonumber(name:match("(%d+)$")) end; return 733+tonumber(name:match("(%d+)$")) end,
+Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByName=function(name) if name=="AI Item" then return 797 end; if name=="Singularity Terminal" then return 900 end; local generator=name:match("^Generator (%d+)$"); if generator then return 820+tonumber(generator) end; if name:match("^Generated Active") then return 798+tonumber(name:match("(%d+)$")) end; return 733+tonumber(name:match("(%d+)$")) end,
  GetSoundIdByName=function() return 1 end, GetTime=function() return now+frame*34 end, GetPlayer=function() return player end,
  FindByType=function(entityType)
   if entityType==EntityType.ENTITY_PROJECTILE then return projectiles end
@@ -77,6 +80,13 @@ Isaac = { DebugString=function(message) logs[#logs+1]=message end, GetItemIdByNa
     local owner=self
     return { Load=function(_, path) owner.loadedAnimation=path end, ReplaceSpritesheet=function(_, _, sheet) owner.spritesheet=sheet end, LoadGraphics=function() owner.graphicsLoaded=true end, Play=function(_, name) owner.animation=name end }
    end
+   setmetatable(familiar,{
+    __index={CanBlockProjectiles=function() return false end},
+    __newindex=function(self,key,value)
+     if key=='CanBlockProjectiles' then error("no member named 'CanBlockProjectiles'") end
+     rawset(self,key,value)
+    end,
+   })
    spawnedFamiliar=familiar
    return familiar
   end
@@ -109,7 +119,7 @@ function deepCopy(value)
  for key,item in pairs(value) do result[key]=deepCopy(item) end
  return result
 end
-package.preload.json = function() return { decode=function(raw) if raw=='bad' then error('bad JSON') end; return encodedValues[raw] or envelope end,
+package.preload.json = function() return { EMPTY_OBJECT={}, EMPTY_ARRAY={}, decode=function(raw) if raw=='bad' then error('bad JSON') end; return encodedValues[raw] or envelope end,
  encode=function(value)
   if value.prompt then lastRequest=value end
   local key='encoded_'..tostring(#encodedValues+1)
@@ -117,6 +127,8 @@ package.preload.json = function() return { decode=function(raw) if raw=='bad' th
   return key
  end } end
 function include(name)
+ if name=='condition_metadata' then return assert(load(conditionSource))() end
+ if moduleSources and moduleSources[name] then return assert(load(moduleSources[name]))() end
  assert(name=='nebius_prompt')
  local module=assert(load(promptSource))()
  local original=module.new
@@ -146,7 +158,10 @@ async function run(body) {
   const engine = await factory.createEngine();
   try {
     engine.global.set('promptSource', promptSource);
+    engine.global.set('conditionSource', conditionSource);
+    engine.global.set('moduleSources', moduleSources);
     engine.global.set('mainSource', mainSource);
+    engine.global.set('familiarAnimationSource', familiarAnimationXml('familiars/generated_familiar_sheet_00.png'));
     engine.global.set('nativeSprite', { Load() {}, ReplaceSpritesheet() {}, LoadGraphics() {}, Play() {} });
     await engine.doString(mocks);
     await engine.doString('Demo = assert(load(mainSource .. [[\nprobe={validate=validateProfile,proc=validProc,combat=combat,nearest=nearestEnemy,mayRun=ruleMayRun,grant=grantRoomStat,prune=pruneRoomStats,summary=effectSummary,sprite=applyFamiliarSprite,install=function(record)\nrecord.metadata=record.metadata or {}; record.visuals=record.visuals or {}; record.rules=record.rules or {}\nlocal index=#records+1; records[index]=record; runtime[index]=makeProfile(record); applyIdentity(index,runtime[index]); rebuildSystems(); return runtime[index]\nend}\nreturn Demo]]))()');
@@ -164,6 +179,104 @@ test('native Sprite userdata can load the generated familiar animation', async (
     local familiar={GetSprite=function() return nativeSprite end,GetData=function() return data end}
     local profile={familiar={type='normal'},familiarAnimation='generated.anm2',familiarAnimationSheet='generated.png'}
     assert(probe.sprite(familiar,profile) and data.generatedSprite and familiar.Visible)
+  `);
+});
+
+test('native follower directions remain valid on generated normal and idle melee familiars', async () => {
+  for (const mode of ['normal', 'melee']) {
+    await run(`
+      local allowed={}
+      for name in familiarAnimationSource:gmatch('<Animation Name="([^"]+)"') do allowed[name]=true end
+      local requested='FloatDown'
+      local spawns=0
+      local originalSpawn=Isaac.Spawn
+      Isaac.Spawn=function(entityType,...)
+        local actor=originalSpawn(entityType,...)
+        if entityType==EntityType.ENTITY_FAMILIAR then
+          spawns=spawns+1
+          local sprite={Load=function() end,ReplaceSpritesheet=function() end,LoadGraphics=function() end,
+            Play=function(_,name) assert(allowed[name],'missing generated clip '..name);actor.animation=name end}
+          actor.GetSprite=function() return sprite end
+          actor.FollowParent=function(self) self:GetSprite():Play(requested,true) end
+          actor.Remove=function(self) self.removed=true end
+          actor.Exists=function(self) return not self.removed end
+        end
+        return actor
+      end
+      local profile=probe.install({systems={'familiar'},familiar={type='${mode}',damage=0.5,cooldown=60,range=120,
+        attack=${mode === 'normal' ? "{pattern='single',flags={},color={r=1,g=1,b=1,a=1},scale=1,speed=6}" : 'nil'}},
+        familiar_animation='gfx/familiars/generated_familiar_anim_00.anm2',
+        familiar_animation_sheet='gfx/familiars/generated_familiar_sheet_00.png'})
+      for index,name in ipairs({'FloatDown','FloatSide','FloatUp','FloatDown'}) do
+        requested=name;frame=index;Demo:updatePassiveEffects()
+        local actor=profile.familiarEntities['11']
+        assert(actor and actor:GetData().generatedSprite and actor.Visible and actor.animation==name)
+        Demo:onFamiliarUpdate(actor)
+        assert(spawns==1 and not actor.removed)
+      end
+      owns=false;frame=5;Demo:updatePassiveEffects()
+      assert(profile.familiarEntities['11']==nil and spawnedFamiliar.removed)
+    `);
+  }
+});
+
+test('familiar profiles validate every canonical slot and reject mismatched or out-of-range assets', async () => {
+  await run(`
+    local profile={version=1,generated_at='2026-10-25',bridge_request_id='familiar_slots',
+      metadata={display_name='Slot guardian',description='A small shield',quality=4,theme='none',balance_note=''},
+      systems={'familiar'},affects_stats=false,visuals={pedestal_prompt='a guardian'},rules={},
+      familiar={type='shield',damage=1,cooldown=30,range=100,sprite_prompt='a tiny guardian'}}
+    local function assets(slot)
+      profile.sprite_sheet=string.format('gfx/items/collectibles/generated_slot_%02d.png',slot)
+      profile.familiar_sprite_sheet=string.format('gfx/items/collectibles/generated_familiar_slot_%02d.png',slot)
+      profile.familiar_animation=string.format('gfx/familiars/generated_familiar_anim_%02d.anm2',slot)
+      profile.familiar_animation_sheet=string.format('gfx/familiars/generated_familiar_sheet_%02d.png',slot)
+    end
+    for slot=0,127 do
+      assets(slot);local valid,reason=probe.validate(profile,profile.bridge_request_id)
+      assert(valid,tostring(slot)..': '..tostring(reason))
+    end
+    for _,slot in ipairs({-1,128,999}) do
+      assets(slot);assert(not probe.validate(profile,profile.bridge_request_id))
+    end
+    for _,field in ipairs({'sprite_sheet','familiar_sprite_sheet','familiar_animation','familiar_animation_sheet'}) do
+      for _,invalid in ipairs({'../elsewhere.png','gfx/familiars/generated_familiar_anim_127.anm2.extra',''}) do
+        assets(127);profile[field]=invalid;assert(not probe.validate(profile,profile.bridge_request_id))
+      end
+    end
+    for _,field in ipairs({'familiar_sprite_sheet','familiar_animation','familiar_animation_sheet'}) do
+      assets(127);local validAsset=profile[field]
+      assets(0);profile[field]=validAsset;assert(not probe.validate(profile,profile.bridge_request_id))
+    end
+    assets(0);profile.sprite_sheet='gfx/items/collectibles/generated_slot_000.png'
+    assert(not probe.validate(profile,profile.bridge_request_id))
+  `);
+});
+
+test('shield updates preserve native query methods and do not abort later familiar updates', async () => {
+  await run(`
+    local shieldProfile=probe.install({systems={'familiar'},familiar={type='shield',damage=1,cooldown=30,range=100}})
+    local followerProfile=probe.install({systems={'familiar'},familiar={type='normal',damage=0.5,cooldown=30,range=120,
+      attack={pattern='single',flags={},color={r=1,g=1,b=1,a=1},scale=1,speed=6}}})
+    local nearRemovals,farRemovals=0,0
+    projectiles={
+      {Type=EntityType.ENTITY_PROJECTILE,Position=Vector(0,0),Remove=function() nearRemovals=nearRemovals+1 end},
+      {Type=EntityType.ENTITY_PROJECTILE,Position=Vector(100,0),Remove=function() farRemovals=farRemovals+1 end},
+    }
+    enemies={{Position=Vector(60,0)}}
+    frame=30;Demo:updatePassiveEffects()
+    local actor=shieldProfile.familiarEntities['11']
+    assert(type(actor.CanBlockProjectiles)=='function' and actor:CanBlockProjectiles()==false)
+    assert(not pcall(function() actor.CanBlockProjectiles=true end))
+    assert(nearRemovals==1 and farRemovals==0)
+    assert(followerProfile.familiarEntities['11'].followedParent and #familiarTears==1)
+    Demo:onFamiliarUpdate(actor)
+    assert(nearRemovals==1 and #familiarTears==1)
+    local collided=0
+    assert(Demo:onPreProjectileCollision({Remove=function() collided=collided+1 end},actor)==false and collided==1)
+    frame=31;Demo:updatePassiveEffects()
+    assert(nearRemovals==2 and farRemovals==0 and #familiarTears==1)
+    assert(shieldProfile.familiarEntities['11']==actor and actor:CanBlockProjectiles()==false)
   `);
 });
 
@@ -293,14 +406,53 @@ test('duration ledger expires and source loss clears only the removed item', asy
 
 test('weapon bonus tracks owner changes and engine recalculation without accumulating', async () => {
   await run(`
-    probe.install({systems={'laser','knife'},laser={damage=2},knife={damage=2}})
+    probe.install({systems={'laser','knife'},laser={damage=2,color={r=0.25,g=1,b=0.65,a=1}},knife={damage=2,color={r=0.85,g=0.35,b=1,a=1}}})
     for _,method in ipairs({'onPostLaserUpdate','onPostKnifeUpdate'}) do
       local data={}; local weapon={SpawnerEntity=player,CollisionDamage=3,GetData=function() return data end}
+      local colors={}
+      weapon.SetColor=function(_,color,duration) colors[#colors+1]={color=color,duration=duration} end
       Demo[method](Demo,weapon); Demo[method](Demo,weapon); assert(weapon.CollisionDamage==5)
+      assert(#colors==2 and colors[1].duration==2 and colors[1].color[4]==1)
+      assert(colors[1].color[1]~=colors[1].color[2])
       weapon.SpawnerEntity={ToPlayer=function() return nil end}; Demo[method](Demo,weapon); assert(weapon.CollisionDamage==3)
+      assert(#colors==2)
       weapon.SpawnerEntity=player; weapon.CollisionDamage=7; Demo[method](Demo,weapon); assert(weapon.CollisionDamage==9)
-      owns=false; Demo[method](Demo,weapon); assert(weapon.CollisionDamage==7); owns=true
+      owns=false; local previousColors=#colors; Demo[method](Demo,weapon); assert(weapon.CollisionDamage==7 and #colors==previousColors); owns=true
     end
+  `);
+});
+
+test('explosion immunity is owner-scoped, explosion-only and stops immediately on source loss', async () => {
+  await run(`
+    DamageFlag={DAMAGE_EXPLOSION=4}
+    probe.install({systems={'stats'},affects_stats=true,stats={explosion_immunity=true}})
+    assert(Demo:onEntityTakeDamage(player,1,4,{})==false)
+    assert(Demo:onEntityTakeDamage(player,1,5,{})==false)
+    assert(Demo:onEntityTakeDamage(player,1,0,{})==nil)
+    local other={InitSeed=22,ToPlayer=function(self) return self end,HasCollectible=function() return false end}
+    assert(Demo:onEntityTakeDamage(other,1,4,{})==nil)
+    local enemy={ToPlayer=function() return nil end}
+    assert(Demo:onEntityTakeDamage(enemy,1,4,{})==nil)
+    probe.combat.depth=1
+    assert(Demo:onEntityTakeDamage(player,1,4,{})==false)
+    probe.combat.depth=0;owns=false
+    assert(Demo:onEntityTakeDamage(player,1,4,{})==nil)
+    owns=true
+    assert(Demo:onEntityTakeDamage(player,1,4,{})==false)
+    assert(probe.summary({stats={explosion_immunity=true}}):lower():find('explosion immunity',1,true))
+  `);
+});
+
+test('generated explosive tears include protection without requiring an extra rolled system', async () => {
+  await run(`
+    DamageFlag={DAMAGE_EXPLOSION=4}
+    local record={systems={'tears'},tear_profile={flags={'explosive'},color={r=0.7,g=0.8,b=1,a=1},scale=1}}
+    probe.install(record)
+    assert(Demo:onEntityTakeDamage(player,1,4,{})==false)
+    assert(Demo:onEntityTakeDamage(player,1,2,{})==nil)
+    assert(probe.summary(record):lower():find('explosion immunity',1,true))
+    owns=false
+    assert(Demo:onEntityTakeDamage(player,1,4,{})==nil)
   `);
 });
 
@@ -345,7 +497,8 @@ test('rule and proc validators reject chance fields on scope conditions', async 
       for _,chance in ipairs({0,0.5,1,false,'0.5'}) do
         condition.chance=chance
         local valid,reason=probe.validate(profile,profile.bridge_request_id)
-        assert(not valid and reason=='condition' and not probe.proc(proc,'on_kill'))
+        assert(not valid and type(reason)=='string' and reason:find('chance',1,true) and reason:find(kind,1,true))
+        assert(not probe.proc(proc,'on_kill'))
       end
     end
     for _,chance in ipairs({0,0.5,1}) do
@@ -482,6 +635,8 @@ test('Node and Lua agree on retaliation validation and exact weight at every qua
   try {
     engine.global.set('promptSource', promptSource);
     engine.global.set('mainSource', mainSource);
+    engine.global.set('conditionSource', conditionSource);
+    engine.global.set('moduleSources', moduleSources);
     await engine.doString(mocks);
     await engine.doString('assert(load(mainSource .. [[\nretaliationProbe={weight=profileWeight,validate=validateProfile}\n]]))()');
     const cases = [];

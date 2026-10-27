@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { JobStore } from './job-store.mjs';
 import { RUNTIME_CONTRACT } from './compatibility.mjs';
+import { POWER_CONTRACT_VERSION } from '../content-contract/powers.mjs';
 import { createServer } from 'node:http';
 import { prepareArtSlots } from '../native/ipc/art-slots.mjs';
 
@@ -46,7 +47,7 @@ async function fixture(t, seed=[], overrides={}) {
     assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir())+path.sep) && path.basename(directory).startsWith('nebius-integration-'));
     await rm(directory,{recursive:true,force:true}); });
   await until(()=>logs.includes('Native IPC pipe ready') || (child.exitCode!==null && Promise.reject(Error(logs))),'bridge startup');
-  const context={session:'test_session',run:'test_run',used:[],run_used:[],count:0,runtime_contract:RUNTIME_CONTRACT,save_slot:1,fresh_run:false,ended_run:false};
+  const context={session:'test_session',run:'test_run',used:[],run_used:[],count:0,runtime_contract:RUNTIME_CONTRACT,save_slot:1,fresh_run:false,ended_run:false,power_ledger:{version:POWER_CONTRACT_VERSION,accepted_count:0,power_usage:{},power_history:[],recent_power_fingerprints:[]}};
   const state=async changes=>appendFile(log,'[NebiusBridge] state '+JSON.stringify({...context,...changes})+'\n');
   const poll=async()=>{ for(let i=0;i<32;i++){ const value=await pipeRequest(pipe,{version:1,type:'poll'}); if(value?.status!=='capacity') return value; } throw Error('capacity notification flood'); };
   const get=async id=>{ const response=await fetch('http://127.0.0.1:'+port+'/jobs/'+id); return response.ok ? response.json():null; };
@@ -95,6 +96,18 @@ test('interrupted jobs recover as errors without issuing another model or art re
   assert.equal((await f.get('test_run_interrupted')).state,'failed');
 });
 
+test('bridge waits for queued acceptance before choosing another run power',async t=>{
+  const envelope={version:1,type:'profile',id:'test_run_waiting',profile:{version:1,bridge_request_id:'test_run_waiting'}};
+  const fixtureState=await fixture(t,[{id:envelope.id,run:'test_run',saveSlot:1,state:'queued',status:'queued',envelope}]);
+  await fixtureState.state();
+  await until(async()=>{const value=await fixtureState.poll();return value?.type==='profile';},'pending delivery');
+  const response=await fixtureState.generate({prompt:'A glass eye',quality:3});
+  assert.equal(response.status,400);
+  assert.match((await response.json()).error,/previous generated item/);
+  const stored=JSON.parse(await readFile(path.join(fixtureState.output,'job-journal.json'),'utf8'));
+  assert.equal(stored.jobs.length,1);
+});
+
 
 test('bridge refuses a vaulted active before calling the model',async t=>{
   let textCalls=0;
@@ -125,8 +138,14 @@ test('queued cancellation is durable and drops the IPC retry without another gen
   await f.state();await new Promise(resolve=>setTimeout(resolve,350));
   await appendFile(f.log,'[NebiusBridge] cancel '+JSON.stringify({id:envelope.id})+'\n');
   await until(async()=> (await f.get(envelope.id))?.errorCode==='CANCELLED','durable cancellation');
-  await until(async()=> (await f.poll())?.status==='error','cancellation status');
-  assert.equal(await f.poll(),null);
+  const cancellation = await until(async()=> {
+    const message = await f.poll();
+    return message?.status === 'error' && message;
+  }, 'cancellation status');
+  assert.equal((await pipeRequest(f.pipe, { version: 1, type: 'ack', id: cancellation.id })).ok, true);
+  let remaining = await f.poll();
+  if (remaining?.type === 'hello') remaining = await f.poll();
+  assert.equal(remaining, null);
   assert.equal(new JobStore(path.join(f.output,'job-journal.json')).recover()[0].state,'failed');
 });
 
@@ -183,7 +202,7 @@ test('queued delivery rejects unsolicited ACK and waits for its save slot and un
 test('capacity-full runs can replay a lost application ACK without treating publication as applied', async t => {
   const envelope = { version: 1, type: 'profile', id: 'test_run_last', profile: { bridge_request_id: 'test_run_last' } };
   const f = await fixture(t, [{ id: envelope.id, run: 'test_run', saveSlot: 1, state: 'queued', envelope }]);
-  await f.state({ count: 128, blocked: 'Item limit reached: 128/128. Finish this run to free item slots.' });
+  await f.state({ count: 128, blocked: 'Item limit reached: 128/128. Finish this run to free item slots.', power_ledger: { version: POWER_CONTRACT_VERSION, accepted_count: 128, power_usage: {}, power_history: Array(128).fill('0'), recent_power_fingerprints: ['[]', '[]', '[]'] } });
   await until(async () => (await f.poll())?.id === envelope.id, 'full-run receipt replay');
   assert.equal((await f.get(envelope.id)).state, 'queued');
   assert.equal((await pipeRequest(f.pipe, { version: 1, type: 'ack', id: envelope.id })).ok, true);

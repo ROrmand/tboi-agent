@@ -1,3 +1,5 @@
+import { expandedEffects, expandedActionWeight } from './expanded-effects.mjs';
+
 // Every catalog effect spends or refunds weight. A new effect is unusable until
 // its weight is declared here and mirrored in the Lua validator.
 
@@ -25,6 +27,7 @@ function multiplierWeight(value, spec) {
 export function assertCatalogWeights(capabilities) {
   const weights = capabilities.weights;
   if (!weights) throw Error("The capability catalog has no weights.");
+  requireWeight(weights.explosion_immunity, 'explosion immunity');
   for (const flag of capabilities.tear_flags) requireWeight(weights.tear_flags?.[flag], `tear flag ${flag}`);
   for (const pickup of capabilities.pickup_types) requireWeight(weights.pickups?.[pickup], `pickup ${pickup}`);
   for (const friendly of capabilities.friendlies) requireWeight(weights.friendlies?.[friendly], `friendly ${friendly}`);
@@ -50,6 +53,10 @@ export function assertCatalogWeights(capabilities) {
     if (!Number.isFinite(spec.radius_step) || spec.radius_step <= 0) throw Error(`Active ${effect} has no positive radius step.`);
   }
   for (const action of capabilities.actions) {
+    if (Object.hasOwn(expandedEffects.actions, action)) {
+      requireWeight(expandedEffects.actions[action].base_weight, action);
+      continue;
+    }
     if (!["spawn_pickup", "spawn_friendly", "grant_soul_hearts", "grant_stat", "convert_resource", "activate_aura", "spawn_creep", "refill_charge"].includes(action)
         && !Object.hasOwn(capabilities.heart_rewards, action) && !Object.hasOwn(capabilities.combat_effects || {}, action)) {
       throw Error(`Action ${action} has no weight.`);
@@ -260,6 +267,10 @@ function dropOneExpense(profile, capabilities) {
     profile.stats.flying = false;
     return true;
   }
+  if (profile.stats?.explosion_immunity === true) {
+    profile.stats.explosion_immunity = false;
+    return true;
+  }
   for (const system of ["aura", "familiar", "bomb", "laser", "knife", "tear_update"]) {
     if (dropSystem(profile, system)) return true;
   }
@@ -339,13 +350,15 @@ export function profileWeight(profile, capabilities) {
       }
     }
     if (profile.stats.flying) total += weights.flying;
+    if (profile.stats.explosion_immunity) total += weights.explosion_immunity;
   }
   for (const [system, weight] of Object.entries(weights.systems)) {
     if (Array.isArray(profile.systems) && profile.systems.includes(system)) total += weight;
   }
   const roomStats = {};
   for (const action of profileActions(profile)) {
-    if (action.type === "spawn_pickup") total += required(action.pickup_subtype ? weights.pickup_subtypes[action.pickup_subtype] : weights.pickups[action.pickup_type], action.pickup_subtype || action.pickup_type) * action.amount;
+    if (Object.hasOwn(expandedEffects.actions, action.type)) total += expandedActionWeight(action);
+    else if (action.type === "spawn_pickup") total += required(action.pickup_subtype ? weights.pickup_subtypes[action.pickup_subtype] : weights.pickups[action.pickup_type], action.pickup_subtype || action.pickup_type) * action.amount;
     else if (action.type === "spawn_friendly") total += required(weights.friendlies[action.friendly_type], action.friendly_type) * action.amount;
     else if (typeof weights.heart_rewards[action.type] === "number") total += weights.heart_rewards[action.type] * action.amount;
     else if (Object.hasOwn(capabilities.combat_effects || {}, action.type)) total += required(weights.combat?.[action.type], action.type) + action.amount + Math.ceil((action.radius || 0) / COMBAT_RANGE_STEP) + Math.ceil((action.duration || 0) / COMBAT_RANGE_STEP) + (action.type === "retaliate" && action.target_mode === "nearby" ? required(weights.retaliate_nearby, "retaliate_nearby") : 0);

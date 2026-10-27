@@ -8,6 +8,7 @@ export class NativePipeServer extends EventEmitter {
   #server;
   #queue = new BoundedQueue();
   #profiles = new Map();
+  #terminalStatuses = new Map();
   #now;
   #retryMs;
   #canDeliver;
@@ -22,6 +23,17 @@ export class NativePipeServer extends EventEmitter {
   }
 
   publish(envelope) {
+    if (envelope.type === 'status' && envelope.status === 'error') {
+      encodeEnvelope(envelope);
+      const previous = this.#terminalStatuses.get(envelope.id);
+      if (previous) {
+        if (JSON.stringify(previous.envelope) !== JSON.stringify(envelope)) throw Error('Conflicting terminal status identity.');
+        return;
+      }
+      if (this.queuedMessages >= 32) throw Error('IPC queue is full.');
+      this.#terminalStatuses.set(envelope.id, { envelope: structuredClone(envelope), sentAt: null });
+      return;
+    }
     if (envelope.type !== 'profile') {
       if (this.queuedMessages >= 32) throw Error('IPC queue is full.');
       this.#queue.publish(envelope);
@@ -37,7 +49,7 @@ export class NativePipeServer extends EventEmitter {
     this.#profiles.set(envelope.id, { envelope: structuredClone(envelope), sentAt: null });
   }
   discard(id) { this.#profiles.delete(id); }
-  get queuedMessages() { return this.#queue.size + this.#profiles.size; }
+  get queuedMessages() { return this.#queue.size + this.#profiles.size + this.#terminalStatuses.size; }
 
   async start(pipeName = PIPE_NAME) {
     if (this.#server) throw Error('Native pipe server is already started.');
@@ -94,16 +106,31 @@ export class NativePipeServer extends EventEmitter {
           return encodeEnvelope(profile.envelope);
         }
       }
+      for (const [id, status] of this.#terminalStatuses) {
+        if (status.sentAt === null || this.#now() - status.sentAt >= this.#retryMs) {
+          status.sentAt = this.#now();
+          this.#terminalStatuses.delete(id);
+          this.#terminalStatuses.set(id, status);
+          this.#preferProfile = false;
+          return encodeEnvelope(status.envelope);
+        }
+      }
       const next = this.#queue.take();
       if (next) return encodeEnvelope(next);
       return 'null\n';
     }
     if (message.type === 'ack') {
       const profile = this.#profiles.get(message.id);
+      const status = this.#terminalStatuses.get(message.id);
       if (profile) {
         if (profile.sentAt === null || !this.#canDeliver(profile.envelope)) return '{"version":1,"type":"ack","ok":false}\n';
         this.emit('ack', message.id);
         this.#profiles.delete(message.id);
+      }
+      if (status) {
+        if (status.sentAt === null) return '{"version":1,"type":"ack","ok":false}\n';
+        this.emit('statusAck', message.id);
+        this.#terminalStatuses.delete(message.id);
       }
       return '{"version":1,"type":"ack","ok":true}\n';
     }

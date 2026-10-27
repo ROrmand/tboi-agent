@@ -8,6 +8,21 @@ Node bridge and REPENTOGON. The native binding exposes only
 background worker, so a game update never waits on it. The isolated Stage 1
 renderer notes remain in [native/README.md](native/README.md).
 
+REPENTOGON remains an external dependency: this repository ships only the
+[binding overlay](native/repentogon-binding/README.md), not the full client.
+Configure `REPENTOGON_SOURCE`, run `npm run repentogon:apply-binding`, then
+reconfigure/build that checkout externally. `npm run repentogon:reset` explicitly
+installs its Release output with Isaac closed. No standalone extension ABI is
+assumed. Existing ignored `.reference-repentogon` checkouts remain supported.
+
+`work/` is ignored scratch except its README. `npm run mod:sync` still copies
+only the fixed allowlist. Optional `npm run mod:sync-safe` additionally verifies
+protected saves/art in memory and writes a compact `work/sync-receipt.json`:
+copied paths, protected count, mismatch paths, and at most 50 protected-change
+details (with a total count). It never writes the full per-file hash inventory.
+Run it with Isaac and the bridge stopped to avoid unrelated concurrent writes;
+it detects changes but does not lock the game or roll back a failed sync.
+
 ## Current scope
 
 This project generates **passive collectibles** for *The Binding of Isaac:
@@ -25,6 +40,46 @@ when the replaced pedestal was active. These additions still
 require the live-game acceptance checks in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 A generated result is declarative data, never model-produced Lua, and is applied
 only by fixed Lua handlers.
+
+## Combat reward safety
+
+New automatic rewards do not select knife/laser-only bonuses without known
+weapon support; explicit Creator wishes may still request them. Such bonuses
+modify existing weapons, not grant a new weapon. Custom familiars remain
+temporarily vaulted. Native friendly helpers are a separate bounded mechanic.
+
+Combat status, creep and helper rolls use repeatable luck chances rather than
+once-per-room activation. Effect lifetimes are still measured in frames; native
+recursion guards, actor caps and safety cooldowns for other mechanics remain.
+Positive supporting stat and health rolls are more common. New item profiles
+cannot subtract health, and old negative-health profiles remain readable
+without applying their health penalty. Soul-health values count half-hearts.
+
+After upgrading the runtime, manually restart both Isaac and the bridge. Test
+on disposable Save File 2/3 only; do not touch Save File 1. Detailed live checks
+are in scripts/conditional-acceptance.md. Offline tests are not live acceptance.
+
+## Diversity benchmark
+
+`npm run powers:batch` checks 100 deterministic local profiles per quality in
+both Node and Lua. Q0/Q1 use the user-approved capacity-adjusted duplicate gate:
+allow the repeats forced by the compatible power-only fingerprint catalog,
+then require fewer than five additional repeats per 100 profiles. At capacity
+50 this requires at least 46 unique fingerprints; 45 fails. The allowance
+shrinks as compatible capacity grows. Q2-Q4 retain the absolute below-5% gate
+(at least 96 unique fingerprints per 100). Raw duplicate rates remain visible.
+
+No condition, numerical, visual, delivery, stat, cost or ordinary reward variant
+becomes a new power. Quality budgets, archetypes, seeds and all other gates are
+unchanged. Batch reports are version 2 and expose `duplicatePolicy`; the enforced
+gate is `duplicatesWithinQualityPolicy`. Passing this offline benchmark does
+not establish model-generation or live-game acceptance.
+
+After every compatible family has been used, Q2-Q4 may avoid an already-used
+combination by pairing an eligible least-used primary with a secondary used
+at most once more. This applies only when the equal-use pool has no unseen
+fingerprint. It preserves budgets, supporting rolls, recent-history exclusion
+and singleton limits. Reports expose these bounded secondary fallbacks.
 
 ## Run the first slice
 
@@ -76,6 +131,16 @@ Token Factory or overwrite installed artwork.
 
 ## Generated-item HUD and effects library
 
+New familiar generation is temporarily vaulted while its runtime is repaired;
+existing saved familiar profiles remain readable. Bomb, laser and knife damage
+families receive a fourfold primary-selection weight, without bypassing quality
+budgets or repetition rules. Generated knife and laser bonuses now carry visible
+weapon tints. Standalone explosion immunity is available as
+stats.explosion_immunity (weight 8); generated explosive tears include owner
+explosion immunity while their item is held, without a separate roll or charge.
+Other damage types remain unaffected. Restart Isaac and the bridge after syncing
+this runtime-contract update.
+
 AI artwork replaces each generated collectible's placeholder directly in Isaac's
 Extra HUD item history. The game controls ordering, visible slots, HUD offset,
 and twin-player placement. Normal uses 32x32 icons, Mini uses 16x16, and Off
@@ -90,8 +155,9 @@ uncollected pedestals. It shows the icon, generated name, quality **Q0-Q4**,
 model description, deterministic applied effect summary, enabled systems, and
 separate tear, familiar-shot, and bomb flags. Quality colors match the Generator
 tiers (gray, green, blue, purple, yellow). PREV/NEXT select items; UP/DOWN
-scroll long details. Left/Right select buttons, Enter confirms, and Escape or
-Back returns to the pause screen. Mouse controls are also supported.
+scroll long details. Left/Right (or A/D) select buttons; Up/Down (or W/S)
+scroll details; Space or Enter confirms; Escape returns to the pause screen.
+Mouse controls are also supported.
 
 Item descriptors are rebuilt from validated run profiles on Continue; there is
 no separate permanent library. The pause library does not alter Creator drafts

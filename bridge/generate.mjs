@@ -5,11 +5,15 @@ import { pathToFileURL } from "node:url";
 import { atomicWrite, makeIcon, makeSpriteSheet, validateSchema, toLua } from './runtime.mjs';
 import { assertComfyUiReady, generateComfyImage } from "./comfyui.mjs";
 import { chatCompletionPayload, requestTextModel } from "./network.mjs";
-import { buildDesignPrompt, isUnderspecifiedIdea } from "./idea.mjs";
+import { isUnderspecifiedIdea } from "./idea.mjs";
+import { decodePowerContext } from './power-context.mjs';
+import { buildPowerDesignBrief, validatePowerDesign } from './power-design.mjs';
 import { requestRandomSentence } from "./sentence.mjs";
 import { artSlotName, familiarArtSlotName, familiarAnimationResource, familiarSheetResource } from '../native/ipc/art-slots.mjs';
 import { applyRegion, applySystems, repairActiveShell, repairNote, repairProfile, sanitizeProfile } from './prompt-features.mjs';
 import { assertCatalogWeights, fitWeightBudget, profileWeight } from './weights.mjs';
+import { conditionNames, conditionSchema, conditionRegistry, conditionGuidance, validateCondition } from '../content-contract/conditions.mjs';
+import { expandedEffects, expandedActionTypes, expandedActionSchemas, validateExpandedAction } from './expanded-effects.mjs';
 
 const GAME_MODULE_SLOT_COUNT = 400;
 
@@ -38,7 +42,11 @@ const designOnly = args.includes("--design-only");
 const renderOnly = args.includes("--render-only");
 const designOut = readOption("--design-out");
 const designIn = readOption("--design-in");
+const powerContextArgument = readOption('--power-context');
+const runPowerContext = powerContextArgument ? decodePowerContext(powerContextArgument) : undefined;
+const generationSource = readOption('--generation-source') || (auto ? 'Generator' : 'Creator');
 if (!["passive", "active"].includes(requestedItemType)) fail("Item type must be passive or active.");
+if (isMain && !dryRun && !renderOnly && !runPowerContext) fail('Run power context is required. Generate through the bridge with the updated mod running.');
 
 if (isMain && !prompt && !dryRun && !(auto && designOnly) && !renderOnly) {
   fail('Usage: npm run generate -- --prompt "A cursed nail that poisons enemies"');
@@ -53,33 +61,21 @@ if (!Number.isInteger(requestedQuality) || requestedQuality < 0 || requestedQual
 const HIT_TRIGGERS = new Set(["player_hurt", "enemy_hit"]);
 const MAX_ITEM_SYSTEMS = capabilities.item_limits?.max_systems ?? 6;
 const MAX_TOTAL_FLAGS = capabilities.item_limits?.max_total_flags ?? 3;
-const updatedBalanceGuidance = 'Balance rules: flat damage +1 costs 1 and -1 refunds 1; damage_multiplier can be any value from 0.5x through 2.0x. 1.1x costs 2 and 2.0x costs 11; 0.9x refunds 2 and 0.5x refunds 11. Range, tears, and luck cost or refund 1 per unit; signed soul_hearts cost or refund 2 per half-heart; speed and shot_speed retain their catalog costs; each named tear flag and each aura or tear_update system costs 6; flight costs 8. Orbit tears always become spectral in game, so orbit alone requests both effects. Keep explicit flags within the three-flag limit.';
+const updatedBalanceGuidance = 'Balance rules: flat damage +1 costs 1 and -1 refunds 1; damage_multiplier can be any value from 0.5x through 2.0x. 1.1x costs 2 and 2.0x costs 11; 0.9x refunds 2 and 0.5x refunds 11. Range, tears, and luck cost or refund 1 per unit; nonnegative soul_hearts cost 2 per half-heart; never generate negative health or use health loss to refund weight; speed and shot_speed retain their catalog costs; each named tear flag and each aura or tear_update system costs 6; flight costs 8. Orbit tears always become spectral in game, so orbit alone requests both effects. Keep explicit flags within the three-flag limit.' + ' Familiars are temporarily vaulted for new generation; never replace a requested non-familiar effect with a companion. Automatic knife and laser bonuses require trusted ownedWeapons context; preserve explicit Creator weapon wishes. Prefer mechanics useful with the current loadout. Preserve the selected visible color on tears, knives and lasers. stats.explosion_immunity grants explosion immunity for weight 8. Generated explosive tears include owner explosion immunity while held at no additional weight; do not claim configurable blast damage.';
 const PROC_SYSTEMS = ["on_kill", "tear_impact", "collision"];
 const WEAPON_SYSTEMS = ["tear_update", "bomb", "laser", "knife"];
-const conditionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["type"],
-  properties: {
-    type: { type: "string", enum: capabilities.conditions },
-    chance: { type: "number", minimum: 0, maximum: 1 },
-    luck_scale: { type: "number", minimum: 0, maximum: 0.25 },
-    amount: { type: "integer", minimum: 1, maximum: 12 },
-    room: { type: "string", enum: capabilities.room_kinds },
-  },
-};
 const heartRewardGuidance = 'Heart reward catalog: ' + JSON.stringify(capabilities.heart_rewards) + '. Each amount counts the named reward, integer 1-4. Red rewards heal existing containers. grant_soul_hearts retains half-heart units. Never invent an action, heart type, handler, or parameter. Use once_per_room when requested. Unknown or out-of-bounds actions must be corrected using only this catalog.';
 const tearFlagGuidance = 'Allowed tear flags: ' + capabilities.tear_flags.join(', ') + '. flags contains at most three names. explosive maps only to TEAR_EXPLOSIVE (explodes on hit); it has no configurable blast damage, radius, or chance. For explosive tears select tears and put explosive in tear_profile.flags. confusion maps only to TEAR_CONFUSION; it has no configurable duration, strength, or chance. For confusion tears select tears and put confusion in tear_profile.flags. knockback maps only to TEAR_KNOCKBACK; it has no configurable strength, distance, or multiplier. For knockback tears select tears and put knockback in tear_profile.flags. Never invent a flag or a parameter. Use only catalog names when repairing flags.';
-const catalogExpansionGuidance = 'Catalog expansion: grant_stat stats are damage, tears, luck, speed, range, and shot_speed. damage_burst triggers are on_kill, player_hurt, and collision. apply_status triggers are tear_impact, collision, on_kill, and enemy_hit, with statuses slow, burn, fear, poison, charm, confusion, and freeze. retaliate nearby works on player_hurt and collision. Conditions include luck_chance, hearts_at_most, hearts_at_least, room_kind, once_per_run, once_per_target, and while_flying. New rule triggers are bomb_explode, active_use, pill_use, card_use, boss_kill, and player_death. player_death may grant hearts or stats, spawn a pickup, or refill charge. Pickups include lucky, sticky, and golden coins, golden and charged keys, double, troll, golden, and mega bombs, and black, eternal, gold, bone, rotten, double, blended, and half-soul hearts. Heart grants include gold hearts, rotten hearts, and heart containers. Friendlies include dip and minisaac. spawn_creep and refill_charge are actions. Auras include charm, poison, and confusion. Bomb flags are poison, burn, and fear, at most two. tear_update also includes spiral and accelerate. Familiar orbit_contact orbits and strikes on contact and has no attack. Omit fields the selected action does not use.';
-const uniqueEffectGuidance = 'Prefer distinctive catalog mechanics over room-clear loot. Permanent stats.damage or stats.tears is a damage or tears up. on_kill, player_hurt, and collision can use damage_burst with cooldown 30, amount 1-3, and radius 40-120. tear_impact, collision, on_kill, and enemy_hit can use apply_status with cooldown 30, status slow, burn, fear, poison, charm, confusion, or freeze, duration 15-120, and amount 1-2. collision and player_hurt use retaliate with cooldown 30 and amount 1-3. Nearby retaliate is allowed on player_hurt and collision. grant_stat grants a next-room damage, tears, luck, speed, range, or shot_speed bonus; speed and shot_speed steps are 0.1. convert_resource trades coins, keys, or bombs. Use spawn_pickup or grant_soul_hearts only when the wish asks for loot or healing. Do not pad a flavor item with a room-clear coin or soul heart.';
-const lifecycleGuidance = 'Rules and procs may include cooldown (integer 15-1800 game frames). grant_stat optionally accepts duration (15-1800 frames, expires no later than next room) and stack_limit (1-4); each proc adds amount up to amount times stack_limit and refreshes duration. Omit those fields for legacy maximum-per-item/stat room bonuses. spawn_pickup optionally accepts a named pickup_subtype from ' + JSON.stringify(capabilities.pickup_subtypes) + '. Do not add these optional fields unless requested.';
+const catalogExpansionGuidance = 'Bounded effect families (strict required fields, independent success-only action cooldowns; no amount field): ' + JSON.stringify(expandedEffects.actions) + '\n' + conditionGuidance + '\n' + 'Catalog expansion: grant_stat stats are damage, tears, luck, speed, range, and shot_speed. damage_burst triggers are on_kill, player_hurt, and collision. Generated apply_status triggers are tear_impact, collision, and enemy_hit; never apply status to the already dead on_kill target, with statuses slow, burn, fear, poison, charm, confusion, and freeze. retaliate nearby works on player_hurt and collision. Conditions include luck_chance, hearts_at_most, hearts_at_least, room_kind, once_per_run, once_per_target, and while_flying. New rule triggers are bomb_explode, active_use, pill_use, card_use, boss_kill, and player_death. player_death may grant hearts or stats, spawn a pickup, or refill charge. Pickups include lucky, sticky, and golden coins, golden and charged keys, double, troll, golden, and mega bombs, and black, eternal, gold, bone, rotten, double, blended, and half-soul hearts. Heart grants include gold hearts, rotten hearts, and heart containers. Friendlies include dip and minisaac. spawn_creep and refill_charge are actions. Auras include charm, poison, and confusion. Bomb flags are poison, burn, and fear, at most two. tear_update also includes spiral and accelerate. Familiar orbit_contact orbits and strikes on contact and has no attack. Omit fields the selected action does not use.';
+const uniqueEffectGuidance = 'Prefer distinctive catalog mechanics over room-clear loot. Permanent stats.damage or stats.tears is a damage or tears up. on_kill, player_hurt, and collision can use damage_burst with cooldown 30, amount 1-3, and radius 40-120. tear_impact, collision, and enemy_hit can use apply_status with cooldown 0 and a luck_chance condition (chance 0.2, luck_scale 0.02), status slow, burn, fear, poison, charm, confusion, or freeze, duration 15-120, and amount 1-2. collision and player_hurt use retaliate with cooldown 30 and amount 1-3. Nearby retaliate is allowed on player_hurt and collision. grant_stat grants a next-room damage, tears, luck, speed, range, or shot_speed bonus; speed and shot_speed steps are 0.1. convert_resource trades coins, keys, or bombs. Use spawn_pickup or grant_soul_hearts only when the wish asks for loot or healing. Do not pad a flavor item with a room-clear coin or soul heart.';
+const lifecycleGuidance = 'Rules and procs may include cooldown (integer 0-1800 game frames); safe repeatable status, creep, and friendly procs use cooldown 0 with luck_chance, not a room latch. Use base chance 0.2 for status/creep and 0.1 for friendlies, luck_scale 0.02. Summon during combat on tear_fire, not room_clear. Creep should last 120-180 frames. Preserve native expanded-action cooldowns and resource economy guards; never repeat room/reward spawning without bounds. grant_stat optionally accepts duration (15-1800 frames, expires no later than next room) and stack_limit (1-4); each proc adds amount up to amount times stack_limit and refreshes duration. Omit those fields for legacy maximum-per-item/stat room bonuses. spawn_pickup optionally accepts a named pickup_subtype from ' + JSON.stringify(capabilities.pickup_subtypes) + '. Do not add these optional fields unless requested.';
 const batchGuidance = 'grant_stat catalog: ' + JSON.stringify(capabilities.room_stat_reward) + '. Use action {type: grant_stat, stat: damage|tears|luck|speed|range|shot_speed, amount: integer 1-4} on an existing rule or proc. stat is required only for grant_stat; omit it for other actions. No permanent stats block is needed for a room-only reward. Repeated grants use the maximum per item/player/stat, never sum; tears reduces fire delay in the same units as stats.tears. speed and shot_speed add 0.1 per amount. Aura status catalog: ' + JSON.stringify(capabilities.aura_statuses) + '. Aura has one type. All types require radius and cooldown. damage aura requires damage and omits duration. Status auras require duration (integer frames 15-120). burn and poison require damage; slow, fear, charm, and confusion omit damage. Slow factor is fixed at 0.5. Bomb flags: ' + JSON.stringify(capabilities.bomb_flag_effects) + '. Optional bomb.flags holds up to ' + capabilities.bomb_flag_limit + ' unique flags from poison, burn, and fear. It never changes tears, lasers, or knives. spawn_creep uses creep red|green|black|yellow, radius 20-80, duration 15-180, and at most 4 live creeps. refill_charge adds 1-6 charges to the held active. player_death may only grant hearts or stats, spawn a pickup, or refill charge. No other status, weapon, strength, or Lua parameter is allowed. Omit new fields unless used.';
-const actionSchema = {
+const legacyActionSchema = {
   type: "object",
   additionalProperties: false,
   required: ["type", "amount"],
   properties: {
-    type: { type: "string", enum: capabilities.actions, description: heartRewardGuidance + " " + batchGuidance + " " + lifecycleGuidance + ' Combat effects: ' + JSON.stringify(capabilities.combat_effects) + '. Combat actions always require the listed trigger and a proc/rule cooldown of at least 30 frames. amount is bounded damage (or burn damage for apply_status); radius belongs to damage_burst or nearby retaliation; status and duration only belong to apply_status. Retaliate optionally sets target_mode: attacker (default, no radius) or nearby (player_hurt or collision, required radius 40-120, max 8 enemies, costs 6 extra plus radius weight). Collision always targets only the collider.' },
+    type: { type: "string", enum: capabilities.actions, description: heartRewardGuidance + " " + batchGuidance + " " + lifecycleGuidance + ' Combat effects: ' + JSON.stringify(capabilities.combat_effects) + '. Combat actions require their listed trigger and catalog minimum_cooldown; status-only procs use cooldown 0, while damage_burst and retaliate still need at least 30 frames. amount is bounded damage (or burn damage for apply_status); radius belongs to damage_burst or nearby retaliation; status and duration only belong to apply_status. Retaliate optionally sets target_mode: attacker (default, no radius) or nearby (player_hurt or collision, required radius 40-120, max 8 enemies, costs 6 extra plus radius weight). Collision always targets only the collider.' },
     amount: { type: "integer", minimum: 1, maximum: 6 },
     pickup_type: { type: "string", enum: capabilities.pickup_types },
     friendly_type: { type: "string", enum: capabilities.friendlies },
@@ -96,6 +92,20 @@ const actionSchema = {
     cost: { type: "integer", minimum: 1, maximum: 4 },
   },
 };
+const creepActionSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['type', 'amount', 'creep', 'radius', 'duration'],
+  properties: {
+    type: { type: 'string', const: 'spawn_creep' },
+    amount: { type: 'integer', minimum: 1, maximum: 4 },
+    creep: { type: 'string', enum: capabilities.creeps },
+    radius: { type: 'number', minimum: capabilities.creep_bounds.radius[0], maximum: capabilities.creep_bounds.radius[1] },
+    duration: { type: 'integer', minimum: capabilities.creep_bounds.duration[0], maximum: capabilities.creep_bounds.duration[1] },
+  },
+};
+const actionSchema = { anyOf: [legacyActionSchema, creepActionSchema, ...Object.values(expandedActionSchemas)] };
+legacyActionSchema.properties.type.enum = capabilities.actions.filter(type => type !== 'spawn_creep' && !expandedActionTypes.includes(type));
 const procSchema = {
   type: "object",
   additionalProperties: false,
@@ -103,7 +113,7 @@ const procSchema = {
   properties: {
     conditions: { type: "array", maxItems: 2, items: conditionSchema },
     actions: { type: "array", minItems: 1, maxItems: 2, items: actionSchema },
-    cooldown: { type: "integer", minimum: 15, maximum: 1800 },
+    cooldown: { type: "integer", minimum: 0, maximum: 1800 },
   },
 };
 
@@ -146,8 +156,9 @@ export const ITEM_SCHEMA = {
         range: { type: "number", minimum: capabilities.stat_bounds.range[0], maximum: capabilities.stat_bounds.range[1] },
         speed: { type: "number", minimum: capabilities.stat_bounds.speed[0], maximum: capabilities.stat_bounds.speed[1] },
         luck: { type: "number", minimum: capabilities.stat_bounds.luck[0], maximum: capabilities.stat_bounds.luck[1] },
-        soul_hearts: { type: "integer", minimum: -4, maximum: 4 },
+        soul_hearts: { type: "integer", minimum: Math.max(0, capabilities.stat_bounds.soul_hearts[0]), maximum: capabilities.stat_bounds.soul_hearts[1] },
         flying: { type: "boolean" },
+        explosion_immunity: { type: "boolean" },
       },
     },
     tear_profile: {
@@ -252,13 +263,15 @@ export const ITEM_SCHEMA = {
       type: "object",
       additionalProperties: false,
       required: ["damage"],
-      properties: { damage: { type: "number", minimum: 0.5, maximum: 3 } },
+      properties: { damage: { type: "number", minimum: 0.5, maximum: 3 }, color: { type: "object", additionalProperties: false,
+        required: ["r", "g", "b", "a"], properties: Object.fromEntries(["r", "g", "b", "a"].map(channel => [channel, { type: "number", minimum: 0, maximum: 1 }])) } },
     },
     knife: {
       type: "object",
       additionalProperties: false,
       required: ["damage"],
-      properties: { damage: { type: "number", minimum: 0.5, maximum: 3 } },
+      properties: { damage: { type: "number", minimum: 0.5, maximum: 3 }, color: { type: "object", additionalProperties: false,
+        required: ["r", "g", "b", "a"], properties: Object.fromEntries(["r", "g", "b", "a"].map(channel => [channel, { type: "number", minimum: 0, maximum: 1 }])) } },
     },
     rules: {
       type: "array",
@@ -269,7 +282,7 @@ export const ITEM_SCHEMA = {
         required: ["trigger", "conditions", "actions"],
         properties: {
           trigger: { type: "string", enum: capabilities.triggers },
-          cooldown: { type: "integer", minimum: 15, maximum: 1800 },
+          cooldown: { type: "integer", minimum: 0, maximum: 1800 },
           conditions: { type: "array", maxItems: 2, items: conditionSchema },
           actions: { type: "array", minItems: 1, maxItems: 2, items: actionSchema },
         },
@@ -288,6 +301,82 @@ const fixture = {
   visuals: { pedestal_prompt: "single rusty iron nail, cursed sickly green glint, pixel art game icon, centered object, plain transparent background, no text" },
   rules: [{ trigger: "room_clear", conditions: [{ type: "chance", chance: 0.2 }, { type: "once_per_room" }], actions: [{ type: "spawn_pickup", pickup_type: "coin", amount: 1 }] }],
 };
+
+const familiarSchema = ITEM_SCHEMA.properties.familiar;
+ITEM_SCHEMA.properties.familiar = { anyOf: capabilities.familiars.map(type => {
+  const schema = structuredClone(familiarSchema);
+  schema.properties.type = { type: 'string', const: type };
+  if (['normal', 'sentry'].includes(type)) schema.required.push('attack');
+  else delete schema.properties.attack;
+  return schema;
+}) };
+
+function selectedShape(schema, value, exactNumbers = false, field) {
+  if (field === 'color') exactNumbers = true;
+  if (schema.anyOf) {
+    const candidate = schema.anyOf.find(option => {
+      try { validateSchema(value, option); return true; } catch { return false; }
+    });
+    if (!candidate) throw Error('Trusted skeleton has no supported schema shape.');
+    return selectedShape(candidate, value, exactNumbers, field);
+  }
+  if (schema.type === 'object') {
+    const properties = Object.fromEntries(Object.entries(value).map(([key, entry]) => [key,
+      key === 'sprite_prompt' ? structuredClone(schema.properties[key]) : selectedShape(schema.properties[key], entry, exactNumbers, key)]));
+    if (field === 'conditions') {
+      for (const [key, specification] of Object.entries(conditionRegistry[value.type].params)) {
+        if (!properties[key]) continue;
+        const { required, ...bounds } = specification;
+        Object.assign(properties[key], bounds);
+      }
+    }
+    if (field === 'actions' && !expandedActionTypes.includes(value.type)) {
+      const combat = capabilities.combat_effects[value.type];
+      for (const key of ['amount', 'radius', 'duration']) {
+        const bounds = combat?.[key + '_bounds'];
+        if (properties[key] && bounds) Object.assign(properties[key], { minimum: bounds[0], maximum: bounds[1] });
+      }
+      if (properties.amount && !combat) properties.amount.maximum = value.type === 'refill_charge' ? 6
+        : ['spawn_friendly', 'activate_aura'].includes(value.type) ? 1 : 4;
+    }
+    if (properties.cooldown && value.actions) {
+      properties.cooldown.minimum = Math.max(properties.cooldown.minimum, ...value.actions.map(action =>
+        capabilities.combat_effects[action.type]?.minimum_cooldown
+          ?? (['convert_resource', 'activate_aura'].includes(action.type) ? 30 : ['spawn_creep', 'spawn_friendly'].includes(action.type) ? 0 : 15)));
+      if (value.cooldown === 0 && value.actions.every(action => ['apply_status', 'spawn_creep', 'spawn_friendly'].includes(action.type))) {
+        properties.cooldown.const = 0;
+      }
+    }
+    return { type: 'object', additionalProperties: false, required: Object.keys(properties), properties };
+  }
+  if (schema.type === 'array') {
+    const choices = value.map(entry => selectedShape(schema.items, entry, exactNumbers, field));
+    return { ...structuredClone(schema), minItems: value.length, maxItems: value.length,
+      uniqueItems: true, description: 'Include every selected entry exactly once; preserve all selected mechanics.',
+      items: choices.length === 1 ? choices[0] : choices.length ? { anyOf: choices } : structuredClone(schema.items) };
+  }
+  if (['number', 'integer'].includes(schema.type) && !exactNumbers) return structuredClone(schema);
+  return { ...structuredClone(schema), const: value };
+}
+
+export function buildDesignSchema(skeleton) {
+  const schema = selectedShape(ITEM_SCHEMA, skeleton.fragment);
+  for (const field of ['metadata', 'visuals']) {
+    schema.properties[field] = structuredClone(ITEM_SCHEMA.properties[field]);
+    schema.required.push(field);
+  }
+  schema.properties.metadata.properties.quality.const = skeleton.quality;
+  if (skeleton.fragment.stats) schema.properties.stats = selectedShape(ITEM_SCHEMA.properties.stats, skeleton.fragment.stats, true);
+  if (skeleton.quality === 4) for (const system of ['tear_update', 'bomb', 'laser', 'knife', 'familiar', 'aura', 'active']) {
+    const expected = skeleton.fragment[system];
+    if (!expected) continue;
+    for (const field of ['strength', 'damage', 'radius', 'duration', 'range']) {
+      if (expected[field] !== undefined) schema.properties[system].properties[field].minimum = expected[field];
+    }
+    if (expected.cooldown !== undefined) schema.properties[system].properties.cooldown.maximum = expected.cooldown;
+  }
+  return schema;
+}
 
 export async function designUntilValid({ ideas, design, quality, itemType, maxAttempts = 8 } = {}) {
   if (typeof ideas !== "function" || typeof design !== "function") fail("Auto generation needs an idea source and a designer.");
@@ -360,8 +449,12 @@ async function generateProfile(playerPrompt) {
   requireSetting("NEBIUS_TEXT_MODEL");
   const expandingIdea = isUnderspecifiedIdea(playerPrompt);
   if (expandingIdea) progress('expand');
-  const { designPrompt, ideaBrief } = requestedItemType === "active" ? { designPrompt: playerPrompt } : await buildDesignPrompt(playerPrompt, capabilities, env, undefined, requestId || String(Date.now()));
-  const qualityPrompt = `\nRequested quality: ${requestedQuality}. This is an exact target, not a maximum. Keep the item within quality ${requestedQuality}'s budget of ${capabilities.quality_budgets[requestedQuality]}. Spend that budget on distinctive stats, combat procs, auras, familiars, or tear effects. Do not pad with a room-clear coin or soul heart.`;
+  const { designPrompt, ideaBrief, skeleton } = buildPowerDesignBrief(playerPrompt, runPowerContext, {
+    quality: requestedQuality, itemType: requestedItemType, source: generationSource,
+    seed: requestId || String(Date.now()), validateProfile,
+  });
+  const designSchema = buildDesignSchema(skeleton);
+  const qualityPrompt = `\nRequested quality: ${requestedQuality}. This is an exact target, not a maximum. Keep the item within quality ${requestedQuality}'s budget of ${capabilities.quality_budgets[requestedQuality]}. The supplied schema requires every selected system, trigger, action, condition, flag, and exact supporting stat/health choice. Do not replace or omit them. Name and theme the item; tune only the supplied bounded numeric parameters without exceeding the budget. The trusted fragment is a valid starting point; do not spend unused budget on extra systems. normal and sentry familiars require attack; all other familiar types forbid attack.`;
   if (ideaBrief) {
     await mkdir(outputDirectory, { recursive: true });
     await writeFile(path.join(outputDirectory, "last-idea-brief.txt"), `${ideaBrief}\n`);
@@ -375,9 +468,9 @@ async function generateProfile(playerPrompt) {
     body: JSON.stringify(chatCompletionPayload(env, {
       temperature: attempt ? 0 : 0.7,
       max_tokens: Number(env.NEBIUS_TEXT_MAX_TOKENS || 6144),
-      response_format: { type: "json_schema", json_schema: { name: "passive_item_profile", strict: true, schema: ITEM_SCHEMA } },
+      response_format: { type: "json_schema", json_schema: { name: "passive_item_profile", strict: true, schema: designSchema } },
       messages: [
-        { role: "system", content: systemPrompt() + '\n' + updatedBalanceGuidance + '\nRequired schema: ' + JSON.stringify(ITEM_SCHEMA) },
+        { role: "system", content: systemPrompt() + '\n' + updatedBalanceGuidance + '\nThe trusted local skeleton and targeted schema already select the mechanics; do not choose different systems. Required schema: ' + JSON.stringify(designSchema) },
         { role: "user", content: designPrompt + qualityPrompt + correction },
       ],
     })),
@@ -399,9 +492,10 @@ async function generateProfile(playerPrompt) {
     if(choice?.finish_reason === 'length') throw Error('Response was truncated before the item profile was complete');
     if (!content) throw Error("Token Factory returned no item profile");
     const profile = parseModelJson(content);
-    repairGeneratedProfile(profile, designPrompt, requestedQuality, requestedItemType);
+    validateSchema(profile, designSchema);
     validateProfile(profile);
     if (Boolean(profile.active) !== (requestedItemType === "active")) throw Error("The generated item type does not match the requested type.");
+    validatePowerDesign(profile, skeleton, validateProfile);
     return profile;
   } catch(error) {
     if(attempt === 1) throw Error('Item design failed validation after two attempts: ' + error.message);
@@ -553,6 +647,13 @@ async function preflightImageBackend() {
 }
 
 function assertKnownFields(value, schema, location = "profile") {
+  if (schema.anyOf) {
+    const candidate = schema.anyOf.find(option => option.properties?.type?.const === value?.type)
+      || schema.anyOf.find(option => option.properties?.type?.enum?.includes(value?.type));
+    if (!candidate) fail(`${location} has an unsupported action`);
+    assertKnownFields(value, candidate, location);
+    return;
+  }
   if (schema.enum && !schema.enum.includes(value)) fail(`${location} has an unsupported value`);
   if (schema.type === "object" && value && typeof value === "object" && !Array.isArray(value)) {
     for (const [key, entry] of Object.entries(value)) {
@@ -643,6 +744,7 @@ export function validateProfile(profile) {
       assertNumber(profile.stats?.[name], `stats.${name}`, bounds[0], bounds[1]);
     }
     if (profile.stats.flying !== undefined && typeof profile.stats.flying !== "boolean") fail("stats.flying must be a boolean.");
+    if (profile.stats.explosion_immunity !== undefined && typeof profile.stats.explosion_immunity !== "boolean") fail("stats.explosion_immunity must be a boolean.");
   }
   if (profile.tear_update) {
     if (!capabilities.tear_update_behaviors.includes(profile.tear_update.behavior)) fail("tear_update.behavior is not allowed.");
@@ -702,7 +804,7 @@ export function validateProfile(profile) {
     if (hit) sawHit = true;
     else sawRule = true;
     if (!Array.isArray(rule.conditions) || !Array.isArray(rule.actions) || !rule.actions.length) fail("Every rule needs conditions and at least one action.");
-    for (const condition of rule.conditions) validateCondition(condition, "condition");
+    for (const [index, condition] of rule.conditions.entries()) validateCondition(condition, rule.trigger, 'rules[' + profile.rules.indexOf(rule) + '].conditions[' + index + ']');
     for (const action of rule.actions) validateAction(action, "action", rule.trigger, rule.cooldown);
   }
   if (selected.has("rules") && !sawRule) fail("The rules system requires a room, pickup, floor, or tear rule.");
@@ -713,18 +815,6 @@ export function validateProfile(profile) {
   if (profile.aura?.triggered === true && !activations.length) fail("A triggered aura requires an activate_aura action.");
 }
 
-function validateCondition(condition, label) {
-  if (!capabilities.conditions.includes(condition.type)) fail(`Unsupported condition: ${condition.type}`);
-  const allowed = new Set(capabilities.condition_params[condition.type] || []);
-  if (condition.chance !== undefined && !allowed.has("chance")) fail("chance requires the chance condition.");
-  if (condition.luck_scale !== undefined && !allowed.has("luck_scale")) fail("luck_scale requires luck_chance.");
-  if (condition.amount !== undefined && !allowed.has("amount")) fail("amount requires a hearts condition.");
-  if (condition.room !== undefined && !allowed.has("room")) fail("room requires room_kind.");
-  if (allowed.has("chance")) assertNumber(condition.chance, `${label}.chance`, 0, 1);
-  if (allowed.has("luck_scale")) assertNumber(condition.luck_scale, `${label}.luck_scale`, 0, 0.25);
-  if (allowed.has("amount") && (!Number.isInteger(condition.amount) || condition.amount < 1 || condition.amount > 12)) fail(`${label}.amount must be an integer from 1–12.`);
-  if (allowed.has("room") && !capabilities.room_kinds.includes(condition.room)) fail("room_kind requires an allowed room.");
-}
 
 const DEATH_ACTIONS = new Set([
   "grant_stat", "spawn_pickup", "refill_charge", "grant_soul_hearts",
@@ -739,12 +829,18 @@ function validateActionStat(action) {
 }
 
 function validateAction(action, label, trigger, cooldown) {
+  if (expandedActionTypes.includes(action.type)) {
+    const errors = validateExpandedAction(action, trigger);
+    if (errors.length) fail(label + ': ' + errors.join('; '));
+    if (cooldown !== undefined && cooldown < 15) fail("Expanded proc cooldown requires at least 15 frames when supplied.");
+    return;
+  }
   validateActionStat(action);
   if (trigger === "player_death" && !DEATH_ACTIONS.has(action.type)) fail("player_death cannot run that action.");
   if (action.target_mode !== undefined && (action.type !== "retaliate" || !capabilities.combat_effects.retaliate.target_modes.includes(action.target_mode))) fail("target_mode requires an allowed retaliation mode.");
   const combat = capabilities.combat_effects[action.type];
   if (combat) {
-    if (!combat.triggers.includes(trigger) || !Number.isInteger(cooldown) || cooldown < combat.minimum_cooldown) fail("Combat effects require their catalog trigger and at least 30 frames cooldown.");
+    if (!combat.triggers.includes(trigger) || !Number.isInteger(cooldown) || cooldown < combat.minimum_cooldown) fail(`${action.type} requires its catalog trigger and at least ${combat.minimum_cooldown} frames cooldown.`);
     assertNumber(action.amount, "combat amount", ...combat.amount_bounds);
     if (action.type === "damage_burst") assertNumber(action.radius, "burst radius", ...combat.radius_bounds);
     else if (action.type === "retaliate" && action.target_mode === "nearby") {
@@ -783,11 +879,12 @@ function validateAction(action, label, trigger, cooldown) {
     if (action.amount !== 1) fail("spawn_friendly amount must be 1.");
     if (!capabilities.friendlies.includes(action.friendly_type)) fail("spawn_friendly requires an allowed friendly_type.");
   } else if (action.friendly_type !== undefined) fail("friendly_type requires spawn_friendly.");
+  if (cooldown !== undefined && cooldown < 15 && !['apply_status', 'spawn_creep', 'spawn_friendly'].includes(action.type)) fail("This action requires at least 15 frames proc cooldown when supplied.");
 }
 
 function validateProc(proc, name) {
   if (!Array.isArray(proc.conditions) || !Array.isArray(proc.actions) || !proc.actions.length) fail(`${name} needs conditions and at least one action.`);
-  for (const condition of proc.conditions) validateCondition(condition, name);
+  for (const [index, condition] of proc.conditions.entries()) validateCondition(condition, name, name + '.conditions[' + index + ']');
   for (const action of proc.actions) validateAction(action, name, name, proc.cooldown);
 }
 
@@ -807,7 +904,7 @@ function validateFamiliarAttack(attack) {
 
 function systemPrompt() {
   if (requestedItemType === "active") return "Create one Binding of Isaac active collectible. Return only the supplied JSON schema. Region is passive, systems is [active], affects_stats is false, and rules is empty. Include active with effect radial_burst, charges 6, targeting self, damage 1 through 6, and radius 40 through 120. Omit all other mechanic blocks. Never return code or callback flags. Respect the requested quality budget; weight is 2 + damage + ceil(radius/60). Use the wish for the item name, theme, and art. Describe its radial damage burst honestly. The burst hits at most eight enemies and spends charge only when an enemy can be hit.";
-  return `${catalogExpansionGuidance}\n${heartRewardGuidance}\n${tearFlagGuidance}\n${batchGuidance}\n${uniqueEffectGuidance}\nCreate one Binding of Isaac passive item that uses distinctive catalog mechanics. Return only the supplied JSON schema. Never output Lua, callback names, extra keys, or any state key. First choose region from the meaning of the wish. Then choose systems, and fill a parameter block only for a system you chose. passive: Isaac's own stats, tears, or a reward. familiar: a separate actor that follows, orbits, shoots, strikes, or protects Isaac. aura: a damage or status field around Isaac. familiar_aura: both. Honor named mechanics; do not add extras to a specific wish. If the wish is flavor or an expanded brief, implement those distinctive effects instead of a room-clear coin or soul heart. "Add damage. Tears burn. When an enemy dies, deal a small burst." is passive with systems stats, tears, and on_kill. stats.damage is above 0. tear_profile.flags is ["burn"]. on_kill has cooldown 30 and action damage_burst with amount 1 and radius 80. "Add luck. Tears glow. When I clear a room, grant me a soul heart." is passive with systems stats, tears, and rules, and the rule trigger is room_clear. "When I get hit, I sometimes find a coin. Tears poison. Add luck." is passive with systems stats, tears, and on_hit. stats.luck is above 0 and the other stats are 0. tear_profile.flags is ["poison"]. rules is one player_hurt rule with a chance condition and action spawn_pickup, pickup_type coin, amount 1. "When I hit an enemy" uses trigger enemy_hit. "When an enemy dies" is the on_kill proc, not a rule. "When a tear hits an enemy" is tear_impact. "When I touch an enemy" is collision. "When I clear a room", "reach a new floor", "pick this up", and "enter a room" use the rules system. "Give me a friend that shoots explosive bombs." is familiar with the familiar system and no stats unless the wish also changes Isaac. "Enemies who stand near me get hurt." is aura. Systems: stats changes damage, tears, shot speed, range, speed, or luck. tears changes Isaac's own shots. rules covers room_enter, room_clear, pickup, new_floor, and tear_fire. on_hit is only player_hurt and enemy_hit, and that system is invalid without one of those rules. familiar and aura must match the region. on_kill procs once per dead enemy. tear_impact procs once per tear that hits an enemy. collision procs once per enemy Isaac touches in a room. Those three procs use the same conditions and actions as rules. Omit stats, tear_profile, familiar, aura, on_kill, tear_impact, collision, tear_update, bomb, laser, and knife when their system is not selected. affects_stats is true only when stats is selected. Unselected stat numbers are omitted, not zero. Selecting a system without its object is invalid: stats needs the stats object, tears needs tear_profile, and on_kill, tear_impact, and collision need their own objects with conditions and actions. "Move a bit faster" is stats.speed. "Add range" is stats.range. "Raise shot speed" is stats.shot_speed, not the tears system. "Tears split", "Tears can pierce", "Tears pierce", "Tears poison", "Tears charm enemies", and "Tears orbit me" are tear_profile flags, including when a familiar is also present. "When an enemy dies, deal a small burst" is on_kill with cooldown 30 and damage_burst. "When an enemy dies, I sometimes find a coin" is on_kill with a chance condition and spawn_pickup coin. "When a tear hits an enemy, I sometimes find a key" is tear_impact, not a rule. description is one sentence that says what the item does, under 60 characters. Example: Damage up. Burning tears. Burst on kill. stats.flying is true only when the wish grants flight. tear_update is home, pulse, or shrink with strength 0.5–2, for a tear that keeps changing after it is fired. bomb, laser, and knife add bounded damage when Isaac fires that weapon. display_name and description are each at most 64 UTF-8 bytes. Familiar shots can use only the allowed tear flags. If the wish asks for a shot outside that list, choose the closest allowed flags and say so in metadata.balance_note. Familiar type is sentry (orbits and fires), normal (follows behind Isaac and fires), melee (contact strike, no attack), or shield (stands between Isaac and the nearest threat, blocks shots that touch it, cancels one hit per cooldown, deals contact damage, no attack). Sentry and normal require familiar.attack. Melee and shield must omit attack. attack.pattern is single, fan, lob, or varied. attack.flags holds up to three allowed tear flags and is the shot's only effect list. varied rerolls delivery and size using those same flags. attack.color, scale, and speed describe the shot. familiar.damage is one single shot; fan shots are 0.7x and lob shots are 1.25x. cooldown is frames between attacks. sprite_prompt must describe one tiny full-body companion character, not an object, icon, item, or pedestal.\nAllowed regions: ${capabilities.regions.join(", ")}.\nAllowed systems: ${capabilities.systems.join(", ")}.\nAllowed triggers: ${capabilities.triggers.join(", ")}.\nAllowed conditions: ${capabilities.conditions.join(", ")}.\nAllowed actions: ${capabilities.actions.join(", ")}.\nAllowed familiars: ${capabilities.familiars.join(", ")}. Allowed familiar patterns: ${capabilities.familiar_patterns.join(", ")}. Allowed auras: ${capabilities.auras.join(", ")}. Allowed friendlies: ${capabilities.friendlies.join(", ")}.\nQuality is a weight budget ${capabilities.quality_budgets.map((budget, quality) => `${quality}=${budget}`).join(", ")}. Spend the quality budget on the distinctive effects in the wish or expanded brief. Do not spend leftover budget on a room-clear coin or soul heart filler. Weights: ${JSON.stringify(capabilities.weights)}. A missing weight means the effect is not available. grant_soul_hearts costs 8 per heart, so one soul heart when a room is cleared needs quality 1 or higher. Negative stats refund weight and stop at their floors: speed -0.15, damage -1, tears -1, shot_speed -0.3, range -5, luck -1. Never deal damage to Isaac. spawn_friendly uses friendly_type attack_fly, spider, or pooter and amount 1. Extra pickups are pill, card, battery, trinket, chest, and sack. Path tear flags are continuum, boomerang, grow, shrink, sticky, wiggle, and slowing_creep. slowing_creep slows; it has no damage parameter.\nPedestal prompt: one centered object, transparent/plain background, no text.`;
+  return `${catalogExpansionGuidance}\n${heartRewardGuidance}\n${tearFlagGuidance}\n${batchGuidance}\n${uniqueEffectGuidance}\nCreate one Binding of Isaac passive item that uses distinctive catalog mechanics. Return only the supplied JSON schema. Never output Lua, callback names, extra keys, or any state key. First choose region from the meaning of the wish. Then choose systems, and fill a parameter block only for a system you chose. passive: Isaac's own stats, tears, or a reward. familiar: a separate actor that follows, orbits, shoots, strikes, or protects Isaac. aura: a damage or status field around Isaac. familiar_aura: both. Honor named mechanics; do not add extras to a specific wish. If the wish is flavor or an expanded brief, implement those distinctive effects instead of a room-clear coin or soul heart. "Add damage. Tears burn. When an enemy dies, deal a small burst." is passive with systems stats, tears, and on_kill. stats.damage is above 0. tear_profile.flags is ["burn"]. on_kill has cooldown 30 and action damage_burst with amount 1 and radius 80. "Add luck. Tears glow. When I clear a room, grant me a soul heart." is passive with systems stats, tears, and rules, and the rule trigger is room_clear. "When I get hit, I sometimes find a coin. Tears poison. Add luck." is passive with systems stats, tears, and on_hit. stats.luck is above 0 and the other stats are 0. tear_profile.flags is ["poison"]. rules is one player_hurt rule with a chance condition and action spawn_pickup, pickup_type coin, amount 1. "When I hit an enemy" uses trigger enemy_hit. "When an enemy dies" is the on_kill proc, not a rule. "When a tear hits an enemy" is tear_impact. "When I touch an enemy" is collision. "When I clear a room", "reach a new floor", "pick this up", and "enter a room" use the rules system. "Give me a friend that shoots explosive bombs." is familiar with the familiar system and no stats unless the wish also changes Isaac. "Enemies who stand near me get hurt." is aura. Systems: stats changes damage, tears, shot speed, range, speed, or luck. tears changes Isaac's own shots. rules covers room_enter, room_clear, pickup, new_floor, and tear_fire. on_hit is only player_hurt and enemy_hit, and that system is invalid without one of those rules. familiar and aura must match the region. on_kill procs once per dead enemy. tear_impact procs once per tear that hits an enemy. collision procs once per enemy Isaac touches in a room. Those three procs use the same conditions and actions as rules. Omit stats, tear_profile, familiar, aura, on_kill, tear_impact, collision, tear_update, bomb, laser, and knife when their system is not selected. affects_stats is true only when stats is selected. Unselected stat numbers are omitted, not zero. Selecting a system without its object is invalid: stats needs the stats object, tears needs tear_profile, and on_kill, tear_impact, and collision need their own objects with conditions and actions. "Move a bit faster" is stats.speed. "Add range" is stats.range. "Raise shot speed" is stats.shot_speed, not the tears system. "Tears split", "Tears can pierce", "Tears pierce", "Tears poison", "Tears charm enemies", and "Tears orbit me" are tear_profile flags, including when a familiar is also present. "When an enemy dies, deal a small burst" is on_kill with cooldown 30 and damage_burst. "When an enemy dies, I sometimes find a coin" is on_kill with a chance condition and spawn_pickup coin. "When a tear hits an enemy, I sometimes find a key" is tear_impact, not a rule. description is one sentence that says what the item does, under 60 characters. Example: Damage up. Burning tears. Burst on kill. stats.flying is true only when the wish grants flight. tear_update is home, pulse, or shrink with strength 0.5–2, for a tear that keeps changing after it is fired. bomb, laser, and knife add bounded damage when Isaac fires that weapon. display_name and description are each at most 64 UTF-8 bytes. Familiar shots can use only the allowed tear flags. If the wish asks for a shot outside that list, choose the closest allowed flags and say so in metadata.balance_note. Familiar type is sentry (orbits and fires), normal (follows behind Isaac and fires), melee (contact strike, no attack), or shield (stands between Isaac and the nearest threat, blocks shots that touch it, cancels one hit per cooldown, deals contact damage, no attack). Sentry and normal require familiar.attack. Melee and shield must omit attack. attack.pattern is single, fan, lob, or varied. attack.flags holds up to three allowed tear flags and is the shot's only effect list. varied rerolls delivery and size using those same flags. attack.color, scale, and speed describe the shot. familiar.damage is one single shot; fan shots are 0.7x and lob shots are 1.25x. cooldown is frames between attacks. sprite_prompt must describe one tiny full-body companion character, not an object, icon, item, or pedestal.\nAllowed regions: ${capabilities.regions.join(", ")}.\nAllowed systems: ${capabilities.systems.join(", ")}.\nAllowed triggers: ${capabilities.triggers.join(", ")}.\nAllowed conditions: ${conditionNames.join(", ")}.\nAllowed actions: ${capabilities.actions.join(", ")}.\nAllowed familiars: ${capabilities.familiars.join(", ")}. Allowed familiar patterns: ${capabilities.familiar_patterns.join(", ")}. Allowed auras: ${capabilities.auras.join(", ")}. Allowed friendlies: ${capabilities.friendlies.join(", ")}.\nQuality is a weight budget ${capabilities.quality_budgets.map((budget, quality) => `${quality}=${budget}`).join(", ")}. Spend the quality budget on the distinctive effects in the wish or expanded brief. Do not spend leftover budget on a room-clear coin or soul heart filler. Weights: ${JSON.stringify(capabilities.weights)}. A missing weight means the effect is not available. grant_soul_hearts costs 8 per heart, so one soul heart when a room is cleared needs quality 1 or higher. Negative stats refund weight and stop at their floors: speed -0.15, damage -1, tears -1, shot_speed -0.3, range -5, luck -1. Never deal damage to Isaac. spawn_friendly uses friendly_type attack_fly, spider, or pooter and amount 1. Extra pickups are pill, card, battery, trinket, chest, and sack. Path tear flags are continuum, boomerang, grow, shrink, sticky, wiggle, and slowing_creep. slowing_creep slows; it has no damage parameter.\nPedestal prompt: one centered object, transparent/plain background, no text.`;
 }
 
 function readOption(name) { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : ""; }

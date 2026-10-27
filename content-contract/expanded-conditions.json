@@ -1,0 +1,771 @@
+{
+  "version": 1,
+  "status": "standalone_proposal_parent_integration_required",
+  "condition_registry": {
+    "first_visit": {
+      "params": {},
+      "category": "pure",
+      "scope": "room",
+      "guidance": "Require Room:IsFirstVisit() for the current visit, not a once-only latch. Missing room/getter fails.",
+      "summary": "on the first room visit",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "room_clear_state": {
+      "params": {
+        "state": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "clear",
+            "hostile"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "room",
+      "guidance": "Clear requires IsClear()==true. Hostile requires IsClear()==false and GetAliveEnemiesCount()>0; an empty uncleared room is not hostile. Sample callback-time state, never infer clear from trigger name.",
+      "summary": "room state is {state}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "stage_at_most": {
+      "params": {
+        "stage": {
+          "type": "integer",
+          "required": true,
+          "minimum": 1,
+          "maximum": 13
+        }
+      },
+      "category": "pure",
+      "scope": "floor",
+      "guidance": "Compare inclusive Level:GetStage() engine stage 1-13 (not GetAbsoluteStage or displayed floor names). Alternate paths share their engine stage; reject unknown stages.",
+      "summary": "stage at most {stage}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "stage_at_least": {
+      "params": {
+        "stage": {
+          "type": "integer",
+          "required": true,
+          "minimum": 1,
+          "maximum": 13
+        }
+      },
+      "category": "pure",
+      "scope": "floor",
+      "guidance": "Compare inclusive Level:GetStage() engine stage 1-13 (not GetAbsoluteStage or displayed floor names). Alternate paths share their engine stage; reject unknown stages.",
+      "summary": "stage at least {stage}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "difficulty_kind": {
+      "params": {
+        "kind": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "normal",
+            "hard",
+            "greed",
+            "greedier"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "run",
+      "guidance": "Match Game().Difficulty to the exact named Difficulty enum; hard does not include greedier.",
+      "summary": "difficulty is {kind}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "curse_active": {
+      "params": {
+        "curse": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "darkness",
+            "labyrinth",
+            "lost",
+            "unknown",
+            "maze",
+            "blind"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "floor",
+      "guidance": "Check the corresponding named LevelCurse bit in Level:GetCurses(); no arbitrary flags or custom curse IDs.",
+      "summary": "curse of {curse} is active",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "while_moving": {
+      "params": {},
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Require finite nonzero event-player Velocity X/Y. Knockback counts as moving; input without displacement does not.",
+      "summary": "while moving",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "while_firing": {
+      "params": {},
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Require event-player CanShoot()==true and nonzero finite GetShootingInput(). This means shooting intent while able to shoot, not proof a projectile fired this frame.",
+      "summary": "while firing",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "while_grounded": {
+      "params": {},
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Require event-player CanFly==false, the strict inverse of while_flying capability. Not physical height or side-scroller contact. Missing property fails.",
+      "summary": "while not flying",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "character_kind": {
+      "params": {
+        "kind": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "lost",
+            "keeper",
+            "forgotten"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Bounded vanilla families only: lost includes The Lost and Tainted Lost; keeper includes Keeper and Tainted Keeper; forgotten includes normal/tainted Forgotten bodies and Soul forms. Unknown/custom player types fail; no red-heart assumptions.",
+      "summary": "character family is {kind}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "has_collectible": {
+      "params": {
+        "tag": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "homing_tears",
+            "brimstone"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Exact semantic allowlist: homing_tears means actual Spoon Bender ownership, brimstone means actual Brimstone ownership. HasCollectible(id,true,true) excludes modifiers and REPENTOGON spoofs; not a general weapon/effect query.",
+      "summary": "owns {tag}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "has_familiar": {
+      "params": {
+        "tag": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "brother_bobby",
+            "sister_maggy"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Require an existing live EntityFamiliar of the named vanilla variant whose Player is context.player. Another co-op player or collectible ownership alone does not qualify.",
+      "summary": "has familiar {tag}",
+      "requires": [
+        "player"
+      ],
+      "contexts": [
+        "room_enter",
+        "room_clear",
+        "enemy_hit",
+        "player_hurt",
+        "pickup",
+        "new_floor",
+        "tear_fire",
+        "bomb_explode",
+        "active_use",
+        "pill_use",
+        "card_use",
+        "boss_kill",
+        "player_death",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "target_is_boss": {
+      "params": {},
+      "category": "pure",
+      "scope": "target",
+      "guidance": "Require event target ToNPC(), IsEnemy()==true, no FLAG_FRIENDLY, and IsBoss()==true. Dead kill targets remain eligible.",
+      "summary": "target is a boss",
+      "requires": [
+        "player",
+        "owner",
+        "target"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "player_hurt",
+        "boss_kill",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "target_is_champion": {
+      "params": {},
+      "category": "pure",
+      "scope": "target",
+      "guidance": "Require an actual non-friendly enemy NPC target and IsChampion()==true. Missing target/getter fails.",
+      "summary": "target is a champion",
+      "requires": [
+        "player",
+        "owner",
+        "target"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "player_hurt",
+        "boss_kill",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "target_health_at_most": {
+      "params": {
+        "fraction": {
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "category": "pure",
+      "scope": "target",
+      "guidance": "Compare inclusive max(0,HitPoints)/MaxHitPoints on an actual non-friendly enemy NPC. Max HP must be finite and positive; HP above max fails; lethal negative HP is zero. Never substitute player or bomb health.",
+      "summary": "target health fraction at most {fraction}",
+      "requires": [
+        "player",
+        "owner",
+        "target"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "player_hurt",
+        "boss_kill",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "target_health_at_least": {
+      "params": {
+        "fraction": {
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "category": "pure",
+      "scope": "target",
+      "guidance": "Compare inclusive max(0,HitPoints)/MaxHitPoints on an actual non-friendly enemy NPC. Max HP must be finite and positive; HP above max fails; lethal negative HP is zero. Never substitute player or bomb health.",
+      "summary": "target health fraction at least {fraction}",
+      "requires": [
+        "player",
+        "owner",
+        "target"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "player_hurt",
+        "boss_kill",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "target_has_status": {
+      "params": {
+        "status": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "slow",
+            "burn",
+            "fear",
+            "poison",
+            "charm",
+            "confusion"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "target",
+      "guidance": "Check named EntityFlag status bit on an actual non-friendly enemy NPC target; only current catalog statuses are allowed.",
+      "summary": "target has {status}",
+      "requires": [
+        "player",
+        "owner",
+        "target"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "player_hurt",
+        "boss_kill",
+        "on_kill",
+        "tear_impact",
+        "collision"
+      ]
+    },
+    "damage_at_least": {
+      "params": {
+        "damage": {
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1000
+        }
+      },
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Require finite positive event.damage from a real damage callback, compared inclusively. No weapon stat estimates, fake/cancelled damage, or inferred kill/collision amounts. Zero threshold means any positive actual callback amount.",
+      "summary": "damage at least {damage}",
+      "requires": [
+        "player",
+        "owner",
+        "damage"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "player_hurt"
+      ]
+    },
+    "weapon_kind": {
+      "params": {
+        "kind": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "tear",
+            "bomb",
+            "laser",
+            "knife",
+            "familiar_shot"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "event",
+      "guidance": "Compare optional parent-normalized event.weapon_kind for the actual delivery entity. Familiar projectile classification takes precedence over tear; equipped weapons/owned items are not delivery evidence. Unknown source fails.",
+      "summary": "delivery is {kind}",
+      "requires": [
+        "player",
+        "owner",
+        "weapon_kind"
+      ],
+      "contexts": [
+        "enemy_hit",
+        "tear_fire",
+        "bomb_explode",
+        "boss_kill",
+        "on_kill",
+        "tear_impact"
+      ]
+    },
+    "pickup_kind": {
+      "params": {
+        "kind": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "coin",
+            "key",
+            "bomb",
+            "heart",
+            "pill",
+            "card",
+            "battery",
+            "trinket",
+            "chest",
+            "sack"
+          ]
+        }
+      },
+      "category": "pure",
+      "scope": "event",
+      "guidance": "GATED: no verified successful ordinary pickup producer exists. Never infer collection from pre/post collision. Proposed event.pickup_kind must be one exact existing pickup_types value from verified acquisition.",
+      "summary": "pickup is {kind}",
+      "requires": [
+        "player",
+        "owner",
+        "pickup_kind"
+      ],
+      "contexts": [
+        "pickup"
+      ],
+      "enabled": false
+    }
+  },
+  "event_contexts": {
+    "room_enter": {
+      "fields": [
+        "player"
+      ],
+      "optional_fields": []
+    },
+    "room_clear": {
+      "fields": [
+        "player"
+      ],
+      "optional_fields": []
+    },
+    "enemy_hit": {
+      "fields": [
+        "player",
+        "target",
+        "owner"
+      ],
+      "optional_fields": [
+        "damage",
+        "weapon_kind"
+      ]
+    },
+    "player_hurt": {
+      "fields": [
+        "player",
+        "owner"
+      ],
+      "optional_fields": [
+        "target",
+        "damage"
+      ]
+    },
+    "pickup": {
+      "fields": [
+        "player"
+      ],
+      "optional_fields": [
+        "owner",
+        "pickup_kind"
+      ]
+    },
+    "new_floor": {
+      "fields": [
+        "player"
+      ],
+      "optional_fields": []
+    },
+    "tear_fire": {
+      "fields": [
+        "player"
+      ],
+      "optional_fields": [
+        "owner",
+        "weapon_kind"
+      ]
+    },
+    "bomb_explode": {
+      "fields": [
+        "player",
+        "target",
+        "owner"
+      ],
+      "optional_fields": [
+        "weapon_kind"
+      ]
+    },
+    "active_use": {
+      "fields": [
+        "player",
+        "owner"
+      ],
+      "optional_fields": []
+    },
+    "pill_use": {
+      "fields": [
+        "player",
+        "owner"
+      ],
+      "optional_fields": []
+    },
+    "card_use": {
+      "fields": [
+        "player",
+        "owner"
+      ],
+      "optional_fields": []
+    },
+    "boss_kill": {
+      "fields": [
+        "player",
+        "target",
+        "owner"
+      ],
+      "optional_fields": [
+        "weapon_kind"
+      ]
+    },
+    "player_death": {
+      "fields": [
+        "player",
+        "target",
+        "owner"
+      ],
+      "optional_fields": []
+    },
+    "on_kill": {
+      "fields": [
+        "player",
+        "target"
+      ],
+      "optional_fields": [
+        "owner",
+        "weapon_kind"
+      ]
+    },
+    "tear_impact": {
+      "fields": [
+        "player",
+        "target",
+        "owner"
+      ],
+      "optional_fields": [
+        "weapon_kind"
+      ]
+    },
+    "collision": {
+      "fields": [
+        "player",
+        "target",
+        "owner"
+      ],
+      "optional_fields": []
+    }
+  },
+  "integration_gates": {
+    "pickup_kind": "Disabled in validation and runtime until successful acquisition is proven. Existing pickup trigger is only generated-collectible acquisition, which has no pickup_types kind. MC_POST_PICKUP_COLLISION is not success. A shop-purchase-only design would require separately approved restricted semantics."
+  }
+}

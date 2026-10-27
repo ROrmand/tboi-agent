@@ -6,6 +6,31 @@ alongside `repentogon/LuaInterfaces/LuaConsole.cpp`, include its header as
 needed, build the fork with REPENTOGON's documented toolchain, and test it in
 a separate Isaac installation/profile before replacing any installed binary.
 
+## Apply the overlay to an existing checkout
+
+This repository ships only the binding overlay, not the REPENTOGON client or a
+standalone plug-in DLL. It cannot attach new native Lua APIs to an arbitrary
+stock binary: the binding must be compiled into a compatible REPENTOGON build.
+
+1. Keep your existing REPENTOGON source and build outside this repository.
+   Set `REPENTOGON_SOURCE` to that checkout in `.env` (or the process environment).
+   The ignored `.reference-repentogon` checkout is the compatibility default.
+   Source checkouts inside `work/` are refused; nothing is cloned or downloaded.
+2. Run `npm run repentogon:apply-binding`. It validates the checkout and copies
+   only `NebiusBridge.cpp` and `NebiusBridge.h` into `repentogon/LuaInterfaces/`.
+   Those two files are replaced on subsequent applications; keep custom edits
+   in this repository's overlay, not the copied files.
+3. Reconfigure CMake in the external checkout before building with REPENTOGON's
+   documented toolchain. Its source glob discovers the new binding at configure
+   time. Set `REPENTOGON_BUILD_DIRECTORY` to the resulting Release output.
+4. Set `REPENTOGON_DIRECTORY` to the installed game's `Repentogon` folder
+   (or let `ISAAC_MOD_DIRECTORY` supply the game location). Close Isaac, then
+   explicitly run `npm run repentogon:reset`. This is the installation step;
+   it checks for the binding, backs up runtime files, and preserves base assets.
+
+The apply command does not build, install DLLs, restart the game, or touch saves.
+No full client, object files, PDBs, or build directories belong in this repo.
+
 It registers exactly one Lua global table:
 
 ```lua

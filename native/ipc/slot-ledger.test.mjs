@@ -4,6 +4,7 @@ import {mkdtemp, rm, writeFile, readFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {SlotLedger} from './slot-ledger.mjs';
+import { ART_SLOT_COUNT } from './art-slots.mjs';
 
 test('separate saves retain art across processes and release only a confirmed ended run', async () => {
   const directory=await mkdtemp(path.join(os.tmpdir(),'isaac-save-slots-'));
@@ -50,7 +51,7 @@ test('observation validates process and run manifests before releasing protected
     const ledger = new SlotLedger(file);
     ledger.reserve(context);
     const before = await readFile(file, 'utf8');
-    for (const invalid of [{ used: 'invalid' }, { used: null }, { used: { slot: 0 } }, { count: -1 }, { count: 65 }]) {
+    for (const invalid of [{ used: 'invalid' }, { used: null }, { used: { slot: 0 } }, { count: -1 }, { count: ART_SLOT_COUNT + 1 }]) {
       assert.throws(() => ledger.observe({ ...context, ended_run: true, ...invalid }), /Invalid .*manifest/);
       assert.equal(await readFile(file, 'utf8'), before);
     }
@@ -59,15 +60,15 @@ test('observation validates process and run manifests before releasing protected
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test('64 artwork reservations survive bridge restart and never wrap', async () => {
+test(`${ART_SLOT_COUNT} artwork reservations survive bridge restart and never wrap`, async () => {
   const dir=await mkdtemp(path.join(os.tmpdir(),'isaac-slots-'));
   const file=path.join(dir,'ledger.json');
   try {
     const context={session:'process1',run:'run1',used:[],count:0};
-    for(let i=0;i<64;i++) assert.equal(new SlotLedger(file).reserve(context),i);
-    assert.throws(()=>new SlotLedger(file).reserve(context),/Artwork limit reached: 64\/64/);
-    assert.throws(()=>new SlotLedger(file).reserve({...context,count:64}),/Item limit reached: 64\/64/);
-    assert.throws(()=>new SlotLedger(file).reserve({...context,used:[64]}),/updated mod/);
+    for(let slot=0;slot<ART_SLOT_COUNT;slot++) assert.equal(new SlotLedger(file).reserve(context),slot);
+    assert.throws(()=>new SlotLedger(file).reserve(context),new RegExp(`Artwork limit reached: ${ART_SLOT_COUNT}/${ART_SLOT_COUNT}`));
+    assert.throws(()=>new SlotLedger(file).reserve({...context,count:ART_SLOT_COUNT}),new RegExp(`Item limit reached: ${ART_SLOT_COUNT}/${ART_SLOT_COUNT}`));
+    assert.throws(()=>new SlotLedger(file).reserve({...context,used:[ART_SLOT_COUNT]}),/updated mod/);
     // A new Isaac process may reclaim unused art, but pins continued-run slots.
     assert.equal(new SlotLedger(file).reserve({...context,session:'process2',used:[0,1,3],count:3}),2);
     assert.equal(new SlotLedger(file).reserve({...context,session:'process2',run:'run2'}),4);

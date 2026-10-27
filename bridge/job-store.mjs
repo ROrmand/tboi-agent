@@ -5,9 +5,28 @@ import { encodeEnvelope } from '../native/ipc/protocol.mjs';
 const states = new Set(['received', 'preflight', 'reserved', 'designing', 'rendering', 'validating', 'queued', 'applied', 'failed']);
 const identity = /^[A-Za-z0-9_-]{1,100}$/;
 
+export function replaceWithRetry(rename, source, target, { attempts = 12, delay = () => {} } = {}) {
+  let failure;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try { rename(source, target); return; }
+    catch (error) {
+      failure = error;
+      if (!['EACCES', 'EBUSY', 'EPERM'].includes(error?.code) || attempt === attempts - 1) throw error;
+      delay(10 * (attempt + 1));
+    }
+  }
+  throw failure;
+}
+
+function wait(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
 export class JobStore {
-  constructor(file) {
+  constructor(file, { rename = renameSync, delay = wait } = {}) {
     this.file = file;
+    this.rename = rename;
+    this.delay = delay;
     this.records = new Map();
     try {
       const saved = JSON.parse(readFileSync(file, 'utf8'));
@@ -58,7 +77,7 @@ export class JobStore {
     }
     mkdirSync(path.dirname(this.file), { recursive: true });
     writeFileSync(this.file + '.tmp', JSON.stringify({ version: 1, jobs: [...next.values()] }));
-    renameSync(this.file + '.tmp', this.file);
+    replaceWithRetry(this.rename, this.file + '.tmp', this.file, { delay: this.delay });
     this.records = next;
     return record;
   }

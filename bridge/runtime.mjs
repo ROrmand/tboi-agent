@@ -17,6 +17,16 @@ export async function atomicWrite(file, data) {
   await rename(temp, file);
 }
 export function validateSchema(value, schema, location = 'profile') {
+  if (schema.anyOf) {
+    const errors = [];
+    for (const candidate of schema.anyOf) {
+      try { validateSchema(value, candidate, location); return; }
+      catch (error) { errors.push(error.message); }
+    }
+    throw Error(`${location} matches no allowed shape: ${errors.join('; ')}`);
+  }
+  if (Object.hasOwn(schema, 'const') && value !== schema.const) throw Error(`${location} has an unsupported value`);
+  if (!schema.type && Object.hasOwn(schema, 'const')) return;
   const type = schema.type;
   if (type === 'object') {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error(`${location} must be an object`);

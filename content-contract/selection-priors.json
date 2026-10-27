@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "evidenceKind": "partial_tag_counts_not_item_support",
+  "policy": {
+    "minimum": 0.5,
+    "maximum": 2,
+    "priorItems": 50
+  },
+  "source": {
+    "kind": "runtime",
+    "capturedAt": "2026-10-25T14:36:41Z",
+    "gameVersion": "J273",
+    "runtimeVersion": "REPENTOGON dev v1.9.7.12",
+    "taxonomyVersion": "1.0.4",
+    "eidEdition": "rgon",
+    "eidVersion": "5.25",
+    "eidCommit": "d7aab88",
+    "exportSha256": "d675c79b46a60d9f399977bf7ed52ce94426408b260f5b2042abe5e0a69f2d6a",
+    "reportSha256": "b2b46c5f968eb81f05ee34403945c5d0175da88bb117cc4719558d9bcfe212a7"
+  },
+  "exportedItems": 721,
+  "qualityTotals": [
+    89,
+    225,
+    203,
+    166,
+    38
+  ],
+  "families": {
+    "power.projectile_blocking": {
+      "tag": "action.projectile_block",
+      "byQuality": [
+        2,
+        7,
+        9,
+        3,
+        1
+      ],
+      "total": 22
+    },
+    "power.projectile_reflection": {
+      "tag": "action.projectile_reflect",
+      "byQuality": [
+        0,
+        4,
+        1,
+        1,
+        0
+      ],
+      "total": 6
+    },
+    "power.dash": {
+      "tag": "action.player_dash",
+      "byQuality": [
+        1,
+        1,
+        1,
+        1,
+        0
+      ],
+      "total": 4
+    },
+    "power.extra_tears": {
+      "tag": "action.extra_tears",
+      "byQuality": [
+        4,
+        7,
+        5,
+        4,
+        1
+      ],
+      "total": 21
+    }
+  }
+}

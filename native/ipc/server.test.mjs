@@ -38,6 +38,34 @@ test('profiles remain available until ACK and reappear after a lost poll respons
   } finally { await server.close(); }
 });
 
+test('terminal error status is retried until the game acknowledges it', async () => {
+  let now = 0;
+  const server = new NativePipeServer({ now: () => now, retryMs: 1000 });
+  const pipeName = `${PIPE_NAME}_status_${process.pid}_${randomUUID()}`;
+  const error = { version: 1, type: 'status', id: 'run_error', status: 'error', detail: 'Journal write failed', error_code: 'PERSISTENCE_FAILED' };
+  const acknowledgements = [];
+  server.on('statusAck', id => acknowledgements.push(id));
+  server.publish(error);
+  await server.start(pipeName);
+  const poll = () => request(pipeName, '{"version":1,"type":"poll"}\n');
+  const ack = () => request(pipeName, '{"version":1,"type":"ack","id":"run_error"}\n');
+  try {
+    assert.equal(JSON.parse(await ack()).ok, false);
+    assert.equal(server.queuedMessages, 1);
+    assert.deepEqual(JSON.parse(await poll()), error);
+    assert.equal(await poll(), 'null\n');
+    now = 1000;
+    assert.deepEqual(JSON.parse(await poll()), error);
+    assert.equal(JSON.parse(await ack()).ok, true);
+    assert.deepEqual(acknowledgements, ['run_error']);
+    now = 2000;
+    assert.equal(await poll(), 'null\n');
+    assert.equal(server.queuedMessages, 0);
+    assert.equal(JSON.parse(await ack()).ok, true);
+    assert.deepEqual(acknowledgements, ['run_error']);
+  } finally { await server.close(); }
+});
+
 test('named pipe returns a fixed hello once and ignores unknown acknowledgements', async () => {
   const pipeName = `${PIPE_NAME}_hello_${process.pid}_${randomUUID()}`;
   const server = new NativePipeServer({ seedHello: true });
