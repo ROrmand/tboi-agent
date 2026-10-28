@@ -17,6 +17,7 @@ This is experimental software. Offline tests do not establish live-game compatib
 - [Node.js](https://nodejs.org/en/download) 24 LTS recommended; minimum 22.12.0. No Visual Studio or CMake for the intended packaged tester path. Git is optional for ZIP users.
 - A [Nebius Token Factory](https://tokenfactory.nebius.com/) API key and access to the configured models. Model requests may incur charges.
 - Internet for dependency installation and text generation. ComfyUI and its checkpoint are optional.
+- Optional local image generation goes through **ComfyUI**. Choose a ComfyUI-compatible model/checkpoint and hardware that can support the artwork workload you want to run; this project does not require a particular GPU.
 
 ## Quick start
 
