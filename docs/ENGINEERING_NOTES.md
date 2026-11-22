@@ -10,10 +10,10 @@ The current product path uses a bounded native IPC channel between the local
 Node bridge and REPENTOGON. The native binding exposes only
 `NebiusBridge.Poll()` and `NebiusBridge.Ack(id)` to Lua; pipe I/O happens on a
 background worker, so a game update never waits on it. The isolated Stage 1
-renderer notes remain in [native/README.md](native/README.md).
+renderer notes remain in [native/README.md](../native/README.md).
 
 REPENTOGON remains an external dependency: this repository ships only the
-[binding overlay](native/repentogon-binding/README.md), not the full client.
+[binding overlay](../native/repentogon-binding/README.md), not the full client.
 Configure `REPENTOGON_SOURCE`, run `npm run repentogon:apply-binding`, then
 reconfigure/build that checkout externally. `npm run repentogon:reset` explicitly
 installs its Release output with Isaac closed. No standalone extension ABI is
@@ -41,7 +41,7 @@ an item of that quality without opening the creator. Active collectibles are
 implemented and covered by tests, but typed generation is vaulted: the creator
 and bridge accept passives only. Generator builds may still request an active
 when the replaced pedestal was active. These additions still
-require the live-game acceptance checks in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+require the live-game acceptance checks in [IMPLEMENTATION_PLAN.md](archive/IMPLEMENTATION_PLAN.md).
 A generated result is declarative data, never model-produced Lua, and is applied
 only by fixed Lua handlers.
 
@@ -87,7 +87,7 @@ and singleton limits. Reports expose these bounded secondary fallbacks.
 
 ## Run the first slice
 
-1. Copy [.env.example](.env.example) to `.env` and set `NEBIUS_API_KEY`.
+1. Copy [.env.example](../.env.example) to `.env` and set `NEBIUS_API_KEY`.
    Set `ISAAC_MOD_DIRECTORY` to your installed `live_sprite_swap_demo` mod
    directory so generated files reach the copy Isaac is running. `npm run bridge`
    copies the repository Lua and XML into that directory. Restart Isaac after
@@ -449,7 +449,7 @@ fixed handler, and tests. An unknown system is rejected.
 
 ## Implementation and release status
 
-[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) records the implementation
+[IMPLEMENTATION_PLAN.md](archive/IMPLEMENTATION_PLAN.md) records the implementation
 checklist, automated evidence, and remaining live checks separately. Milestones
 1–9 have implementation paths; this is not a claim of game acceptance.
 The automated suite uses deterministic profiles, Lua engine mocks, local fake
@@ -478,7 +478,7 @@ or delete manifests as a recovery shortcut.
 
 ## Existing design references
 
-[prompts/item.md](prompts/item.md) is an older design exploration, not the
+[prompts/item.md](../prompts/item.md) is an older design exploration, not the
 implemented contract. Its 20-slot design, synergies, costumes, arbitrary active
 effects, and generated Lua hooks are not product features. The current contract is
 `content-contract/capabilities.json` plus the bridge and Lua validators.

@@ -27,3 +27,8 @@ demo/live-sprite-swap/art-reservations.json*
 **/art-reservations.json.guard
 
 HACKATHON_SUBMISSION.md
+
+# Agent-created worktrees kept inside this checkout.
+.claude/worktrees/
+.worktrees/
+worktrees/

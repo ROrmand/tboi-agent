@@ -20,7 +20,7 @@ export async function releaseFiles(directory = root) {
   await walk('content-contract', name => /\.(mjs|json)$/.test(name));
   await walk('native/ipc', name => name.split('/').length === 3 && name.endsWith('.mjs') && !name.endsWith('.test.mjs'));
   await walk('scripts/setup', name => /\.(mjs|ps1)$/.test(name));
-  await walk('docs', name => name.endsWith('.md'));
+  files.push('docs/SETUP.md', 'docs/AGENT_SETUP.md', 'docs/TROUBLESHOOTING.md', 'docs/ARCHITECTURE.md');
   files.push('scripts/generate-condition-metadata.mjs', 'scripts/generate-effect-metadata.mjs');
   files.push(...MOD_FILES.map(name => `demo/live-sprite-swap/${name}`));
   if (await exists(path.join(directory, 'LICENSE'))) files.push('LICENSE');

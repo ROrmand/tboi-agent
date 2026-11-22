@@ -21,3 +21,5 @@ The setup CLI does not install an unpinned archive. Existing local runtime devel
 `npm run release:build -- --preview` creates a local ZIP and checksum without requiring a published native runtime. It never includes your .env, installed art, work/, external client checkout, node_modules, test output, or PDBs. The public build requires runtime/source pins and a project license. See RELEASING.md.
 
 Production imports must remain resolvable from the staged ZIP. Test both `npm ci --omit=dev` and doctor/validation from an extracted clean package; source-tree success alone is insufficient.
+
+Historical plans and integration evidence are preserved in [the planning archive](archive/README.md), not current setup guidance. Release ZIPs include only the setup, agent setup, troubleshooting, and architecture documents; this development guide, release process, engineering notes, and archive remain source-only.

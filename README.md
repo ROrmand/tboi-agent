@@ -6,7 +6,7 @@ The mod combines a local Node bridge, Nebius Token Factory, and a custom REPENTO
 
 ## Beta status
 
-The onboarding and packaging tools are implemented, but a public custom REPENTOGON runtime has **not yet been pinned**. Stock REPENTOGON alone is insufficient. Standard setup and public-release packaging stop with an actionable message until the maintainer publishes the compatible native runtime. Preview ZIPs and existing developer installations remain usable. See the [release checklist](docs/RELEASING.md).
+The onboarding and packaging tools are implemented, but a public custom REPENTOGON runtime has **not yet been pinned**. Stock REPENTOGON alone is insufficient. Standard setup and public-release packaging stop with an actionable message until the maintainer publishes the compatible native runtime. Preview ZIPs and existing developer installations remain usable. See the [source release checklist](https://github.com/ROrmand/tboi-agent/blob/main/docs/RELEASING.md).
 
 This is experimental software. Offline tests do not establish live-game compatibility. Back up saves separately and use a disposable run on Save File 2 or 3; do not use important Save File 1 for testing.
 
@@ -76,10 +76,10 @@ Review native restoration with `npm run rollback -- --dry-run`, then use `npm ru
 ## Development and support
 
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Source development and native builds](docs/DEVELOPMENT.md)
+- [Source development and native builds](https://github.com/ROrmand/tboi-agent/blob/main/docs/DEVELOPMENT.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Release process and publication gates](docs/RELEASING.md)
-- [Archived detailed mechanics and implementation notes](docs/ENGINEERING_NOTES.md)
+- [Release process and publication gates](https://github.com/ROrmand/tboi-agent/blob/main/docs/RELEASING.md)
+- [Archived detailed mechanics and implementation notes](https://github.com/ROrmand/tboi-agent/blob/main/docs/ENGINEERING_NOTES.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 The project's original code and documentation are licensed under the

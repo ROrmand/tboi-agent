@@ -48,7 +48,7 @@ This escape hatch neither downloads nor proves compatibility of native DLLs. Use
 .\start.ps1 --allow-unpinned-runtime --confirm-repentance-plus
 ```
 
-These exceptions are explicit each time; a DLL marker is only a presence check. A real game session must verify Poll/Ack delivery. Developer source/build instructions are in [DEVELOPMENT.md](DEVELOPMENT.md).
+These exceptions are explicit each time; a DLL marker is only a presence check. A real game session must verify Poll/Ack delivery. Developer source/build instructions are in the [source development guide](https://github.com/ROrmand/tboi-agent/blob/main/docs/DEVELOPMENT.md).
 
 ## Manual installation
 
